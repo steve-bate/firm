@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "firm"
+version = "0.1.0"
+description = "Federated Information Resource Manager"
+authors = ["Steve Bate <svc-github@stevebate.net>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+cryptography = "^43.0.0"
+bcrypt = "^4.2.0"
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.2"
+black = "^24.4.2"
+ruff = "^0.5.1"
+mypy = "^1.10.1"
+pytest-asyncio = "^0.23.7"
+pre-commit = "^3.8.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
