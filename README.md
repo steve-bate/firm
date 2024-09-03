@@ -4,7 +4,7 @@
 
 This is an experimental [ActivityPub](https://www.w3.org/TR/activitypub/)-enabled federated information resource manager. This library can be used to implement ActivityPub, [Linked Data](https://en.wikipedia.org/wiki/Linked_data), and similar servers. It's currently not intended to be the basis for a public servers, but rather a platform for experimentation and implementing proof-of-concept for social web ideas.
 
-This library is being used to implement the `firm-server`, which added network access, simple web interfaces and other features. The `firm-server` is just an example, other servers can be build with this library. Those servers can use a different web framework, different storage strategies, and os on.
+This library is being used to implement the [firm-server](https://github.com/steve-bate/firm-server), which added network access, simple web interfaces and other features. The [firm-server](https://github.com/steve-bate/firm-server) is just an example, other servers can be build with this library. Those servers can use a different web framework, different storage strategies, and os on.
 
 This library is still in the early stages of development, but there are already some potentially useful and interesting features:
 
@@ -19,6 +19,7 @@ These are current features, unless tagged otherwise.
     - Multiple domains supported on a single server
 - Data vocabulary-independent
   - Not specific to [ActivityStreams 2.0](https://www.w3.org/TR/activitystreams-vocabulary/)
+- Flexible URIs (supports any HTTP URI path structure)
 - Abstract web interface
 - Abstract resource store
   - Flexible data partitioning
