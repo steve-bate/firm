@@ -252,9 +252,9 @@ class ActivityPubTenant:
                 # TODO: check the object for an "attributedTo" the posting actor.
                 # This allows "announcing" an external create.
                 activity_type = str(activity_object.get("type", "object")).lower()
-                activity_object[
-                    "id"
-                ] = f"{activity['actor']}/{activity_type}/{uuid.uuid4()}"
+                object_uri = f"{activity['actor']}/{activity_type}/{uuid.uuid4()}"
+                activity_object["id"] = object_uri
+                activity_object["attributedTo"] = activity["actor"]
                 await self._store.put(activity_object)
         else:
             # TODO Implement other outbox activity types

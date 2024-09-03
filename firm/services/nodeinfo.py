@@ -46,7 +46,7 @@ async def nodeinfo_version(request: HttpRequest) -> JsonResponse:
         }
     )
     metadata = (
-        custom_metadata["metadata"]
+        cast(dict, custom_metadata["metadata"])
         if custom_metadata and "metadata" in custom_metadata
         else {
             "nodeName": "FIRM",
@@ -54,9 +54,17 @@ async def nodeinfo_version(request: HttpRequest) -> JsonResponse:
         }
     )
 
+    core_version = get_version("firm")
+    metadata["component_versions"] = {
+        "core": core_version,
+    }
+
+    if server_version := get_version("firm-server"):
+        metadata["component_versions"]["server"] = server_version
+
     nodeinfo_data: JSONObject = {
         "version": "2.0",
-        "software": {"name": "firm", "version": get_version("firm")},
+        "software": {"name": "firm", "version": core_version},
         "protocols": ["activitypub"],
         "services": {"outbound": [], "inbound": []},
         "usage": {
