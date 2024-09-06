@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass
 from enum import StrEnum
@@ -28,6 +30,21 @@ ImmutableJSONObject: TypeAlias = Mapping[str, "ImmutableJSON"]
 ImmutableJSON: TypeAlias = (
     ImmutableJSONObject | Sequence["ImmutableJSON"] | str | int | float | bool | None
 )
+
+
+class FIRM_NS(StrEnum):
+    PREFIX = "https://firm.stevebate.dev/ns#"
+    NodeInfo = "firm:NodeInfo"
+    WebFinger = "firm:WebFinger"
+    Credentials = "firm:Credentials"
+    privateKey = "firm:privateKey"
+    password = "firm:password"
+    token = "firm:token"
+    role = "firm:role"
+    Blocks = "firm:Blocks"
+    blockedActor = "firm:blockedActor"
+    blockedDomain = "firm:blockedDomain"
+    blockedSubnet = "firm:blockedSubnet"
 
 
 @dataclass(frozen=True)
@@ -183,6 +200,10 @@ class HttpApplicationState(Protocol):
     def store(self) -> ResourceStore:
         ...
 
+    @property
+    def authorizer(self) -> AuthorizationService | None:
+        ...
+
 
 class HttpApplication(Protocol):
     @property
@@ -250,6 +271,7 @@ class HttpRequest(Protocol):
         """The authentication credentials provided with the request."""
         ...
 
+    # TODO Remove the app level of the request state
     @property
     def app(self) -> HttpApplication:
         """The application (for getting state)"""
@@ -365,6 +387,7 @@ class AuthenticationError(Exception):
 class AuthorizationDecision:
     authorized: bool
     reason: str | None
+    status_code: int = HTTPStatus.FORBIDDEN.value
 
 
 class Authenticator(Protocol):
@@ -374,32 +397,22 @@ class Authenticator(Protocol):
 
 class AuthorizationService(Protocol):
     async def is_get_authorized(
-        self, principal: Identity, obj: dict[str, Any]
+        self, principal: Identity | None, resource: JSONObject
     ) -> AuthorizationDecision:
         """Decide if an object retrieval is authorized."""
         ...
 
     async def is_post_authorized(
-        self, principal: Identity, box_type: str, box_uri: str
+        self, principal: Identity | None, box_type: str, box_uri: str
     ) -> AuthorizationDecision:
-        """Decide if an activity is authorized"""
+        """Decide if POST is authorized"""
         ...
 
     async def is_activity_authorized(
-        self, principal: Identity, activity: dict[str, Any]
+        self, principal: Identity | None, activity: JSONObject
     ) -> AuthorizationDecision:
         """Decide if an activity is authorized."""
         ...
-
-
-class FIRM_NS(StrEnum):
-    NodeInfo = "firm:NodeInfo"
-    WebFinger = "firm:WebFinger"
-    Credentials = "firm:Credentials"
-    privateKey = "firm:privateKey"
-    password = "firm:password"
-    token = "firm:token"
-    role = "firm:role"
 
 
 class DeliveryService(Protocol):
@@ -456,3 +469,16 @@ class HttpTransport(Protocol):
         # trust_env: bool = True,
     ) -> HttpResponse:
         ...
+
+
+class Validator(Protocol):
+    def validate(self, data: JSONObject) -> None:
+        """Throws an exception if the object is invalid"""
+        ...
+
+    # TODO Add Link validation, if needed
+
+
+class NoOpValidator(Validator):
+    def validate(self, data: JSONObject) -> None:
+        pass

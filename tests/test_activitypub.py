@@ -3,16 +3,16 @@ from typing import Sequence
 
 import pytest
 
-from firm.interfaces import (
-    DeliveryService,
-    HttpException,
-    JSONObject,
-    ResourceStore,
-    UrlPrefix,
-)
+from firm.interfaces import HttpException, JSONObject, ResourceStore, UrlPrefix
 from firm.services.activitypub import ActivityPubService, ActivityPubTenant
 from firm.store.memory import MemoryResourceStore
-from tests.support import StubHttpRequest, StubIdentity
+from firm.util import AS2_CONTENT_TYPES
+from tests.support import (
+    StubAuthorizationService,
+    StubDeliveryService,
+    StubHttpRequest,
+    StubIdentity,
+)
 
 
 @pytest.fixture
@@ -26,22 +26,23 @@ def store():
     # )
 
 
-class StubDeliveryService(DeliveryService):
-    async def deliver(self, activity: JSONObject) -> None:
-        pass
-
-
 @pytest.fixture
 def tenant1(store: ResourceStore):
     return ActivityPubTenant(
-        UrlPrefix("http", "tenant1.test", None), store, StubDeliveryService()
+        UrlPrefix("http", "tenant1.test", None),
+        store,
+        StubAuthorizationService(),
+        StubDeliveryService(),
     )
 
 
 @pytest.fixture
 def tenant2(store: ResourceStore):
     return ActivityPubTenant(
-        UrlPrefix("http", "tenant2.test", None), store, StubDeliveryService()
+        UrlPrefix("http", "tenant2.test", None),
+        store,
+        StubAuthorizationService(),
+        StubDeliveryService(),
     )
 
 
@@ -71,7 +72,11 @@ async def test_dereference(service: ActivityPubService, store: ResourceStore):
 
 
 async def test_inbox_no_auth(service: ActivityPubService):
-    request = StubHttpRequest("POST", "http://tenant1.test/inbox")
+    request = StubHttpRequest(
+        "POST",
+        "http://tenant1.test/inbox",
+        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
+    )
     with pytest.raises(HttpException) as ex:
         await service.process_request(request)
         assert ex.value.status_code == 403
@@ -82,6 +87,7 @@ async def test_inbox_bad_uri(service: ActivityPubService):
         "POST",
         "http://tenant1.test/inbox",
         auth=StubIdentity("http://tenant1.test/user1"),
+        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
     with pytest.raises(HttpException) as ex:
         await service.process_request(request)
@@ -94,6 +100,7 @@ async def test_inbox_bad_type(service: ActivityPubService, store: ResourceStore)
         "POST",
         "http://tenant1.test/inbox",
         auth=StubIdentity("http://tenant1.test/user1"),
+        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
     with pytest.raises(HttpException) as ex:
         await service.process_request(request)
@@ -122,6 +129,7 @@ async def test_inbox_no_attribution(service: ActivityPubService, store: Resource
                 # "liked": ""
             }
         ),
+        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
     with pytest.raises(HttpException) as ex:
         await service.process_request(request)
@@ -176,6 +184,7 @@ async def test_inbox_follow(service: ActivityPubService, store: ResourceStore):
                 "object": "http://tenant1.test/user2",
             }
         ).encode(),
+        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
     response = await service.process_request(request)
 
@@ -241,6 +250,7 @@ async def test_inbox_undo_follow(service: ActivityPubService, store: ResourceSto
                 },
             }
         ).encode(),
+        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
     response = await service.process_request(request)
     assert response.status_code == 200
@@ -298,6 +308,7 @@ async def test_inbox_like(service: ActivityPubService, store: ResourceStore):
                 "object": "http://tenant1.test/user2/note",
             }
         ).encode(),
+        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
     response = await service.process_request(request)
 
@@ -358,6 +369,7 @@ async def test_inbox_undo_like(service: ActivityPubService, store: ResourceStore
                 },
             }
         ).encode(),
+        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
     response = await service.process_request(request)
 
@@ -391,7 +403,6 @@ async def test_inbox_create_object(service: ActivityPubService, store: ResourceS
         ],
     )
 
-    # Follow request
     request = StubHttpRequest(
         "POST",
         "http://tenant1.test/inbox",
@@ -408,6 +419,7 @@ async def test_inbox_create_object(service: ActivityPubService, store: ResourceS
                 },
             }
         ).encode(),
+        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
 
     response = await service.process_request(request)

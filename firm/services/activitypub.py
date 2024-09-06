@@ -6,30 +6,49 @@ from typing import Mapping, cast
 from firm.interfaces import (
     URI,
     APActor,
+    AuthorizationService,
     DeliveryService,
     HttpException,
     HttpRequest,
     HttpResponse,
     JSONObject,
     JsonResponse,
+    NoOpValidator,
     PlainTextResponse,
     ResourceStore,
     Url,
     UrlPrefix,
+    Validator,
     get_url_prefix,
 )
-from firm.util import has_value, log, resource_get, resource_id
+from firm.util import (
+    ACTIVITIES_REQUIRING_OBJECT,
+    ACTIVITIES_REQUIRING_TARGET,
+    get_types,
+    has_value,
+    is_type,
+    log,
+    resource_get,
+    resource_id,
+)
 
 OK = PlainTextResponse("", 200, reason_phrase="OK")
 
 
 class ActivityPubTenant:
     def __init__(
-        self, prefix: UrlPrefix, store: ResourceStore, delivery_service: DeliveryService
+        self,
+        prefix: UrlPrefix,
+        store: ResourceStore,
+        authorizer: AuthorizationService,
+        delivery_service: DeliveryService,
+        validator: Validator = NoOpValidator(),
     ):
         self.prefix = prefix
         self._store = store
+        self._authorizer = authorizer
         self._delivery_service = delivery_service
+        self._validator = validator
 
     async def _dereference(self, url: Url | str):
         if isinstance(url, Url):
@@ -38,9 +57,13 @@ class ActivityPubTenant:
 
     async def _process_get(self, request: HttpRequest) -> HttpResponse:
         if resource := await self._dereference(request.url):
-            return JsonResponse(
-                resource, headers={"Content-Type": "application/activity+json"}
-            )
+            decision = await self._authorizer.is_get_authorized(request.auth, resource)
+            if decision.authorized:
+                return JsonResponse(
+                    resource, headers={"Content-Type": "application/activity+json"}
+                )
+            else:
+                raise HttpException(decision.status_code, decision.reason)
         else:
             raise HttpException(HTTPStatus.NOT_FOUND)
 
@@ -64,9 +87,21 @@ class ActivityPubTenant:
         # Determine the type of box and dispatch accordingly
         request_url = str(request.url)
         if request_url == box_owner.get("inbox"):
-            return await self._process_inbox(request, cast(APActor, box_owner))
+            decision = await self._authorizer.is_post_authorized(
+                request.auth, "inbox", request_url
+            )
+            if decision.authorized:
+                return await self._process_inbox(request, cast(APActor, box_owner))
+            else:
+                raise HttpException(decision.status_code, decision.reason)
         elif request_url == box_owner.get("outbox"):
-            return await self._process_outbox(request, cast(APActor, box_owner))
+            decision = await self._authorizer.is_post_authorized(
+                request.auth, "outbox", request_url
+            )
+            if decision.authorized:
+                return await self._process_outbox(request, cast(APActor, box_owner))
+            else:
+                raise HttpException(decision.status_code, decision.reason)
         else:
             raise HttpException(HTTPStatus.BAD_REQUEST, "Unsupported box type")
 
@@ -82,6 +117,10 @@ class ActivityPubTenant:
         self, request: HttpRequest, box_owner: APActor
     ) -> HttpResponse:
         activity = cast(JSONObject, await request.json())
+        self._validator.validate(activity)
+        decision = await self._authorizer.is_activity_authorized(request.auth, activity)
+        if not decision.authorized:
+            raise HttpException(decision.status_code, decision.reason)
         if log.isEnabledFor(logging.DEBUG):
             log.debug(f"Inbox: activity={activity.get('type')}")
         log.info(f"Inbox: box={request.url}, activity_type={activity.get('type')}")
@@ -89,6 +128,8 @@ class ActivityPubTenant:
         await self._put_collection_item(box_owner["inbox"], resource_id(activity))
         if has_value(activity, "type", "Follow"):
             return await self._process_inbox_follow(request, box_owner, activity)
+        if has_value(activity, "type", "Accept"):
+            return await self._process_inbox_accept(request, box_owner, activity)
         elif has_value(activity, "type", "Like"):
             return await self._process_inbox_like(request, box_owner, activity)
         elif has_value(activity, "type", "Create"):
@@ -118,7 +159,9 @@ class ActivityPubTenant:
                 else:
                     items.append(item_uri)
         else:
-            collection[items_key] = [item_uri]
+            items = [item_uri]
+            collection[items_key] = items
+        collection["totalItems"] = len(items)
         await self._store.put(collection)
 
     async def _remove_collection_item(self, collection_uri: str, item_uri: str):
@@ -141,6 +184,7 @@ class ActivityPubTenant:
     ) -> HttpResponse:
         """The actor is requesting to follow the box owner."""
         actor_uri = resource_id(activity.get("actor"))
+        # TODO Does the authorization framework handle this already?
         self._assert_authorized_actor(request, actor_uri)
         if resource_id(activity.get("object")) != box_owner.get("id"):
             raise HttpException(
@@ -167,6 +211,31 @@ class ActivityPubTenant:
             },
         )
         return OK
+
+    async def _process_inbox_accept(
+        self, request: HttpRequest, box_owner: APActor, activity: JSONObject
+    ) -> HttpResponse:
+        """A remote actor has accepted our follow request."""
+        actor_uri = resource_id(activity.get("actor"))
+        # TODO Does the authorization framework handle this already?
+        self._assert_authorized_actor(request, actor_uri)
+        accepted_activity_uri = resource_id(activity.get("object"))
+        if accepted_activity := await self._dereference(accepted_activity_uri):
+            if not is_type(accepted_activity, "Follow"):
+                raise HttpException(
+                    HTTPStatus.BAD_REQUEST, "Accepting non-Follow object"
+                )
+            following_uri = box_owner.get("following")
+            if not following_uri:
+                raise HttpException(
+                    HTTPStatus.NOT_IMPLEMENTED, "Following not supported"
+                )
+            await self._put_collection_item(
+                following_uri, resource_id(accepted_activity["object"])
+            )
+            return OK
+        else:
+            raise HttpException(HTTPStatus.BAD_REQUEST, "Unknown accepted object")
 
     def _assert_authorized_actor(self, request, actor_uri):
         if request.auth is None or actor_uri != request.auth.uri:
@@ -247,33 +316,51 @@ class ActivityPubTenant:
         if has_value(activity, "type", "Create"):
             activity_object = activity["object"]
             if isinstance(activity_object, Mapping):
-                activity["object"] = resource_id(activity_object)
                 # Always assign an URI to the object for now.
                 # TODO: check the object for an "attributedTo" the posting actor.
                 # This allows "announcing" an external create.
+                if "@context" not in activity_object:
+                    activity_object[
+                        "@context"
+                    ] = "https://www.w3.org/ns/activitystreams"
                 activity_type = str(activity_object.get("type", "object")).lower()
                 object_uri = f"{activity['actor']}/{activity_type}/{uuid.uuid4()}"
                 activity_object["id"] = object_uri
-                activity_object["attributedTo"] = activity["actor"]
+                if "attributedTo" not in activity_object:
+                    activity_object["attributedTo"] = activity["actor"]
                 await self._store.put(activity_object)
+                activity["object"] = resource_id(activity_object)
+                await self._store.put(activity)
         else:
             # TODO Implement other outbox activity types
             await self._store.put(activity)
         await self._put_collection_item(outbox_uri, resource_id(activity))
+        # TODO Process activity
         await self._delivery_service.deliver(activity)
 
     async def _process_outbox(
         self, request: HttpRequest, box_owner: APActor
     ) -> HttpResponse:
-        actor_uri = box_owner["id"]
+        # TODO Use JSONObject?
         activity = dict(await request.json())
+        self._validator.validate(activity)
+        if "@context" not in activity:
+            activity["@context"] = "https://www.w3.org/ns/activitystreams"
+        for activity_type in get_types(activity):
+            if activity_type in ACTIVITIES_REQUIRING_OBJECT:
+                if "object" not in activity:
+                    raise HttpException(HTTPStatus.BAD_REQUEST, "Missing object")
+            if activity_type in ACTIVITIES_REQUIRING_TARGET:
+                if "target" not in activity:
+                    raise HttpException(HTTPStatus.BAD_REQUEST, "Missing target")
+        decision = await self._authorizer.is_activity_authorized(request.auth, activity)
+        if not decision.authorized:
+            raise HttpException(decision.status_code, decision.reason)
+        actor_uri = box_owner["id"]
         activity["id"] = f"{actor_uri}/{activity['type'].lower()}-{uuid.uuid4()}"
         # Fill in missing fields
         if "actor" not in activity:
             activity["actor"] = actor_uri
-        if "@context" not in activity:
-            # for Mastodon
-            activity["@context"] = "https://www.w3.org/ns/activitystreams"
         log.info(f"Outbox activity: {activity.get('type')}")
         await self._process_outbox_internal(box_owner["outbox"], activity)
         return PlainTextResponse(
