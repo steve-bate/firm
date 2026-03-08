@@ -21,7 +21,8 @@ from firm.core.util import get_version
 
 log = logging.getLogger(__name__)
 
-STATIC_DIR = "firm.server/html/static"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 
 # TODO Determine if html_static_endpoint is still needed
@@ -125,13 +126,13 @@ _tenant_templates: dict[str, Jinja2Templates] = {}
 def _get_tenant_templates(tenant: Tenant) -> Jinja2Templates:
     if templates := _tenant_templates.get(tenant.prefix):
         return templates
-    default_templates = Jinja2Templates(directory="firm.server/html/templates")
+    default_templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
     templates_dir = os.path.join(
         tenant.files,
         "templates",
     )
     if os.path.exists(templates_dir):
-        templates = Jinja2Templates(directory=[templates_dir, "firm.server/html/templates"])
+        templates = Jinja2Templates(directory=[templates_dir, os.path.join(BASE_DIR, "templates")])
     else:
         templates = default_templates
 

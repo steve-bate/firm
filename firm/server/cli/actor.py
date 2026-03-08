@@ -6,8 +6,8 @@ from urllib.parse import urlparse
 import click
 
 from firm.core.auth.keys import create_key_pair
-from firm.core.interfaces import FIRM_NS, get_uri_prefix
-from firm.core.util import get_id
+from firm.core.interfaces import FIRM_NS, JSONObject, ResourceStore, get_uri_prefix
+from firm.core.util import get_id, resource_id
 from firm.server.utils import async_command
 
 from . import Context, cli
@@ -241,29 +241,29 @@ def outbox():
     """Outbox management"""
 
 
+async def _safe_get(store: ResourceStore, uri: str) -> JSONObject:
+    if resource := await store.get(uri):
+        return resource
+    raise click.ClickException(f"Resource not found: {uri}")
+
+
 @outbox.command("clean")
 @click.argument("uri")
 @click.pass_obj
 @async_command
 async def actor_outbox_clean(ctx: Context, uri: str):
     store = ctx.get_tenant().public_store
-    actor = await store.get(uri)
-    if not actor:
-        raise click.ClickException(f"Actor not found: {uri}")
-    outbox_uri = get_id(actor["outbox"])
-    if not outbox_uri:
-        raise click.ClickException(f"Actor {uri} has no outbox")
-    box = await store.get(outbox_uri)
-    if not box:
-        raise click.ClickException(f"Outbox not found: {outbox_uri}")
+    actor = await _safe_get(store, uri)
+    outbox_uri = resource_id(actor["outbox"])
+    box = await _safe_get(store, outbox_uri)
     if isinstance(box, str):
-        box = await store.get(box)
+        box = await _safe_get(store, box)
     if activity_uris := cast(list, box.get("orderedItems", [])):
         for activity_uri in activity_uris:
-            if activity := await store.get(activity_uri):
+            if activity := await _safe_get(store, activity_uri):
                 obj = activity.get("object")
                 if isinstance(obj, str):
-                    obj = await store.get(obj)
+                    obj = await _safe_get(store, obj)
                 if isinstance(obj, dict) and obj.get("attributedTo") == actor["id"]:
                     obj_uri = get_id(obj["id"])
                     if not obj_uri:
@@ -287,14 +287,8 @@ def inbox():
 @async_command
 async def actor_inbox_clean(ctx: Context, uri: str):
     store = ctx.get_tenant().public_store
-    actor = await store.get(uri)
-    if not actor:
-        raise click.ClickException(f"Actor not found: {uri}")
-    inbox_uri = get_id(actor["inbox"])
-    if not inbox_uri:
-        raise click.ClickException(f"Actor {uri} has no inbox")
-    box = await store.get(inbox_uri)
-    if not box:
-        raise click.ClickException(f"Inbox not found: {inbox_uri}")
+    actor = await _safe_get(store, uri)
+    inbox_uri = resource_id(actor["inbox"])
+    box = await _safe_get(store, inbox_uri)
     box.pop("orderedItems")
     await store.put(box)
