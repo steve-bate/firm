@@ -4,7 +4,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -14,7 +14,7 @@ from firm.core.interfaces import (
     FIRM_NS,
     HttpRequest,
     HttpResponse,
-    ResourceStore,
+    JSONObject,
     Tenant,
 )
 from firm.core.util import get_version
@@ -37,13 +37,18 @@ def html_static_endpoint(request: Request):
     return Response("File not found", status_code=404)
 
 
-async def _get_timeline(tenant: Tenant, actor: dict) -> list[dict[str, Any]]:
-    activity_uris = (await tenant.public_store.get(actor["outbox"])).get("orderedItems", [])
+async def _get_timeline(tenant: Tenant, actor: JSONObject) -> list[JSONObject]:
+    obj = await tenant.public_store.get(cast(str, actor["outbox"]))
+    if obj is None:
+        return []
+    activity_uris = cast(list[str], obj.get("orderedItems", []))
     activities = reversed([await tenant.public_store.get(item) for item in activity_uris[-10:]])
-    content = {}
+    content: dict[Any, JSONObject] = {}
     for activity in activities:
+        if not activity:
+            continue
         if activity.get("type") in ["Create", "Update", "Delete"]:
-            if object_uri := activity.get("object"):
+            if object_uri := cast(str, activity.get("object")):
                 if not object_uri.startswith(tenant.prefix):
                     continue
                 if object_ := await tenant.public_store.get(object_uri):
@@ -61,11 +66,12 @@ async def _actor_context(uri: str, tenant: Tenant) -> dict[str, Any]:
     )
     context["roles"] = credentials.get(FIRM_NS.role.value, []) if credentials else []
     actor = await tenant.public_store.get(uri)
-    context["timeline"] = await _get_timeline(tenant, actor)
+    if actor is not None:
+        context["timeline"] = await _get_timeline(tenant, actor)
     return context
 
 
-async def _doc_context(uri: str, store: ResourceStore):
+async def _doc_context(uri: str, tenant: Tenant):
     context: dict[str, Any] = {}
     # Add any specific document context logic here
     return context
@@ -74,7 +80,7 @@ async def _doc_context(uri: str, store: ResourceStore):
 @dataclass
 class TemplateConfig:
     template: str
-    context: Callable[[str, ResourceStore], Awaitable[dict[str, Any]]] | None = None
+    context: Callable[[str, Tenant], Awaitable[dict[str, Any]]] | None = None
 
 
 ACTOR_TEMPLATE = TemplateConfig("actor.jinja2", _actor_context)
@@ -173,7 +179,7 @@ async def html_endpoint(request: HttpRequest) -> HttpResponse:
         if not resource:
             return Response("Resource not found", status_code=404)
         else:
-            if template_config := RESOURCE_TEMPLATES.get(resource.get("type")):
+            if template_config := RESOURCE_TEMPLATES.get(cast(str, resource.get("type"))):
                 if isinstance(template_config, str):
                     template_config = TemplateConfig(template_config)
                 context = dict(

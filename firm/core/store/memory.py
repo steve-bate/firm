@@ -36,3 +36,6 @@ class MemoryResourceStore(ResourceStoreBase):
             if self.is_match(obj, criteria):
                 matches.append(obj)
         return matches
+
+    async def close(self) -> None:
+        self._objects.clear()

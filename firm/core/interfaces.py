@@ -20,6 +20,8 @@ from typing import (
 )
 from urllib.parse import parse_qs, urlparse
 
+from firm.server.config import ServerConfig
+
 # https://github.com/python/typing/issues/182#issuecomment-1320974824
 
 JSONObject: TypeAlias = MutableMapping[str, "JSON"]
@@ -61,28 +63,22 @@ class Tenant:
 @runtime_checkable
 class Url(Protocol):
     @property
-    def scheme(self) -> str:
-        ...
+    def scheme(self) -> str: ...
 
     @property
-    def netloc(self) -> str:
-        ...
+    def netloc(self) -> str: ...
 
     @property
-    def path(self) -> str:
-        ...
+    def path(self) -> str: ...
 
     @property
-    def query(self) -> str:
-        ...
+    def query(self) -> str: ...
 
     @property
-    def hostname(self) -> str:
-        ...
+    def hostname(self) -> str: ...
 
     @property
-    def port(self) -> int:
-        ...
+    def port(self) -> int: ...
 
 
 def get_query_params(url: Url) -> dict[str, list[str]]:
@@ -102,28 +98,24 @@ QueryCriteria: TypeAlias = JSONObject
 
 
 class ResourceStore(Protocol):
-    async def get(self, uri: str) -> JSONObject | None:
-        ...
+    async def get(self, uri: str) -> JSONObject | None: ...
 
-    async def is_stored(self, uri: str) -> bool:
-        ...
+    async def is_stored(self, uri: str) -> bool: ...
 
-    async def put(self, resource: JSONObject) -> None:
-        ...
+    async def put(self, resource: JSONObject) -> None: ...
 
-    async def remove(self, uri: str) -> None:
-        ...
+    async def remove(self, uri: str) -> None: ...
 
-    async def query(self, criteria: QueryCriteria) -> list[JSONObject]:
-        ...
+    async def query(self, criteria: QueryCriteria) -> list[JSONObject]: ...
 
-    async def query_one(self, criteria: QueryCriteria) -> JSONObject | None:
-        ...
+    async def query_one(self, criteria: QueryCriteria) -> JSONObject | None: ...
 
-    async def update(self, uri: str, updates: JSONObject) -> None:
-        ...
+    async def update(self, uri: str, updates: JSONObject) -> None: ...
 
-    async def upsert(self, criteria: QueryCriteria, updates: JSONObject) -> None:
+    async def upsert(self, criteria: QueryCriteria, updates: JSONObject) -> None: ...
+
+    async def close(self) -> None:
+        """Close any resources used by the store (e.g., database connections)"""
         ...
 
 
@@ -145,16 +137,13 @@ class APActor(TypedDict):
 
 class Identity(Protocol):
     @property
-    def uri(self) -> str:
-        ...
+    def uri(self) -> str: ...
 
     @property
-    def actor(self) -> APActor:
-        ...
+    def actor(self) -> APActor: ...
 
     @property
-    def tenant(self) -> Tenant:
-        ...
+    def tenant(self) -> Tenant: ...
 
 
 class Principal:
@@ -185,23 +174,25 @@ HttpMethod: TypeAlias = Literal["GET", "POST", "PUT", "DELETE", "PATCH", "OPTION
 
 class HttpApplicationState(Protocol):
     @property
-    def store(self) -> ResourceStore:
-        ...
+    def store(self) -> ResourceStore: ...
 
     @property
-    def authorizer(self) -> AuthorizationService | None:
-        ...
+    def authorizer(self) -> AuthorizationService | None: ...
 
     @property
     def tenants(self) -> Mapping[str, Tenant]:
         """Mapping of tenant URIs to Tenant objects."""
         ...
 
+    @property
+    def config(self) -> ServerConfig:
+        """The server configuration."""
+        ...
+
 
 class HttpApplication(Protocol):
     @property
-    def state(self) -> HttpApplicationState:
-        ...
+    def state(self) -> HttpApplicationState: ...
 
 
 class HttpRequest(Protocol):
@@ -228,6 +219,11 @@ class HttpRequest(Protocol):
     @property
     def cookies(self) -> MutableMapping[str, str]:
         """The cookies sent with the request."""
+        ...
+
+    @property
+    def base_url(self) -> str:
+        """The base URL of the request (scheme + host)."""
         ...
 
     def content(self) -> bytes | None:
@@ -268,6 +264,12 @@ class HttpRequest(Protocol):
     @property
     def app(self) -> HttpApplication:
         """The application (for getting state)"""
+        ...
+
+    @property
+    def query_params(self) -> dict[str, list[str]]:
+        """The query parameters of the request."""
+        # return get_query_params(self.url)
         ...
 
 
@@ -401,8 +403,7 @@ class AuthorizationDecision:
 
 
 class Authenticator(Protocol):
-    async def authenticate(self, request: HttpRequest) -> Identity | None:
-        ...
+    async def authenticate(self, request: HttpRequest) -> Identity | None: ...
 
 
 class AuthorizationService(Protocol):
@@ -441,8 +442,7 @@ class DeliveryService(Protocol):
         tenant: Tenant,
         all_tenants: Mapping[str, Tenant],
         activity: JSONObject,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 UrlTypes: TypeAlias = str | Url
@@ -451,8 +451,7 @@ DEFAULT_HTTP_TIMEOUT = 5.0
 
 
 class HttpRequestSigner(Protocol):
-    def sign(self, request: HttpRequest) -> None:
-        ...
+    def sign(self, request: HttpRequest) -> None: ...
 
 
 class HttpTransport(Protocol):
@@ -471,8 +470,7 @@ class HttpTransport(Protocol):
         verify: bool = True,
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         # trust_env: bool = True,
-    ) -> HttpResponse:
-        ...
+    ) -> HttpResponse: ...
 
     async def post(
         self,
@@ -492,8 +490,7 @@ class HttpTransport(Protocol):
         verify: bool = True,
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         # trust_env: bool = True,
-    ) -> HttpResponse:
-        ...
+    ) -> HttpResponse: ...
 
 
 class Validator(Protocol):

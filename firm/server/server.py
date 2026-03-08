@@ -69,6 +69,9 @@ def init_remote_cache(config: ServerConfig) -> ResourceStore:
         case "rdf":
             # init_tenant_rdf_storage(config, tenant_uri)
             raise NotImplementedError("RDF storage not supported yet")
+    raise ValueError(
+        f"Unknown storage kind: {config.store.kind}. " "Supported kinds are 'filesystem' and 'rdf'."
+    )
 
 
 def get_tenant_uri(scope):

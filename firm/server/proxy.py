@@ -1,6 +1,7 @@
 import json
 import logging
 from http import HTTPStatus
+from typing import cast
 
 import httpx
 
@@ -56,7 +57,9 @@ async def proxy(request: HttpRequest) -> HttpResponse:
     # TODO Make the AP proxy more generic and move to firm core project
 
     async with httpx.AsyncClient(
-        auth=HttpxAuthAdapter(HttpSignatureAuth(actor["id"], credentials[FIRM_NS.privateKey])),
+        auth=HttpxAuthAdapter(
+            HttpSignatureAuth(actor["id"], cast(str, credentials[FIRM_NS.privateKey]))
+        ),
         headers={"Accept": "application/activity+json"},
     ) as client:
         try:

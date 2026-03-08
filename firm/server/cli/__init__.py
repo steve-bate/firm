@@ -57,9 +57,9 @@ def cli(ctx: click.Context, config: click.File, tenant: str):
 
 @cli.result_callback()
 @click.pass_obj
-def after_command(ctx: Context, result, **kwargs):
-    ctx.get_tenant().public_store.close()
-    ctx.get_tenant().private_store.close()
+async def after_command(ctx: Context, result, **kwargs):
+    await ctx.get_tenant().public_store.close()
+    await ctx.get_tenant().private_store.close()
     log.info("tenant stores closed")
 
 

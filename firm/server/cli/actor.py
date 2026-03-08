@@ -1,12 +1,13 @@
 import json
 import uuid
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
 import click
 
 from firm.core.auth.keys import create_key_pair
 from firm.core.interfaces import FIRM_NS, get_uri_prefix
+from firm.core.util import get_id
 from firm.server.utils import async_command
 
 from . import Context, cli
@@ -196,7 +197,8 @@ async def actor_update(
                 "attributedTo": uri,
             }
         )
-        credentials[FIRM_NS.role.value] = roles
+        if credentials is not None:
+            credentials[FIRM_NS.role.value] = roles
     if description:
         actor_resource["summary"] = description
     if header_image:
@@ -216,12 +218,14 @@ async def actor_update(
     if properties:
         actor_resource["attachment"] = [_property(p) for p in list(properties)]
     if added_properties:
-        actor_resource["attachment"] = actor_resource.get("attachment", []) + [
+        actor_resource["attachment"] = cast(list, actor_resource.get("attachment", [])) + [
             _property(p) for p in added_properties
         ]
     if removed_properties:
         actor_resource["attachment"] = [
-            p for p in actor_resource.get("attachment", []) if p["name"] not in removed_properties
+            p
+            for p in cast(list, actor_resource.get("attachment", []))
+            if p["name"] not in removed_properties
         ]
     if credentials:
         if verbose:
@@ -244,17 +248,27 @@ def outbox():
 async def actor_outbox_clean(ctx: Context, uri: str):
     store = ctx.get_tenant().public_store
     actor = await store.get(uri)
-    box = await store.get(actor["outbox"])
+    if not actor:
+        raise click.ClickException(f"Actor not found: {uri}")
+    outbox_uri = get_id(actor["outbox"])
+    if not outbox_uri:
+        raise click.ClickException(f"Actor {uri} has no outbox")
+    box = await store.get(outbox_uri)
+    if not box:
+        raise click.ClickException(f"Outbox not found: {outbox_uri}")
     if isinstance(box, str):
         box = await store.get(box)
-    if activity_uris := box.get("orderedItems", []):
+    if activity_uris := cast(list, box.get("orderedItems", [])):
         for activity_uri in activity_uris:
             if activity := await store.get(activity_uri):
                 obj = activity.get("object")
                 if isinstance(obj, str):
                     obj = await store.get(obj)
-                if obj.get("attributedTo") == actor["id"]:
-                    await store.remove(obj["id"])
+                if isinstance(obj, dict) and obj.get("attributedTo") == actor["id"]:
+                    obj_uri = get_id(obj["id"])
+                    if not obj_uri:
+                        continue
+                    await store.remove(obj_uri)
                     print(f"removed object {obj}")
                 await store.remove(activity_uri)
                 print(f"removed activity {activity_uri}")
@@ -274,6 +288,13 @@ def inbox():
 async def actor_inbox_clean(ctx: Context, uri: str):
     store = ctx.get_tenant().public_store
     actor = await store.get(uri)
-    box = await store.get(actor["inbox"])
+    if not actor:
+        raise click.ClickException(f"Actor not found: {uri}")
+    inbox_uri = get_id(actor["inbox"])
+    if not inbox_uri:
+        raise click.ClickException(f"Actor {uri} has no inbox")
+    box = await store.get(inbox_uri)
+    if not box:
+        raise click.ClickException(f"Inbox not found: {inbox_uri}")
     box.pop("orderedItems")
     await store.put(box)

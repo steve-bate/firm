@@ -71,6 +71,9 @@ class FileResourceStore(ResourceStoreBase):  # type: ignore
                     matches.append(data)
         return matches
 
+    async def close(self) -> None:
+        pass
+
 
 # #
 # # CLI Support

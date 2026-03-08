@@ -1,4 +1,5 @@
 import logging
+from typing import cast
 
 import rdflib
 from pyld import jsonld
@@ -71,7 +72,7 @@ class RdfResourceStore(ResourceStoreBase, ResourceStore):
             "https://w3c-ccg.github.io/security-vocab/contexts/security-v1.jsonld",
             {"firm": "https://firm.stevebate.dev#"},
         ]
-        resource = jsonld_to_graph(obj)
+        resource = jsonld_to_graph(cast(dict, obj))
         for subject in resource.subjects():
             self.graph.remove((subject, None, None))
         self.graph += resource
@@ -113,5 +114,5 @@ Where {
                 matches.append(match)
         return matches
 
-    def close(self) -> None:
+    async def close(self) -> None:
         RdfDataSet.close()

@@ -1,7 +1,8 @@
 import logging
 import re
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Iterable
+from pathlib import Path
+from typing import Awaitable, Callable, Iterable, Mapping, cast
 
 import httpx
 import mimeparse
@@ -35,11 +36,14 @@ from firm.core.interfaces import (
 from firm.core.services.activitypub import ActivityPubService
 from firm.core.services.nodeinfo import nodeinfo_index, nodeinfo_version
 from firm.core.services.webfinger import webfinger
-from firm.core.util import AP_PUBLIC_URIS, AS2_CONTENT_TYPES, get_prefix_uri, get_types
+from firm.core.util import (
+    AP_PUBLIC_URIS,
+    AS2_CONTENT_TYPES,
+    get_id,
+    get_prefix_uri,
+    get_types,
+)
 from firm.jsonschema.validation import create_validator
-from firm.ld.search import IndexedResource
-from firm.ld.search import SearchEngine as RdfSearchEngine
-from firm.ld.store import RdfResourceStore
 from firm.server.adapters import (
     AuthenticationBackendAdapter,
     HttpConnectionAdapter,
@@ -85,6 +89,16 @@ def is_public(uri: str):
     return uri in AP_PUBLIC_URIS
 
 
+def _get_uris(items: list[JSONObject | str]) -> list[str]:
+    uris: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            uris.append(item)
+        elif isinstance(item, dict) and "id" in item:
+            uris.append(cast(str, item["id"]))
+    return uris
+
+
 # TODO Consider redesign of FirmDeliveryService (abstract class?)
 class FirmDeliveryService(DeliveryService):
     _RECIPIENT_PROPS = ["to", "cc", "bto", "bcc"]
@@ -93,7 +107,9 @@ class FirmDeliveryService(DeliveryService):
         self._config = config
 
     async def _resolve_inboxes(
-        self, store: ResourceStore, recipient_uris: Iterable[str]
+        self,
+        store: ResourceStore,
+        recipient_uris: Iterable[str],
     ) -> set[str]:
         inboxes = set()
         for uri in recipient_uris:
@@ -104,12 +120,14 @@ class FirmDeliveryService(DeliveryService):
                 continue
             if is_collection(obj):  # TODO Expand server-local collections for inboxes
                 # ... and self._store.is_local(uri):
-                if items := obj.get("items") or obj.get("orderedItems"):
-                    for item in await self._resolve_inboxes(store, items):
+                if items := cast(
+                    list[JSONObject | str], obj.get("items") or obj.get("orderedItems")
+                ):
+                    for item in await self._resolve_inboxes(store, _get_uris(items)):
                         inboxes.add(item)
             else:
-                if inbox := obj.get("sharedInbox") or obj.get("inbox"):
-                    inboxes.add(inbox)
+                if inbox_uri := obj.get("sharedInbox") or obj.get("inbox"):
+                    inboxes.add(cast(str, inbox_uri))
         return inboxes
 
     def _remove_keys(self, obj: JSONObject, predicate: Callable[[str], bool]) -> None:
@@ -148,27 +166,32 @@ class FirmDeliveryService(DeliveryService):
             )
 
     async def _serialize(self, tenant: Tenant, activity: JSONObject) -> JSONObject:
-        message = activity.copy()
+        message = cast(dict, activity).copy()
         message.pop("bto", None)
         message.pop("bcc", None)
         self._remove_keys(message, lambda k: k.startswith("firm:"))
         # TODO Define message/property specific serialization
         # (selected object embedding, collection paging, etc.)
         if isinstance(activity.get("object"), str) and "Follow" not in get_types(activity):
-            obj = await tenant.public_store.get(activity["object"])
-            if obj:
-                message["object"] = obj
+            uri = get_id(activity["object"])
+            if uri:
+                obj = await tenant.public_store.get(uri)
+                if obj:
+                    message["object"] = obj
         return message
 
     async def deliver(
         self,
         tenant: Tenant,
-        all_tenants: dict[str, Tenant],
+        all_tenants: Mapping[str, Tenant],
         activity: JSONObject,
     ) -> None:
         # TODO Delivery - Handle failures and redelivery
-        actor = await tenant.public_store.get(activity["actor"])
-        key_uri = actor.get("publicKey", {}).get("id")
+        actor = await tenant.public_store.get(cast(str, activity["actor"]))
+        if not actor:
+            log.error("Actor not found for activity: %s", activity["actor"])
+            return
+        key_uri = get_id(actor.get("publicKey", {}))
         if not key_uri:
             log.error("No key for actor %s", actor["id"])
             return
@@ -178,7 +201,10 @@ class FirmDeliveryService(DeliveryService):
                 "attributedTo": actor["id"],
             }
         )
-        private_key_pem = credentials.get(FIRM_NS.privateKey.value)
+        if not credentials:
+            log.error("No credentials found for actor %s", actor["id"])
+            return
+        private_key_pem = cast(str, credentials.get(FIRM_NS.privateKey.value))
         if not private_key_pem:
             log.error("No private key found for actor %s", actor["id"])
             return
@@ -198,10 +224,16 @@ class FirmDeliveryService(DeliveryService):
                 target_tenant = (
                     tenant if inbox_prefix == tenant.prefix else all_tenants.get(inbox_prefix)
                 )
+                if not target_tenant:
+                    log.error(f"Unknown tenant for inbox {inbox_uri}")
+                    continue
                 store = target_tenant.public_store
                 inbox = await store.get(inbox_uri)
-                items = inbox.get("orderedItems", [])
-                items.insert(0, activity["id"])
+                if not inbox:
+                    log.error(f"Inbox not found: {inbox_uri}")
+                    continue
+                items = cast(list[JSONObject | str], inbox.get("orderedItems", []))
+                items.insert(0, cast(str, activity["id"]))
                 inbox["orderedItems"] = items
                 await store.put(inbox)
             else:
@@ -242,45 +274,46 @@ class MimeTypeRoute(Route):
         return super().matches(scope) if self._matches_mimetype(scope) else (Match.NONE, scope)
 
 
-def _rdf_search(store: RdfResourceStore) -> HttpResponse:
-    # TODO RDF - support named graphs for search
-    search_engine = RdfSearchEngine(store.graph)
-    search_engine.add_index(
-        IndexedResource(
-            "https://www.w3.org/ns/activitystreams#Note",
-            [
-                "https://www.w3.org/ns/activitystreams#content",
-                "https://www.w3.org/ns/activitystreams#summary",
-            ],
-            [
-                "https://www.w3.org/ns/activitystreams#content",
-                "https://www.w3.org/ns/activitystreams#summary",
-            ],
-        )
-    )
-    search_engine.add_index(
-        IndexedResource(
-            "https://www.w3.org/ns/activitystreams#Person",
-            [
-                "https://www.w3.org/ns/activitystreams#summary",
-            ],
-            [
-                "https://www.w3.org/ns/activitystreams#summary",
-                "https://www.w3.org/ns/activitystreams#name",
-                "https://www.w3.org/ns/activitystreams#preferredUsername",
-            ],
-        )
-    )
-    log.info("Indexing RDF store")
-    search_engine.update_index()
+# def _rdf_search(store: RdfResourceStore) -> HttpResponse:
+#     # TODO RDF - support named graphs for search
+#     search_engine = RdfSearchEngine(store.graph)
+#     search_engine.add_index(
+#         IndexedResource(
+#             "https://www.w3.org/ns/activitystreams#Note",
+#             [
+#                 "https://www.w3.org/ns/activitystreams#content",
+#                 "https://www.w3.org/ns/activitystreams#summary",
+#             ],
+#             [
+#                 "https://www.w3.org/ns/activitystreams#content",
+#                 "https://www.w3.org/ns/activitystreams#summary",
+#             ],
+#         )
+#     )
+#     search_engine.add_index(
+#         IndexedResource(
+#             "https://www.w3.org/ns/activitystreams#Person",
+#             [
+#                 "https://www.w3.org/ns/activitystreams#summary",
+#             ],
+#             [
+#                 "https://www.w3.org/ns/activitystreams#summary",
+#                 "https://www.w3.org/ns/activitystreams#name",
+#                 "https://www.w3.org/ns/activitystreams#preferredUsername",
+#             ],
+#         )
+#     )
+#     log.info("Indexing RDF store")
+#     search_engine.update_index()
 
-    def _search(request: HttpRequest) -> HttpResponse:
-        return JSONResponse(
-            search_engine.search(request.query_params["q"]),
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
+#     def _search(request: HttpRequest) -> HttpResponse:
+#         q = request.query_params["q"]
+#         return JSONResponse(
+#             search_engine.search(q[0] if q else ""),
+#             headers={"Access-Control-Allow-Origin": "*"},
+#         )
 
-    return _search
+#     return _search
 
 
 @dataclass
@@ -292,7 +325,7 @@ class SearchTerm:
 async def _filesystem_search(request: HttpRequest) -> HttpResponse:
     tenant = request.state.tenant
 
-    query = request.query_params.get("q", "")
+    query = request.query_params.get("q", [""])[0].strip()
 
     term_pattern = r'(?:(\w+):)?(?:"([^"]+)"|(\S+))'
     terms = []
@@ -317,7 +350,7 @@ async def _filesystem_search(request: HttpRequest) -> HttpResponse:
             actor_matches = matches["actors"]
             for actor in actors:
                 for p in ["name", "preferredUsername", "summary"]:
-                    if term.value in actor.get(p, "").lower():
+                    if term.value in cast(str, actor.get(p, "")).lower():
                         actor_matches[actor["id"]] = actor
                         if len(actor_matches) >= 20:
                             break
@@ -331,7 +364,7 @@ async def _filesystem_search(request: HttpRequest) -> HttpResponse:
             object_matches = matches["objects"]
             for obj in objects:
                 for p in ["name", "summary", "content"]:
-                    if term.value in obj.get(p, "").lower():
+                    if term.value in cast(str, obj.get(p, "")).lower():
                         object_matches[obj["id"]] = obj
                         if len(object_matches) >= 20:
                             break
@@ -352,7 +385,7 @@ class JsonSchemaValidator(Validator):
     def __init__(self, config: ServerConfig):
         self._validator = create_validator(
             root_schema=config.validation.root_schema,
-            schema_dirs=config.validation.schema_dirs,
+            schema_dirs=[Path(d) for d in config.validation.schema_dirs],
             package_names=["firm.server.schemas"] + config.validation.package_names,
         )
 

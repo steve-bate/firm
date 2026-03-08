@@ -22,7 +22,7 @@ async def add_resource(ctx: Context, file: IO) -> None:
     resource = json.loads(file.read())
     if "id" not in resource:
         raise click.ClickException("Resource missing 'id' field")
-    ctx.get_store(resource["id"]).put(resource)
+    await ctx.get_store(resource["id"]).put(resource)
 
 
 @resource.command("remove")
@@ -31,7 +31,7 @@ async def add_resource(ctx: Context, file: IO) -> None:
 @async_command
 async def remove_resource(ctx: Context, uri: str) -> None:
     """Remove a resource"""
-    ctx.get_store(uri).remove(uri)
+    await ctx.get_store(uri).remove(uri)
 
 
 @resource.command("get")
@@ -55,10 +55,12 @@ async def resource_query(ctx: Context, criteria: str) -> None:
     private_resources = await ctx.get_tenant().private_store.query(query)
     print(
         json.dumps(
-            {
-                "public": public_resources,
-                "private": private_resources,
-            }
+            [
+                {
+                    "public": public_resources,
+                    "private": private_resources,
+                }
+            ]
             + private_resources,
             indent=2,
         )

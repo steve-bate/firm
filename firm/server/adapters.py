@@ -1,4 +1,4 @@
-from typing import Any, AsyncIterable, Generator, Iterable, MutableMapping
+from typing import Any, AsyncIterable, Generator, Iterable, MutableMapping, cast
 
 import httpx
 from starlette.authentication import (
@@ -14,7 +14,6 @@ from firm.core.interfaces import (
     DEFAULT_HTTP_TIMEOUT,
     Authenticator,
     HttpApplication,
-    HttpApplicationState,
     HttpMethod,
     HttpRequest,
     HttpRequestSigner,
@@ -104,7 +103,17 @@ class HttpxRequestAdapter(HttpRequest):
     @property
     def app(self) -> HttpApplication:
         """The application (for getting state)"""
-        return self
+        return self.app
+
+    @property
+    def base_url(self) -> str:
+        """The base URL of the request (scheme + host)."""
+        return self._request.url.origin
+
+    @property
+    def query_params(self) -> dict[str, list[str]]:
+        """The query parameters of the request."""
+        return self._request.url.params.multi_items()
 
 
 class User(BaseUser):
@@ -117,7 +126,7 @@ class User(BaseUser):
 
     @property
     def display_name(self) -> str:
-        return self._identity.actor.get("preferredUsername", "Anonymous")
+        return cast(str, self._identity.actor.get("preferredUsername", "Anonymous"))
 
     @property
     def identity(self) -> str:
@@ -125,7 +134,7 @@ class User(BaseUser):
 
     # awkward naming given starlette property name
     @property
-    def firm_identity(self) -> JSONObject:
+    def firm_identity(self) -> Identity:
         return self._identity
 
 
@@ -192,13 +201,21 @@ class HttpConnectionAdapter(HttpRequest):
         return None
 
     @property
-    def state(self) -> HttpApplicationState:
+    def state(self) -> HttpRequestState:
         return self._conn.state
 
     @property
     def app(self) -> HttpApplication:
         """The application (for getting state)"""
         return self._conn.app
+
+    @property
+    def base_url(self):
+        return self._conn.url.origin
+
+    @property
+    def query_params(self):
+        return self._conn.url.params.multi_items()
 
 
 class AuthenticationBackendAdapter(AuthenticationBackend):
@@ -259,7 +276,7 @@ class HttpxTransport(HttpTransport):
         params: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
         cookies: Mapping[str, str] | None = None,
-        auth: HttpRequestSigner = None,
+        auth: HttpRequestSigner | None = None,
         # proxy: ProxyTypes | None = None,
         # proxies: ProxiesTypes | None = None,
         follow_redirects: bool = False,
