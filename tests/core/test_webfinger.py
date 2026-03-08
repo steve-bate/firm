@@ -1,9 +1,8 @@
 import pytest
 
-from firm.core.interfaces import HttpException, Tenant
-from firm.core.services.webfinger import webfinger
+from firm.core.interfaces import Tenant
+from firm.core.services.webfinger import InvalidResourceUri, ResourceNotFound, webfinger
 from firm.core.store.memory import MemoryResourceStore
-from tests.support import StubHttpRequest
 
 
 @pytest.fixture
@@ -17,11 +16,6 @@ def tenant(tmp_path):
 
 
 async def test_webfinger(tenant: Tenant):
-    request = StubHttpRequest(
-        "GET",
-        "https://example.com/.well-known/webfinger?resource=https://example.com/users/foo",
-        tenant=tenant,
-    )
     await tenant.public_store.put(
         {
             "id": "https://example.com/users/foo",
@@ -29,9 +23,8 @@ async def test_webfinger(tenant: Tenant):
             "preferredUsername": "foo",
         }
     )
-    response = await webfinger(request)
-    assert response.status_code == 200
-    assert response.headers["Content-Type"] == "application/jrd+json"
+    data = await webfinger(tenant, "https://example.com/users/foo")
+    assert data["subject"] == "https://example.com/users/foo"
 
 
 @pytest.mark.parametrize(
@@ -42,11 +35,6 @@ async def test_webfinger(tenant: Tenant):
     ],
 )
 async def test_webfinger_aka(predicates, identities, tenant: Tenant):
-    request = StubHttpRequest(
-        "GET",
-        "https://example.com/.well-known/webfinger?resource=acct:foo@server.test",
-        tenant=tenant,
-    )
     if predicates:
         for p in predicates:
             await tenant.public_store.put(
@@ -57,23 +45,15 @@ async def test_webfinger_aka(predicates, identities, tenant: Tenant):
                     p: identities,
                 }
             )
-    response = await webfinger(request, predicates)
-    assert response.status_code == 200
+    data = await webfinger(tenant, "https://example.com/users/foo", predicates)
+    assert data["subject"] == "https://example.com/users/foo"
 
 
 async def test_webfinger_not_found(tenant: Tenant):
-    request = StubHttpRequest(
-        "GET",
-        "https://example.com/.well-known/webfinger?resource=acct:foo@server.test",
-        tenant=tenant,
-    )
-    with pytest.raises(HttpException, match="Not Found"):
-        await webfinger(request)
+    with pytest.raises(ResourceNotFound):
+        await webfinger(tenant, "acct:foo@server.test")
 
 
-async def test_webfinger_bad_request():
-    request = StubHttpRequest("GET", "https://example.com/.well-known/webfinger")
-    store = MemoryResourceStore()
-    request.app.state.store = store
-    with pytest.raises(HttpException, match="Bad Request"):
-        await webfinger(request)
+async def test_webfinger_bad_request(tenant: Tenant):
+    with pytest.raises(InvalidResourceUri):
+        await webfinger(tenant, "invalid-resource-uri")

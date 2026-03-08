@@ -1,40 +1,40 @@
 import re
-from http import HTTPStatus
 
 from firm.core.interfaces import (
     FIRM_NS,
-    HttpException,
-    HttpRequest,
-    JsonResponse,
+    JSONObject,
     ResourceStore,
-    get_query_params,
+    Tenant,
 )
+from firm.core.services.exception import MissingStore, ServiceException
 from firm.core.util import is_type
 
 _RESOURCE_REGEX = re.compile("(?:.*?):[@~]?([^@]+)@?(.*)")
 _SERVER_REL = "https://www.w3.org/ns/activitystreams#Service"
 
 
-async def webfinger(request: HttpRequest, aka_predicates: list[str] | None = None) -> JsonResponse:
-    resource_params: list[str] | None = get_query_params(request.url).get("resource")
-    if resource_params is None or len(resource_params) == 0:
-        raise HttpException(
-            HTTPStatus.BAD_REQUEST,
-            detail="Missing resource_uri param",
-        )
-    if len(resource_params) > 1:
-        raise HttpException(
-            HTTPStatus.BAD_REQUEST,
-            detail="Multiple resource_uri params not supported",
-        )
-    resource_uri = resource_params[0]
+class InvalidResourceUri(ServiceException):
+    def __init__(self):
+        super().__init__("Invalid resource_uri format")
+
+
+class ResourceNotFound(ServiceException):
+    def __init__(self, resource_uri: str):
+        super().__init__(f"Resource not found: {resource_uri}")
+
+
+async def webfinger(
+    tenant: Tenant,
+    resource_uri: str,
+    aka_predicates: list[str] | None = None,
+) -> JSONObject:
     m = _RESOURCE_REGEX.match(resource_uri)
     if not m:
-        raise HttpException(HTTPStatus.BAD_REQUEST, "Invalid resource_uri format")
+        raise InvalidResourceUri()
 
-    store: ResourceStore | None = request.state.tenant.public_store
+    store: ResourceStore | None = tenant.public_store
     if not store:
-        raise HttpException(HTTPStatus.INTERNAL_SERVER_ERROR.value, "No store")
+        raise MissingStore()
 
     resource = await store.get(resource_uri)
 
@@ -49,21 +49,18 @@ async def webfinger(request: HttpRequest, aka_predicates: list[str] | None = Non
                 break
 
         if not resource:
-            raise HttpException(HTTPStatus.NOT_FOUND)
+            raise ResourceNotFound(resource_uri)
 
-    return JsonResponse(
-        {
-            "subject": resource_uri,
-            "links": [
-                {
-                    "rel": _SERVER_REL if is_type(resource, FIRM_NS.Tenant) else "self",
-                    "type": "application/activity+json",
-                    "href": resource["id"],
-                    "properties": {
-                        "https://www.w3.org/ns/activitystreams#type": resource["type"],
-                    },
-                }
-            ],
-        },
-        headers={"Content-Type": "application/jrd+json"},
-    )
+    return {
+        "subject": resource_uri,
+        "links": [
+            {
+                "rel": _SERVER_REL if is_type(resource, FIRM_NS.Tenant) else "self",
+                "type": "application/activity+json",
+                "href": resource["id"],
+                "properties": {
+                    "https://www.w3.org/ns/activitystreams#type": resource["type"],
+                },
+            }
+        ],
+    }

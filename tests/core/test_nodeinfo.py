@@ -1,21 +1,19 @@
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
-from firm.core.interfaces import Tenant
+from firm.core.interfaces import JSONObject, Tenant
 from firm.core.services.nodeinfo import nodeinfo_index, nodeinfo_version
 from firm.core.store.memory import MemoryResourceStore
 from firm.core.util import get_version
-from tests.support import StubHttpRequest
 
 
 async def test_nodeinfo_index():
-    request = StubHttpRequest("GET", "https://example.com/.well-known/nodeinfo")
-    store = MemoryResourceStore()
-    request.app.state.store = store
-    response = await nodeinfo_index(request)
-    assert response.status_code == 200
-    assert response.headers["Content-Type"] == "application/jrd+json"
+    # request = StubHttpRequest("GET", "https://example.com/.well-known/nodeinfo")
+    # store = MemoryResourceStore()
+    # request.app.state.store = store
+    data = await nodeinfo_index(request_url="https://example.com/.well-known/nodeinfo")
+    assert data[0]["links"][0]["rel"] == "http://nodeinfo.diaspora.software/ns/schema/2.0"
 
 
 @pytest.fixture
@@ -29,15 +27,10 @@ def tenant(tmp_path):
 
 
 async def test_nodeinfo_version(tenant: Tenant):
-    request = StubHttpRequest(
-        "GET", "https://example.com/nodeinfo/2.1", path_params={"version": "2.0"}, tenant=tenant
-    )
-    response = await nodeinfo_version(request)
-    assert response.status_code == 200
-    assert response.headers["Content-Type"] == "application/json"
-    data = cast(dict[str, Any], response.json)
-    assert data["software"]["name"] == "firm"
-    assert data["software"]["version"] == get_version("firm")
+    data = await nodeinfo_version(tenant, version="2.0")
+    software = cast(JSONObject, data["software"])
+    assert software["name"] == "firm"
+    assert software["version"] == get_version("firm")
 
 
 # TODO Add test for custom nodeinfo
@@ -49,11 +42,6 @@ async def test_custom_metadata(tenant: Tenant):
             "metadata": {"custom": "This is a custom nodeinfo metadata"},
         }
     )
-    request = StubHttpRequest(
-        "GET", "https://example.com/nodeinfo/2.0", path_params={"version": "2.0"}, tenant=tenant
-    )
-    response = await nodeinfo_version(request)
-    assert response.status_code == 200
-    assert response.headers["Content-Type"] == "application/json"
-    data = cast(dict[str, Any], response.json)
-    assert data["metadata"]["custom"] == "This is a custom nodeinfo metadata"
+    data = await nodeinfo_version(tenant, version="2.0")
+    metadata = cast(JSONObject, data["metadata"])
+    assert str(metadata["custom"]) == "This is a custom nodeinfo metadata"

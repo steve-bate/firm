@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
+from http import HTTPStatus
 from pathlib import Path
 from typing import Awaitable, Callable, cast
 
@@ -24,10 +25,15 @@ from firm.core.interfaces import (
     PlainTextResponse,
     Principal,
     Validator,
+    get_query_params,
 )
 from firm.core.services.activitypub import ActivityPubService
-from firm.core.services.nodeinfo import nodeinfo_index, nodeinfo_version
-from firm.core.services.webfinger import webfinger
+from firm.core.services.nodeinfo import (
+    UnsupportedNodeInfoVersion,
+    nodeinfo_index,
+    nodeinfo_version,
+)
+from firm.core.services.webfinger import InvalidResourceUri, ResourceNotFound, webfinger
 from firm.core.util import (
     AS2_CONTENT_TYPES,
 )
@@ -345,12 +351,48 @@ class DynamicRouter:
         return Response(status_code=406)
 
 
+async def nodeinfo_index_endpoint(request: Request) -> Response:
+    data = await nodeinfo_index(str(request.base_url))
+    return JSONResponse(data, media_type="application/jrd+json")
+
+
+async def nodeinfo_version_endpoint(request: Request, version: str) -> Response:
+    tenant = request.state.tenant
+    try:
+        return JSONResponse(await nodeinfo_version(tenant, version))
+    except UnsupportedNodeInfoVersion as e:
+        raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
+
+
+async def webfinger_endpoint(request: Request) -> Response:
+    resource_params: list[str] | None = get_query_params(request.url).get("resource")
+    if resource_params is None or len(resource_params) == 0:
+        raise HTTPException(
+            HTTPStatus.BAD_REQUEST,
+            detail="Missing resource_uri param",
+        )
+    if len(resource_params) > 1:
+        raise HTTPException(
+            HTTPStatus.BAD_REQUEST,
+            detail="Multiple resource_uri params not supported",
+        )
+    resource_uri = resource_params[0]
+    try:
+        data = await webfinger(request.state.tenant, resource_uri)
+        return JSONResponse(data, media_type="application/jrd+json")
+    except InvalidResourceUri as e:
+        raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
+    except ResourceNotFound as e:
+        raise HTTPException(HTTPStatus.NOT_FOUND, detail=str(e))
+
+
 def create_router(config: ServerConfig) -> APIRouter:
     router = APIRouter()
 
-    router.add_api_route("/.well-known/webfinger", _adapt_endpoint(webfinger), methods=["GET"])
-    router.add_api_route("/.well-known/nodeinfo", _adapt_endpoint(nodeinfo_index), methods=["GET"])
-    router.add_api_route("/nodeinfo/{version}", _adapt_endpoint(nodeinfo_version), methods=["GET"])
+    router.add_api_route("/.well-known/nodeinfo", nodeinfo_index_endpoint, methods=["GET"])
+    router.add_api_route("/nodeinfo/{version}", nodeinfo_version_endpoint, methods=["GET"])
+
+    router.add_api_route("/.well-known/webfinger", webfinger_endpoint, methods=["GET"])
     router.add_api_route("/static/{file_path:path}", html_static_endpoint, methods=["GET"])
     router.add_api_route("/proxy", _adapt_endpoint(proxy, protected=True), methods=["POST"])
 

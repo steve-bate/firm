@@ -81,11 +81,12 @@ class Url(Protocol):
     def port(self) -> int: ...
 
 
-def get_query_params(url: Url) -> dict[str, list[str]]:
-    return parse_qs(url.query)
+def get_query_params(url: Url | str) -> dict[str, list[str]]:
+    qs = urlparse(url).query if isinstance(url, str) else url.query
+    return parse_qs(qs)
 
 
-def get_uri_prefix(uri: str | Url) -> str:
+def get_uri_prefix(uri: Url | str) -> str:
     if isinstance(uri, str):
         parts = urlparse(uri)
         return f"{parts.scheme}://{parts.netloc}"
