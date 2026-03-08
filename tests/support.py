@@ -19,6 +19,7 @@ from firm.core.interfaces import (
     Url,
 )
 from firm.core.store.memory import MemoryResourceStore
+from firm.server.config import MemoryStoreConfig, ServerConfig
 
 
 class StubUrl:
@@ -140,8 +141,7 @@ class StubDeliveryService(DeliveryService):
         tenant: Tenant,
         all_tenants: Mapping[str, Tenant],
         activity: JSONObject,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 class StubState(HttpApplicationState):
@@ -173,6 +173,11 @@ class StubState(HttpApplicationState):
     def tenants(self) -> Mapping[str, Tenant]:
         """Mapping of tenant URIs to Tenant objects."""
         return {}
+
+    @property
+    def config(self) -> ServerConfig:
+        """Application configuration settings."""
+        return ServerConfig([], store=MemoryStoreConfig())
 
 
 class StubApplication(HttpApplication):
@@ -345,3 +350,19 @@ class StubHttpRequest(HttpRequest):
     @property
     def app(self) -> StubApplication:
         return self._app
+
+    @property
+    def base_url(self):
+        return self._url.scheme + "://" + self._url.netloc
+
+    @property
+    def query_params(self) -> dict[str, list[str]]:
+        """The query parameters extracted from the request URL."""
+        if not self._url.query:
+            return {}
+        return {
+            k: [v]
+            for k, v in (
+                param.split("=", 1) for param in self._url.query.split("&") if "=" in param
+            )
+        }

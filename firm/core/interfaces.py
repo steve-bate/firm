@@ -224,6 +224,7 @@ class HttpRequest(Protocol):
     @property
     def base_url(self) -> str:
         """The base URL of the request (scheme + host)."""
+        #
         ...
 
     def content(self) -> bytes | None:

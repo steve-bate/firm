@@ -196,7 +196,7 @@ class HttpConnectionAdapter(HttpRequest):
     @property
     def auth(self) -> Identity | None:
         """The authentication credentials provided with the request."""
-        if isinstance(self._conn, Request) and self._conn.user.is_authenticated:
+        if isinstance(self._conn, Request) and self._conn.user and self._conn.user.is_authenticated:
             return self._conn.user.firm_identity
         return None
 
@@ -216,6 +216,10 @@ class HttpConnectionAdapter(HttpRequest):
     @property
     def query_params(self):
         return self._conn.url.params.multi_items()
+
+    @property
+    def connection(self):
+        return self._conn
 
 
 class AuthenticationBackendAdapter(AuthenticationBackend):

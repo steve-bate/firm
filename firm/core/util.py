@@ -54,7 +54,9 @@ ACTIVITIES_REQUIRING_TARGET = {
 }
 
 
-def is_public(resource: JSONObject) -> bool:
+def is_public(resource: JSONObject | str) -> bool:
+    if isinstance(resource, str):
+        return resource in AP_PUBLIC_URIS
     for key in ["to", "cc", "bto", "bcc", "audience"]:
         if key in resource:
             for uri in AP_PUBLIC_URIS:
@@ -170,3 +172,7 @@ def get_prefix_uri(uri: str, scheme_override: str | None = None) -> str:
     """Get the instance "prefix" for the uri"""
     url = urlparse(uri)
     return f"{scheme_override or url.scheme}://{url.netloc}"
+
+
+def is_collection(obj: JSONObject) -> bool:
+    return obj.get("type") in ["Collection", "OrderedCollection"]

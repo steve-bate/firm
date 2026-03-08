@@ -6,13 +6,12 @@ from urllib.parse import urlparse
 
 import uvicorn
 from click import Path
-from fastapi import HTTPException
-from starlette.applications import Starlette
-from starlette.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from firm.core.interfaces import FIRM_NS, ResourceStore, Tenant
 from firm.server.config import FileStoreConfig, ServerConfig, StorageKind
-from firm.server.routes import get_routes
+from firm.server.routes import create_router
 
 log = logging.getLogger(__name__ if __name__ != "__main__" else "firm.server.main")
 
@@ -100,7 +99,7 @@ def get_tenant_uri(scope):
 
 
 class TenantMiddleware:
-    def __init__(self, app: Starlette):
+    def __init__(self, app: FastAPI):
         self.app = app
 
     async def __call__(self, scope, receive, send):
@@ -117,7 +116,7 @@ class TenantMiddleware:
         await self.app(scope, receive, send)
 
 
-def app_factory(config: ServerConfig) -> Starlette:
+def app_factory(config: ServerConfig) -> FastAPI:
     global _app
     if _app is None:
 
@@ -147,7 +146,8 @@ def app_factory(config: ServerConfig) -> Starlette:
 
             log.info("ASGI lifespan: stopping")
 
-        _app = Starlette(routes=get_routes(config), lifespan=lifespan)
+        _app = FastAPI(lifespan=lifespan)
+        _app.include_router(create_router(config))
 
         log.info("Adding CORS middleware")
 
@@ -179,7 +179,7 @@ class FirmServer(uvicorn.Server):
 
 
 async def async_run(config: ServerConfig, verbose: bool, kwargs) -> None:
-    def app_factory_with_context() -> Starlette:
+    def app_factory_with_context() -> FastAPI:
         return app_factory(config)
 
     try:

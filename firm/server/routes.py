@@ -1,55 +1,42 @@
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable, Iterable, Mapping, cast
+from typing import Awaitable, Callable, cast
 
-import httpx
 import mimeparse
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from jsonschema.exceptions import ValidationError
-from starlette.exceptions import HTTPException
-from starlette.middleware import Middleware
-from starlette.middleware.authentication import AuthenticationMiddleware
-from starlette.requests import Request
-from starlette.responses import JSONResponse
-from starlette.responses import PlainTextResponse as StarlettePlainTextResponse
-from starlette.responses import Response
-from starlette.routing import Match, Route, Scope
 
 from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.auth.bearer_token import BearerTokenAuthenticator
 from firm.core.auth.chained import AuthenticatorChain
-from firm.core.auth.http_signature import HttpSigAuthenticator, HttpSignatureAuth
+from firm.core.auth.http_signature import HttpSigAuthenticator
 from firm.core.interfaces import (
-    FIRM_NS,
-    DeliveryService,
     HttpException,
     HttpRequest,
     HttpResponse,
+    Identity,
     JSONObject,
     JsonResponse,
     PlainTextResponse,
-    ResourceStore,
-    Tenant,
+    Principal,
     Validator,
 )
 from firm.core.services.activitypub import ActivityPubService
 from firm.core.services.nodeinfo import nodeinfo_index, nodeinfo_version
 from firm.core.services.webfinger import webfinger
 from firm.core.util import (
-    AP_PUBLIC_URIS,
     AS2_CONTENT_TYPES,
-    get_id,
-    get_prefix_uri,
-    get_types,
 )
 from firm.jsonschema.validation import create_validator
 from firm.server.adapters import (
-    AuthenticationBackendAdapter,
     HttpConnectionAdapter,
-    HttpxAuthAdapter,
 )
 from firm.server.config import ServerConfig, StorageKind
+from firm.server.delivery import FirmDeliveryService
 from firm.server.html.endpoint import html_endpoint, html_static_endpoint
 
 from .proxy import proxy
@@ -61,17 +48,26 @@ def _adapt_response(r: HttpResponse) -> Response:
     if isinstance(r, JsonResponse):
         return JSONResponse(r.json, status_code=r.status_code, headers=r.headers)
     if isinstance(r, PlainTextResponse):
-        return StarlettePlainTextResponse(r.content, status_code=r.status_code, headers=r.headers)
+        return PlainTextResponse(r.content, status_code=r.status_code, headers=r.headers)
     return Response(status_code=r.status_code, headers=r.headers, content=r.body)
+
+
+_auth_chain = AuthenticatorChain([BearerTokenAuthenticator(), HttpSigAuthenticator()])
+
+
+async def get_principal(request: Request) -> Identity | None:
+    return await _auth_chain.authenticate(HttpConnectionAdapter(request))
 
 
 def _adapt_endpoint(
     method: Callable[[HttpRequest], Awaitable[HttpResponse]],
-    authenticated=False,
-) -> Response:
-    async def wrapper(request: Request):
+    protected=False,
+) -> Callable:
+    async def wrapper(
+        request: Request,
+    ):
         try:
-            if authenticated and not request.user.is_authenticated:
+            if protected and not request.user:
                 raise HTTPException(401)
             return _adapt_response(await method(HttpConnectionAdapter(request)))
         except HttpException as e:
@@ -80,198 +76,37 @@ def _adapt_endpoint(
     return wrapper
 
 
-# TODO Move is_collection to util (maybe firm core)
-def is_collection(obj: JSONObject) -> bool:
-    return obj.get("type") in ["Collection", "OrderedCollection"]
-
-
-def is_public(uri: str):
-    return uri in AP_PUBLIC_URIS
-
-
-def _get_uris(items: list[JSONObject | str]) -> list[str]:
-    uris: list[str] = []
-    for item in items:
-        if isinstance(item, str):
-            uris.append(item)
-        elif isinstance(item, dict) and "id" in item:
-            uris.append(cast(str, item["id"]))
-    return uris
-
-
 # TODO Consider redesign of FirmDeliveryService (abstract class?)
-class FirmDeliveryService(DeliveryService):
-    _RECIPIENT_PROPS = ["to", "cc", "bto", "bcc"]
+# class MimeTypeRoute(Route):
+#     def __init__(self, *args, **kwargs):
+#         self._mimetypes = kwargs.pop("mimetypes", None)
+#         self._not_mimetypes = kwargs.pop("ignored_mimetypes", None)
+#         super().__init__(*args, **kwargs)
 
-    def __init__(self, config: ServerConfig):
-        self._config = config
+#     @staticmethod
+#     def _get_header(scope: Scope, name: bytes) -> str | None:
+#         for key, value in scope["headers"]:
+#             if key == name:
+#                 return value.decode()
+#         return ""
 
-    async def _resolve_inboxes(
-        self,
-        store: ResourceStore,
-        recipient_uris: Iterable[str],
-    ) -> set[str]:
-        inboxes = set()
-        for uri in recipient_uris:
-            if is_public(uri):
-                continue
-            obj = await store.get(uri)
-            if not obj:
-                continue
-            if is_collection(obj):  # TODO Expand server-local collections for inboxes
-                # ... and self._store.is_local(uri):
-                if items := cast(
-                    list[JSONObject | str], obj.get("items") or obj.get("orderedItems")
-                ):
-                    for item in await self._resolve_inboxes(store, _get_uris(items)):
-                        inboxes.add(item)
-            else:
-                if inbox_uri := obj.get("sharedInbox") or obj.get("inbox"):
-                    inboxes.add(cast(str, inbox_uri))
-        return inboxes
+#     def _matches_mimetype(self, scope: Scope) -> bool:
+#         if scope["method"] in ["GET", "HEAD"]:
+#             if accepted_types := self._get_header(scope, b"accept"):
+#                 if self._not_mimetypes and any(t in accepted_types for t in self._not_mimetypes):
+#                     # TODO Routing - Find a better way to handle bypassed mimetypes
+#                     return False
+#                 return self._mimetypes is None or mimeparse.best_match(
+#                     self._mimetypes, accepted_types
+#                 )
+#             raise HTTPException(400, "No accept header")
+#         elif content_type := self._get_header(scope, b"content-type"):
+#             return self._mimetypes is None or content_type in self._mimetypes
+#         else:
+#             raise HTTPException(400, "No content-type header")
 
-    def _remove_keys(self, obj: JSONObject, predicate: Callable[[str], bool]) -> None:
-        for key, value in obj.items():
-            if key.startswith("firm:"):
-                obj.pop(key)
-            else:
-                if isinstance(value, list):
-                    for item in value:
-                        if isinstance(item, dict):
-                            self._remove_keys(item, predicate)
-                else:
-                    if isinstance(value, dict):
-                        self._remove_keys(value, predicate)
-
-    async def _post(
-        self,
-        inbox: str,
-        /,
-        message: JSONObject,
-        auth: HttpSignatureAuth,
-    ) -> None:
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.post(
-                    inbox,
-                    json=message,
-                    headers={"Content-Type": "application/activity+json"},
-                    auth=HttpxAuthAdapter(auth),
-                )
-            except Exception as e:
-                log.error(f"Error posting to {inbox}: {e}")
-                return
-            log.info(
-                f"FirmDeliveryService POST {inbox} " f"{response.status_code} text={response.text}"
-            )
-
-    async def _serialize(self, tenant: Tenant, activity: JSONObject) -> JSONObject:
-        message = cast(dict, activity).copy()
-        message.pop("bto", None)
-        message.pop("bcc", None)
-        self._remove_keys(message, lambda k: k.startswith("firm:"))
-        # TODO Define message/property specific serialization
-        # (selected object embedding, collection paging, etc.)
-        if isinstance(activity.get("object"), str) and "Follow" not in get_types(activity):
-            uri = get_id(activity["object"])
-            if uri:
-                obj = await tenant.public_store.get(uri)
-                if obj:
-                    message["object"] = obj
-        return message
-
-    async def deliver(
-        self,
-        tenant: Tenant,
-        all_tenants: Mapping[str, Tenant],
-        activity: JSONObject,
-    ) -> None:
-        # TODO Delivery - Handle failures and redelivery
-        actor = await tenant.public_store.get(cast(str, activity["actor"]))
-        if not actor:
-            log.error("Actor not found for activity: %s", activity["actor"])
-            return
-        key_uri = get_id(actor.get("publicKey", {}))
-        if not key_uri:
-            log.error("No key for actor %s", actor["id"])
-            return
-        credentials = await tenant.private_store.query_one(
-            {
-                "type": FIRM_NS.Credentials.value,
-                "attributedTo": actor["id"],
-            }
-        )
-        if not credentials:
-            log.error("No credentials found for actor %s", actor["id"])
-            return
-        private_key_pem = cast(str, credentials.get(FIRM_NS.privateKey.value))
-        if not private_key_pem:
-            log.error("No private key found for actor %s", actor["id"])
-            return
-        auth = HttpSignatureAuth(key_uri, private_key_pem)
-        recipient_uris: set[str] = set()
-        for prop in self._RECIPIENT_PROPS:
-            if r := activity.get(prop):
-                if isinstance(r, str):
-                    recipient_uris.add(r)
-                elif isinstance(r, list):
-                    recipient_uris.update(r)
-        inboxes = await self._resolve_inboxes(tenant.public_store, recipient_uris)
-        message = None
-        for inbox_uri in inboxes:
-            if self._config.is_local(inbox_uri):
-                inbox_prefix = get_prefix_uri(inbox_uri)
-                target_tenant = (
-                    tenant if inbox_prefix == tenant.prefix else all_tenants.get(inbox_prefix)
-                )
-                if not target_tenant:
-                    log.error(f"Unknown tenant for inbox {inbox_uri}")
-                    continue
-                store = target_tenant.public_store
-                inbox = await store.get(inbox_uri)
-                if not inbox:
-                    log.error(f"Inbox not found: {inbox_uri}")
-                    continue
-                items = cast(list[JSONObject | str], inbox.get("orderedItems", []))
-                items.insert(0, cast(str, activity["id"]))
-                inbox["orderedItems"] = items
-                await store.put(inbox)
-            else:
-                if message is None:
-                    message = await self._serialize(tenant, activity)
-                await self._post(inbox_uri, message=message, auth=auth)
-
-
-class MimeTypeRoute(Route):
-    def __init__(self, *args, **kwargs):
-        self._mimetypes = kwargs.pop("mimetypes", None)
-        self._not_mimetypes = kwargs.pop("ignored_mimetypes", None)
-        super().__init__(*args, **kwargs)
-
-    @staticmethod
-    def _get_header(scope: Scope, name: bytes) -> str | None:
-        for key, value in scope["headers"]:
-            if key == name:
-                return value.decode()
-        return ""
-
-    def _matches_mimetype(self, scope: Scope) -> bool:
-        if scope["method"] in ["GET", "HEAD"]:
-            if accepted_types := self._get_header(scope, b"accept"):
-                if self._not_mimetypes and any(t in accepted_types for t in self._not_mimetypes):
-                    # TODO Routing - Find a better way to handle bypassed mimetypes
-                    return False
-                return self._mimetypes is None or mimeparse.best_match(
-                    self._mimetypes, accepted_types
-                )
-            raise HTTPException(400, "No accept header")
-        elif content_type := self._get_header(scope, b"content-type"):
-            return self._mimetypes is None or content_type in self._mimetypes
-        else:
-            raise HTTPException(400, "No content-type header")
-
-    def matches(self, scope: Scope) -> tuple[Match, Scope]:
-        return super().matches(scope) if self._matches_mimetype(scope) else (Match.NONE, scope)
+#     def matches(self, scope: Scope) -> tuple[Match, Scope]:
+#         return super().matches(scope) if self._matches_mimetype(scope) else (Match.NONE, scope)
 
 
 # def _rdf_search(store: RdfResourceStore) -> HttpResponse:
@@ -397,61 +232,155 @@ class JsonSchemaValidator(Validator):
             raise HttpException(400, e.message)
 
 
-def get_routes(config: ServerConfig):
+# def with_middleware(
+#     handler: Callable[[Request], Awaitable[Response]],
+#     *middlewares: Middleware,
+# ) -> Callable[[Request], Awaitable[Response]]:
+#     """Wraps a handler with one or more Starlette Middleware instances, outermost first.
+#     Builds the ASGI middleware chain once at setup time.
+#     """
+
+#     async def handler_app(scope, receive, send):
+#         """Bridge: converts a Request->Response handler into an ASGI (scope, receive, send) app."""
+#         scope["auth"] = scope["user"] # FIXME HACK!
+#         request = Request(scope, receive, send)
+#         response = lambda scope, receive, send: handler(request)
+#         await response(scope, receive, send)
+
+#     # Build the chain once — not per-request
+#     app = handler_app
+#     for middleware in reversed(middlewares):
+#         app = middleware.cls(app, **middleware.kwargs)
+
+#     async def wrapped(request: Request) -> Response:
+#         response_parts: dict = {}
+
+#         async def send_interceptor(message):
+#             if message["type"] == "http.response.start":
+#                 response_parts["status"] = message["status"]
+#                 response_parts["headers"] = message.get("headers", [])
+#             elif message["type"] == "http.response.body":
+#                 response_parts["body"] = message.get("body", b"")
+
+#         await app(request.connection.scope, request.connection.receive, send_interceptor)
+
+#         return Response(
+#             content=response_parts.get("body", b""),
+#             status_code=response_parts.get("status", 200),
+#             headers={k.decode(): v.decode() for k, v in response_parts.get("headers", [])},
+#         )
+
+#     return wrapped
+
+
+RequestPredicate = Callable[[Request], bool]
+RequestHandler = Callable[[Request], Awaitable[Response]]
+AllowedMethods = list[str] | tuple[str, ...]
+
+_AS2_CONTENT_TYPES = set(AS2_CONTENT_TYPES)
+
+
+def accepts_activitypub(request: Request) -> bool:
+    """Returns True only if the accept header explicitly names an ActivityPub MIME type.
+    Wildcard types like */* are ignored so browser requests route to HTML."""
+    accepted = request.headers.get("accept", "")
+    split_header = [h for h in accepted.split(",") if h]
+    parsed_header = [mimeparse.parse_media_range(r) for r in split_header]
+    explicit = {f"{t}/{s}" for t, s, _ in parsed_header if t != "*" and s != "*"}
+    return bool(explicit & _AS2_CONTENT_TYPES)
+
+
+def has_content_type(request, content_types):
+    content_type = request.headers.get("content-type", "").split(";")[0].strip()
+    return content_type in content_types
+
+
+@dataclass
+class RoutingRule:
+    predicate: RequestPredicate
+    handler: RequestHandler
+    allowed_methods: AllowedMethods = ("GET",)
+
+    async def matches(self, request: Request) -> bool:
+        return self.predicate(request) and request.method in self.allowed_methods
+
+
+class DynamicRouter:
+    """Dispatches a request to the first handler whose predicate matches."""
+
+    def __init__(self, rules: list[RoutingRule] | None = None):
+        self._rules: list[RoutingRule] = rules or []
+        self._default: RequestHandler | None = None
+        self._is_coroutine = asyncio.coroutines._is_coroutine  # type: ignore[attr-defined]
+
+    def register(
+        self,
+        rule: RoutingRule,
+    ) -> "DynamicRouter":
+        self._rules.append(rule)
+        return self
+
+    def default(self, handler: RequestHandler) -> "DynamicRouter":
+        self._default = handler
+        return self
+
+    async def __call__(
+        self, request: Request, principal: Principal = Depends(get_principal)
+    ) -> Response:
+        request.scope["user"] = principal
+        for rule in self._rules:
+            if rule.predicate(request) and request.method in rule.allowed_methods:
+                log.debug(
+                    "Dispatching %s %s via %s",
+                    request.method,
+                    request.url.path,
+                    rule.handler.__name__ if hasattr(rule.handler, "__name__") else rule.handler,
+                )
+                return await rule.handler(request)
+
+        if self._default is not None:
+            return await self._default(request)
+
+        log.warning("No handler matched for %s %s", request.method, request.url.path)
+        return Response(status_code=406)
+
+
+def create_router(config: ServerConfig) -> APIRouter:
+    router = APIRouter()
+
+    router.add_api_route("/.well-known/webfinger", _adapt_endpoint(webfinger), methods=["GET"])
+    router.add_api_route("/.well-known/nodeinfo", _adapt_endpoint(nodeinfo_index), methods=["GET"])
+    router.add_api_route("/nodeinfo/{version}", _adapt_endpoint(nodeinfo_version), methods=["GET"])
+    router.add_api_route("/static/{file_path:path}", html_static_endpoint, methods=["GET"])
+    router.add_api_route("/proxy", _adapt_endpoint(proxy, protected=True), methods=["POST"])
+
     validator = JsonSchemaValidator(config)
-    activitypub_service = ActivityPubService(
+
+    ap_service = ActivityPubService(
         authorizer=CoreAuthorizationService(),
         delivery_service=FirmDeliveryService(config),
         validator=validator,
     )
-    routes = [
-        Route("/.well-known/webfinger", endpoint=_adapt_endpoint(webfinger)),
-        Route("/.well-known/nodeinfo", endpoint=_adapt_endpoint(nodeinfo_index)),
-        Route("/nodeinfo/{version}", endpoint=_adapt_endpoint(nodeinfo_version)),
-        Route(
-            "/proxy",
-            endpoint=_adapt_endpoint(proxy),
-            methods=["POST"],
-            middleware=[
-                Middleware(
-                    AuthenticationMiddleware,
-                    backend=AuthenticationBackendAdapter(
-                        AuthenticatorChain(
-                            [
-                                BearerTokenAuthenticator(),
-                                HttpSigAuthenticator(),
-                            ]
-                        ),
-                    ),
-                )
-            ],
+
+    router.add_api_route(
+        "/{path:path}",
+        DynamicRouter(
+            [
+                RoutingRule(
+                    predicate=lambda req: not accepts_activitypub(req),
+                    handler=html_endpoint,
+                    allowed_methods=["GET", "HEAD"],
+                ),
+                RoutingRule(
+                    predicate=lambda req: accepts_activitypub(req)
+                    or has_content_type(req, AS2_CONTENT_TYPES),
+                    handler=_adapt_endpoint(ap_service.process_request),
+                    allowed_methods=["GET", "HEAD", "POST"],
+                ),
+            ]
         ),
-        Route("/static/{file_path:path}", endpoint=html_static_endpoint),
-        MimeTypeRoute(
-            "/{path:path}",
-            endpoint=html_endpoint,
-            ignored_mimetypes=AS2_CONTENT_TYPES,
-        ),
-        MimeTypeRoute(
-            "/{path:path}",
-            endpoint=_adapt_endpoint(activitypub_service.process_request),
-            mimetypes=AS2_CONTENT_TYPES,
-            methods=["GET", "POST"],
-            middleware=[
-                Middleware(
-                    AuthenticationMiddleware,
-                    backend=AuthenticationBackendAdapter(
-                        AuthenticatorChain(
-                            [
-                                BearerTokenAuthenticator(),
-                                HttpSigAuthenticator(),
-                            ]
-                        ),
-                    ),
-                )
-            ],
-        ),
-    ]
+        methods=["GET", "HEAD", "POST"],
+    )
 
     #     if isinstance(store, RdfResourceStore):
     #         log.info("Registering SPARQL endpoint")
@@ -476,6 +405,6 @@ def get_routes(config: ServerConfig):
 
     if config.store.kind == StorageKind.FILESYSTEM:
         log.info("Registering file system search")
-        routes.insert(0, Route("/search", endpoint=_filesystem_search, methods=["GET"]))
+        router.add_api_route("/search", _adapt_endpoint(_filesystem_search), methods=["GET"])
 
-    return routes
+    return router

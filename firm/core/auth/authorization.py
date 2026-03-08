@@ -75,7 +75,11 @@ class CoreAuthorizationService(AuthorizationService):
     async def is_get_authorized(
         self, tenant: Tenant, principal: Identity | None, resource: JSONObject
     ) -> AuthorizationDecision:
-        request_actor_uri = principal.uri if principal else None
+        # FIXME Horrible Hack!
+        if principal is None:
+            request_actor_uri = None
+        else:
+            request_actor_uri = principal.uri if principal else None
 
         log.debug(f"GET obj={resource['id']}, principal={request_actor_uri or 'anonymous'}")
 

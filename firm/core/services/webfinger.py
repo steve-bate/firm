@@ -15,7 +15,7 @@ _RESOURCE_REGEX = re.compile("(?:.*?):[@~]?([^@]+)@?(.*)")
 _SERVER_REL = "https://www.w3.org/ns/activitystreams#Service"
 
 
-async def webfinger(request: HttpRequest, aka_predicates: list[str] | None = None):
+async def webfinger(request: HttpRequest, aka_predicates: list[str] | None = None) -> JsonResponse:
     resource_params: list[str] | None = get_query_params(request.url).get("resource")
     if resource_params is None or len(resource_params) == 0:
         raise HttpException(
