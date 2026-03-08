@@ -1,0 +1,78 @@
+/* Custom styles to complement Tailwind CSS */
+
+/* Custom prose styling for dark mode */
+.dark .prose {
+    color: rgb(209 213 219);
+}
+
+.dark .prose h1,
+.dark .prose h2,
+.dark .prose h3,
+.dark .prose h4 {
+    color: rgb(243 244 246);
+}
+
+.dark .prose a {
+    color: rgb(96 165 250);
+}
+
+.dark .prose a:hover {
+    color: rgb(147 197 253);
+}
+
+.dark .prose strong {
+    color: rgb(243 244 246);
+}
+
+.dark .prose code {
+    color: rgb(243 244 246);
+}
+
+.dark .prose pre {
+    background-color: rgb(31 41 55);
+    color: rgb(243 244 246);
+}
+
+.dark .prose blockquote {
+    color: rgb(156 163 175);
+    border-left-color: rgb(75 85 99);
+}
+
+/* GitHub icon dark mode support */
+.dark .repo-link img {
+    content: url("/static/images/github-mark/github-mark-white.svg");
+}
+
+.repo-link img {
+    content: url("/static/images/github-mark/github-mark.svg");
+}
+
+/* Enhanced link styling for actor content */
+.prose a {
+    @apply text-blue-600 dark:text-blue-400 font-medium underline decoration-2 underline-offset-2;
+    transition: all 0.2s ease-in-out;
+}
+
+.prose a:hover {
+    @apply text-blue-800 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 px-1 py-0.5 rounded;
+    text-decoration-color: currentColor;
+}
+
+/* Special styling for property values that contain links */
+td a {
+    @apply text-blue-600 dark:text-blue-400 font-semibold underline decoration-2 underline-offset-2;
+    transition: all 0.2s ease-in-out;
+}
+
+td a:hover {
+    @apply text-blue-800 dark:text-blue-300 bg-blue-100 dark:bg-blue-900/30 px-2 py-1 rounded-md;
+}
+
+/* Make summary/bio links more prominent */
+.prose p a {
+    @apply bg-blue-50 dark:bg-blue-900/20 px-1 py-0.5 rounded font-semibold;
+}
+
+.prose p a:hover {
+    @apply bg-blue-100 dark:bg-blue-900/40 transform scale-105;
+}

@@ -1,0 +1,85 @@
+{% extends "layout.jinja2" %}
+
+{% set header_image = resource.image.url if resource.image else "https://placehold.co/1200x300?text=" +
+resource.preferredUsername %}
+{% set avatar_image = resource.icon.url if resource.icon else "https://placehold.co/80x80?text=" +
+resource.preferredUsername %}
+
+
+{% block header %}
+<div class="relative h-48 bg-cover bg-center rounded-lg mb-8" style="background-image: url('{{ header_image }}');">
+    <img src="{{ avatar_image }}" alt="Profile Avatar"
+         class="absolute -bottom-10 left-4 w-20 h-20 rounded-lg border-4 border-white dark:border-gray-800 object-cover z-10">
+</div>
+{% endblock %}
+
+{% block main %}
+<section >
+    <div class="mt-4 mb-8">
+        <h1 class="text-3xl font-bold text-gray-900 dark:text-white mb-2">{{ resource.name }}</h1>
+
+        <div class="sm:pl-8">
+            <p class="text-lg">
+                <span class="font-semibold text-gray-700 dark:text-gray-300">Mastodon:</span>
+                <span class="text-blue-600 dark:text-blue-400">@{{ resource.preferredUsername }}@{{ request.url.hostname }}</span>
+            </p>
+            <p class="text-lg">
+                <span class="font-semibold text-gray-700 dark:text-gray-300">URI:</span>
+                <span class="text-blue-600 dark:text-blue-400 break-all">{{ resource.id }}</span>
+            </p>
+        </div>
+
+        {% if "server/admin" in roles or "tenant/admin" in roles %}
+        <div class="inline-flex items-center px-3 py-1 mt-3 text-sm border border-purple-500 dark:border-green-400 text-purple-600 dark:text-green-400 rounded">
+            <i class="fas fa-user-shield mr-2"></i>
+            Admin {{ request.url.hostname }}
+        </div>
+        {% endif %}
+
+        {% if resource.summary %}
+        <div class="mt-4 text-gray-700 dark:text-gray-300 prose dark:prose-invert max-w-none">
+            {{ resource.summary | safe }}
+        </div>
+        {% endif %}
+        {% if resource.attachment %}
+            {% set properties = resource.attachment | selectattr("type", "equalto", "PropertyValue") | list %}
+            {% if properties %}
+            <div class="mt-6">
+                <h2 class="text-xl font-semibold text-gray-800 dark:text-gray-200 mb-3">See Also:</h2>
+                <div class="bg-gray-200 dark:bg-gray-700 rounded-lg p-4 w-full sm:w-4/5">
+                    <table class="w-full">
+                        <tbody class="space-y-2">
+                            {% for p in properties %}
+                                {% if p %}
+                                <tr class="border-b border-gray-400 dark:border-gray-600 last:border-b-0">
+                                    <td class="py-2 pr-4 font-medium text-gray-700 dark:text-gray-300">{{ p.name }}</td>
+                                    <td class="mastodon-styling text-gray-600 dark:text-gray-400">{{ p.value | safe }}</td>
+                                </tr>
+                                {% endif %}
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {% endif %}
+        {% endif %}
+    </div>
+
+    {% if timeline %}
+    <h2 class="text-xl font-semibold text-gray-800 dark:text-gray-200 mb-3">Latest Posts</h2>
+    <div class="mt-8">
+        {# <div class="flex justify-around border-b border-gray-300 dark:border-gray-600 mb-6">
+            <div class="pb-2 border-b-2 border-purple-500 dark:border-green-400 text-purple-600 dark:text-green-400 cursor-pointer font-medium">Posts</div>
+            <div class="pb-2 text-gray-600 dark:text-gray-400 cursor-pointer hover:text-gray-800 dark:hover:text-gray-200">Posts and replies</div>
+            <div class="pb-2 text-gray-600 dark:text-gray-400 cursor-pointer hover:text-gray-800 dark:hover:text-gray-200">Media</div>
+        </div> #}
+
+        <div class="space-y-6">
+            {% for post in timeline %}
+            {% include "partials/post.jinja2" %}
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+</section>
+{% endblock main %}

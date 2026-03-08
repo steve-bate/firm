@@ -1,0 +1,31 @@
+{% extends "layout.jinja2" %}
+
+{% block main %}
+<section class="text-center sm:text-left mb-8">
+    <p class="text-lg text-gray-700 dark:text-gray-300 mb-4">A flexible server platform for experimenting with the social web. A work-in-progress.</p>
+    <blockquote class="border-l-4 border-firm-green dark:border-green-400 pl-4 italic text-gray-600 dark:text-gray-400">
+        <p>It's not SoLiD, but it's firm.core.</p>
+    </blockquote>
+</section>
+
+<section class="mb-8">
+    <h3 class="text-2xl font-semibold text-gray-800 dark:text-gray-200 mb-4">Users</h3>
+    {% if users %}
+    <ul class="space-y-2">
+        {% for user in users %}
+        <li class="bg-gray-50 dark:bg-gray-700 p-3 rounded-lg">
+            <a href="{{ user.id }}" class="text-blue-600 dark:text-blue-400 hover:underline font-medium">{{ user.name }}</a>
+            <span class="text-gray-600 dark:text-gray-400">- {{ user.preferredUsername }}</span>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-gray-600 dark:text-gray-400">No users found.</p>
+    {% endif %}
+</section>
+
+<div class="w-full sm:w-4/5 bg-blue-50 dark:bg-blue-900/20 border-l-4 border-blue-400 p-4 rounded-r-md">
+    <h4 class="text-lg font-semibold text-red-600 dark:text-pink-400 mb-2">Note!</h4>
+    <p class="text-gray-700 dark:text-gray-300 mb-0">This is very early work-in-progress, so expect bugs and breaking changes.</p>
+</div>
+{% endblock %}

@@ -9,30 +9,32 @@ repos:
         types: [text]
 
 -   repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v2.3.0
+    rev: v5.0.0
     hooks:
-#    -   id: check-yaml
-#    -   id: check-json
+    -   id: check-yaml
+        args: [--unsafe]
+    -   id: check-json
     -   id: check-toml
     -   id: end-of-file-fixer
     -   id: trailing-whitespace
     -   id: check-added-large-files
+        args: ["--maxkb=10000"]
     -   id: check-case-conflict
 
 -   repo: https://github.com/psf/black
-    rev: 22.10.0
+    rev: 25.1.0
     hooks:
     -   id: black
 
 -   repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
-    rev: v0.0.274
+    rev: v0.9.7
     hooks:
     - id: ruff
       args: [--fix, --exit-non-zero-on-fix]
 
 -   repo: https://github.com/pycqa/isort
-    rev: 5.12.0
+    rev: 6.0.0
     hooks:
       - id: isort
         name: isort (python)
@@ -43,7 +45,9 @@ repos:
     rev: 'v1.15.0'  # Use the sha / tag you want to point at
     hooks:
     -   id: mypy
-        additional_dependencies: [tokenize-rt==3.2.0, types-decorator]
+        additional_dependencies:
+            - attrs
+            - types-PyYAML
         args:
         - --ignore-missing-imports
         - --namespace-packages
@@ -62,3 +66,9 @@ repos:
         # alternatively you could `types: [python]` so it only runs when python files change
         # though tests might be invalidated if you were to say change a data file
         always_run: true
+
+# -   repo: "https://github.com/tweag/FawltyDeps.git"
+#     rev: main # v0.18.0
+#     hooks:
+#       - id: check-undeclared
+#       - id: check-unused

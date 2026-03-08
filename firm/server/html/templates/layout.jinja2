@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+        }
+    </script>
+    <style>
+        .mastodon-styling .invisible {
+            display: inherit;
+            visibility: inherit;;
+        }
+    </style>
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon/favicon-16x16.png">
+    <link rel="manifest" href="/static/favicon/site.webmanifest">
+    <title>{% block title %}FIRM - Federated Information Resource Manager{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+    {% block style %}{% endblock %}
+</head>
+
+<body class="bg-white dark:bg-gray-800 text-gray-900 dark:text-white transition-colors duration-300">
+    <div class="px-4 py-8 min-h-screen flex flex-col">
+        {% block heading %}
+        {% include "partials/heading.jinja2" %}
+        {% endblock %}
+
+        <header>
+            {% block header %}{% endblock %}
+        </header>
+
+        <main class="flex-1 mb-8">
+            {% block main %}{% endblock %}
+        </main>
+
+        <footer class="border-t border-gray-300 dark:border-gray-600 pt-4 mt-auto">
+            <div class="flex flex-col sm:flex-row justify-between items-center text-sm text-gray-600 dark:text-gray-400">
+                <div class="mb-2 sm:mb-0">
+                    <a href="/" class="text-blue-600 dark:text-blue-400 hover:underline">FIRM</a>
+                    Version: Server {{ get_version("firm-server") }}, Core {{ get_version("firm") }}
+                </div>
+                <div class="flex items-center space-x-2">
+                    <span>Programmer: Steve Bate [<a href="https://stevebate.net" class="text-blue-600 dark:text-blue-400 hover:underline">Blog</a>]</span>
+                    {% if resource and resource.attributedTo %}
+                        <span>(<a class="text-blue-600 dark:text-blue-400 hover:underline" href="{{ resource.attributedTo }}">Profile</a>)</span>
+                    {% endif %}
+
+                    <a href="https://github.com/steve-bate/firm-server" class="text-blue-600 dark:text-blue-400 hover:underline" target="_blank" rel="noopener noreferrer">
+                        <img src="/static/images/github-mark/github-mark-white.svg" alt="GitHub Mark" class="h-4 w-4 inline ml-1" />
+                    </a>
+                    <button class="ml-2 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200"
+                            onclick="toggleDarkMode()"
+                            aria-label="Toggle dark mode">
+                        <!-- Lightbulb icon - lit for light mode -->
+                        <svg class="w-4 h-4 text-yellow-500 dark:hidden" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M11 3a1 1 0 10-2 0v1a1 1 0 102 0V3zM15.657 6.343a1 1 0 00-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM18 10a1 1 0 01-1 1h-1a1 1 0 110-2h1a1 1 0 011 1zM5.05 6.464a1 1 0 10-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM5 10a1 1 0 01-1 1H3a1 1 0 110-2h1a1 1 0 011 1zM3 16a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM13 16a1 1 0 01-1 1H8a1 1 0 110-2h4a1 1 0 011 1zM10 7a3 3 0 00-3 3v2a1 1 0 001 1h4a1 1 0 001-1v-2a3 3 0 00-3-3z"/>
+                        </svg>
+                        <!-- Lightbulb icon - dimmed for dark mode -->
+                        <svg class="w-4 h-4 text-gray-400 hidden dark:block" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M11 3a1 1 0 10-2 0v1a1 1 0 102 0V3zM15.657 6.343a1 1 0 00-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM18 10a1 1 0 01-1 1h-1a1 1 0 110-2h1a1 1 0 011 1zM5.05 6.464a1 1 0 10-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM5 10a1 1 0 01-1 1H3a1 1 0 110-2h1a1 1 0 011 1zM3 16a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM13 16a1 1 0 01-1 1H8a1 1 0 110-2h4a1 1 0 011 1zM10 7a3 3 0 00-3 3v2a1 1 0 001 1h4a1 1 0 001-1v-2a3 3 0 00-3-3z"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        // Dark mode toggle functionality
+        function toggleDarkMode() {
+            document.documentElement.classList.toggle('dark');
+            localStorage.setItem('darkMode', document.documentElement.classList.contains('dark'));
+        }
+
+        // Initialize dark mode based on system preference or saved setting
+        if (localStorage.getItem('darkMode') === 'true' ||
+            (!localStorage.getItem('darkMode') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+        }
+    </script>
+</body>
+
+</html>

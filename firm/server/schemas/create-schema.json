@@ -1,0 +1,47 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "schema:create",
+    "description": "An Activity. https://www.w3.org/TR/activitystreams-core/#activities",
+    "type": "object",
+    "allOf": [
+        {
+            "$ref": "schema:base-activity"
+        },
+        {
+            "properties": {
+                "type": {
+                    "anyOf": [
+                        {
+                            "const": "Create"
+                        },
+                        {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "contains": {
+                                "const": "Create"
+                            }
+                        }
+                    ]
+                },
+                "object": {
+                    "anyOf": [
+                        {
+                            "$ref": "schema:object"
+                        },
+                        {
+                            "type": "array",
+                            "items": {
+                                "$ref": "schema:object"
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    ],
+    "required": [
+        "object"
+    ]
+}

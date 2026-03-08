@@ -1,0 +1,43 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "schema:activities",
+    "anyOf": [
+        {
+            "$ref": "schema:create"
+        },
+        {
+            "properties": {
+                "type": {
+                    "anyOf": [
+                        {
+                            "type": "string",
+                            "enum": [
+                                "Follow",
+                                "Reject",
+                                "Accept",
+                                "Undo",
+                                "Like",
+                                "Announce",
+                                "Delete",
+                                "Update",
+                                "Block",
+                                "Add",
+                                "Remove"
+                            ]
+                        },
+                        {
+                            "type": "string",
+                            "format": "uri",
+                            "description": "A URI identifying the type of activity"
+                        },
+                        {
+                            "type": "string",
+                            "pattern": ".*:.*",
+                            "description": "A prefixed activity type name"
+                        }
+                    ]
+                }
+            }
+        }
+    ]
+}

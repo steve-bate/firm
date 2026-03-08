@@ -1,0 +1,46 @@
+<div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-6">
+    <div class="flex items-start space-x-3">
+        {# <img src="{{ avatar_image }}" alt="Avatar" class="w-10 h-10 rounded-lg object-cover flex-shrink-0"> #}
+        <div class="flex-1 min-w-0">
+            {% if resource.inReplyTo %}
+            <div class="mb-2 text-sm text-gray-500 dark:text-gray-400">
+                <i class="fas fa-reply mr-1"></i>
+                Reply to: <a href="{{ resource.inReplyTo}}">{{ resource.inReplyTo | safe }}</a>
+            </div>
+            {% endif %}
+            <div class="mb-2">
+                <img style="display: inline" src="/static/images/activitypub-icon.svg" alt="ActivityPub" class="h-4 w-4 mr-2" />
+                <a href="{{ post.id }}">{{ post.id}}</a>
+            </div>
+            <div class="pl-4 mb-2 text-gray-700 dark:text-gray-300 prose dark:prose-invert max-w-none">
+               {{ post.content | safe }}
+            </div>
+            <div class="text-sm text-gray-500 dark:text-gray-400">
+                {{ post.published | format_datetime }}
+            </div>
+            {% if post.attachment %}
+            <div class="mt-4">
+                {% for attachment in post.attachment | selectattr("mediaType", "match", "image/.*") %}
+                    <div></div><img src="{{ attachment.url }}" alt="{{ attachment.name | default('Image attachment') }}" class="rounded-lg max-w-full h-auto max-h-40 object-cover"></div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {# <div class="flex justify-around items-center mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
+        <button class="flex items-center space-x-1 text-gray-500 dark:text-gray-400 hover:text-blue-500 dark:hover:text-blue-400">
+            <i class="far fa-comment"></i>
+        </button>
+        <button class="flex items-center space-x-1 text-gray-500 dark:text-gray-400 hover:text-green-500 dark:hover:text-green-400">
+            <i class="fas fa-retweet"></i>
+        </button>
+        <button class="flex items-center space-x-1 text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400">
+            <i class="far fa-heart"></i>
+        </button>
+        <button class="flex items-center space-x-1 text-gray-500 dark:text-gray-400 hover:text-yellow-500 dark:hover:text-yellow-400">
+            <i class="far fa-bookmark"></i>
+        </button>
+        <span class="text-sm text-gray-500 dark:text-gray-400">5d</span>
+    </div> #}
+</div>
