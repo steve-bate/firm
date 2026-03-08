@@ -1,0 +1,34 @@
+name: Pre-commit hooks
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Initialize project
+        run: |
+          uv venv
+          uv sync --all-groups
+          uv pip install -e .
+
+      - name: Run pre-compute
+        uses: tox-dev/action-pre-commit-uv@v1
