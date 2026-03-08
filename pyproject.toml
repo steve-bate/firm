@@ -9,6 +9,8 @@ authors = [
     { name = "Steve Bate", email = "svc-github@stevebate.net" }
 ]
 dependencies = [
+  "cryptography>=43.0.0,<44.0.0",
+  "bcrypt>=4.2.0,<5.0.0",
 ]
 
 [dependency-groups]
@@ -25,6 +27,9 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = 'function'
+
+[tool.ruff]
+line-length = 100
 
 [tool.black]
 line-length = 100
