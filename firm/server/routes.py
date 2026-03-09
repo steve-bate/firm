@@ -16,20 +16,19 @@ from firm.core.auth.bearer_token import BearerTokenAuthenticator
 from firm.core.auth.chained import AuthenticatorChain
 from firm.core.auth.http_signature import HttpSigAuthenticator
 from firm.core.interfaces import (
-    HttpException,
-    HttpRequest,
-    HttpResponse,
     Identity,
     JSONObject,
-    JsonResponse,
-)
-from firm.core.interfaces import PlainTextResponse as FirmPlainTextResponse
-from firm.core.interfaces import (
     Principal,
     Validator,
     get_query_params,
 )
-from firm.core.services.activitypub import ActivityPubService
+from firm.core.services.activitypub import (
+    ActivityPubService,
+    InvalidResourceTypeException,
+    NotAuthorizedException,
+    NotFoundException,
+    ResourceOwnerException,
+)
 from firm.core.services.nodeinfo import (
     UnsupportedNodeInfoVersion,
     nodeinfo_index,
@@ -52,36 +51,11 @@ from .proxy import proxy
 log = logging.getLogger(__name__)
 
 
-def _adapt_response(r: HttpResponse) -> Response:
-    if isinstance(r, JsonResponse):
-        return JSONResponse(r.json, status_code=r.status_code, headers=r.headers)
-    if isinstance(r, FirmPlainTextResponse):
-        return PlainTextResponse(r.content, status_code=r.status_code, headers=r.headers)
-    return Response(status_code=r.status_code, headers=r.headers, content=r.body)
-
-
 _auth_chain = AuthenticatorChain([BearerTokenAuthenticator(), HttpSigAuthenticator()])
 
 
 async def get_principal(request: Request) -> Identity | None:
     return await _auth_chain.authenticate(HttpConnectionAdapter(request))
-
-
-def _adapt_endpoint(
-    method: Callable[[HttpRequest], Awaitable[HttpResponse]],
-    protected=False,
-) -> Callable:
-    async def wrapper(
-        request: Request,
-    ):
-        try:
-            if protected and not request.user:
-                raise HTTPException(401)
-            return _adapt_response(await method(HttpConnectionAdapter(request)))
-        except HttpException as e:
-            raise HTTPException(e.status_code, detail=e.detail, headers=e.headers)
-
-    return wrapper
 
 
 # TODO Consider redesign of FirmDeliveryService (abstract class?)
@@ -165,7 +139,7 @@ class SearchTerm:
     value: str
 
 
-async def _filesystem_search(request: HttpRequest) -> HttpResponse:
+async def _filesystem_search_endpoint(request: Request) -> Response:
     tenant = request.state.tenant
 
     query = request.query_params.get("q", [""])[0].strip()
@@ -237,7 +211,7 @@ class JsonSchemaValidator(Validator):
             self._validator.validate(obj)
         except ValidationError as e:
             log.error("Validation error: %s", e.message)
-            raise HttpException(400, e.message)
+            raise HTTPException(400, detail=e.message)
 
 
 # def with_middleware(
@@ -413,33 +387,47 @@ def create_router(config: ServerConfig) -> APIRouter:
 
     async def activitypub_endpoint(request: Request) -> Response:
         if request.method in ["GET", "HEAD"]:
-            # TODO Handle exceptions
-            resource = await activitypub_service.process_get(
-                request.app.state.tenants,
-                request.state.tenant,
-                request.scope["user"],
-                request.url,
-            )
-            status_code = 200
-            if resource.get("type") == "Tombstone":
-                status_code = HTTPStatus.GONE
-            return JSONResponse(
-                resource,
-                status_code=status_code,
-                headers={"Content-Type": "application/activity+json"},
-            )
+            try:
+                resource = await activitypub_service.process_get(
+                    request.app.state.tenants,
+                    request.state.tenant,
+                    request.scope["user"],
+                    request.url,
+                )
+                status_code = 200
+                if resource.get("type") == "Tombstone":
+                    status_code = HTTPStatus.GONE
+                return JSONResponse(
+                    resource,
+                    status_code=status_code,
+                    headers={"Content-Type": "application/activity+json"},
+                )
+            except NotFoundException as e:
+                raise HTTPException(HTTPStatus.NOT_FOUND, detail=str(e))
+            except NotAuthorizedException as e:
+                raise HTTPException(HTTPStatus.FORBIDDEN, detail=str(e))
+            except InvalidResourceTypeException as e:
+                raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
+            except ResourceOwnerException as e:
+                raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
         elif request.method == "POST":
-            # TODO Handle exceptions
-            await activitypub_service.process_post(
-                tenants=request.app.state.tenants,
-                tenant=request.state.tenant,
-                principal=request.scope["user"],
-                target_uri=request.url,
-                resource=await request.json(),
-            )
-            return PlainTextResponse("OK", media_type="text/plain")
+            try:
+                await activitypub_service.process_post(
+                    tenants=request.app.state.tenants,
+                    tenant=request.state.tenant,
+                    principal=request.scope["user"],
+                    target_uri=request.url,
+                    resource=await request.json(),
+                )
+                return PlainTextResponse("OK", media_type="text/plain")
+            except NotAuthorizedException as e:
+                raise HTTPException(HTTPStatus.FORBIDDEN, detail=str(e))
+            except InvalidResourceTypeException as e:
+                raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
+            except ResourceOwnerException as e:
+                raise HTTPException(HTTPStatus.FORBIDDEN, detail=str(e))
         else:
-            raise HttpException(HTTPStatus.METHOD_NOT_ALLOWED)
+            raise HTTPException(HTTPStatus.METHOD_NOT_ALLOWED)
 
     router.add_api_route(
         "/{path:path}",
@@ -485,6 +473,6 @@ def create_router(config: ServerConfig) -> APIRouter:
 
     if config.store.kind == StorageKind.FILESYSTEM:
         log.info("Registering file system search")
-        router.add_api_route("/search", _adapt_endpoint(_filesystem_search), methods=["GET"])
+        router.add_api_route("/search", _filesystem_search_endpoint, methods=["GET"])
 
     return router
