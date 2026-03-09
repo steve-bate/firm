@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass, field
 
@@ -59,9 +60,12 @@ def cli(ctx: click.Context, config: click.File, tenant: str):
 
 @cli.result_callback()
 @click.pass_obj
-async def after_command(ctx: Context, result, **kwargs):
-    await ctx.get_tenant().public_store.close()
-    await ctx.get_tenant().private_store.close()
+def after_command(ctx: Context, result, **kwargs):
+    async def close_stores():
+        await ctx.get_tenant().public_store.close()
+        await ctx.get_tenant().private_store.close()
+
+    asyncio.run(close_stores())
     log.info("tenant stores closed")
 
 

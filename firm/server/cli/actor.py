@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 import click
 
+from firm.core.auth.http_basic import hash_password
 from firm.core.auth.keys import create_key_pair
 from firm.core.interfaces import FIRM_NS, JSONObject, ResourceStore, get_uri_prefix
 from firm.core.util import get_id, resource_id
@@ -234,6 +235,32 @@ async def actor_update(
     if verbose:
         print(json.dumps(actor_resource, indent=2))
     await ctx.get_tenant().public_store.put(actor_resource)
+
+
+@actor.command("set-password")
+@click.argument("uri")
+@click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True)
+@click.pass_obj
+@async_command
+async def actor_set_password(
+    ctx: Context,
+    uri: str,
+    password: str,
+) -> None:
+    """Set password for basic auth"""
+    credentials = await ctx.get_tenant().private_store.query_one(
+        {
+            "type": FIRM_NS.Credentials.value,
+            "attributedTo": uri,
+        }
+    )
+    if credentials is None:
+        raise click.ClickException(f"Credentials not found for actor: {uri}")
+
+    hashed = hash_password(password)
+    credentials[FIRM_NS.password.value] = hashed
+    await ctx.get_tenant().private_store.put(credentials)
+    print(f"Password set for {uri}")
 
 
 @actor.group

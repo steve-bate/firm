@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+        }
+    </script>
+    <title>Authorize {{ client_id }}</title>
+    <style>
+        .firms-green {
+            --color: #10b981;
+        }
+    </style>
+</head>
+
+<body class="bg-white dark:bg-gray-800 text-gray-900 dark:text-white transition-colors duration-300">
+    <div class="px-4 py-8 min-h-screen flex flex-col">
+        <header class="mb-8">
+            <h1 class="text-3xl font-bold text-center text-gray-800 dark:text-gray-200">Authorization Required</h1>
+        </header>
+
+        <main class="flex-1 mb-8">
+            <div class="max-w-md mx-auto bg-white dark:bg-gray-800 rounded-lg shadow-md p-8 border border-gray-300 dark:border-gray-600">
+                <div class="mb-6">
+                    <h2 class="text-xl font-semibold text-gray-800 dark:text-gray-200 mb-2">
+                        Sign in to authorize <strong class="text-lg">{{ client_id }}</strong>
+                    </h2>
+                    {% if error_message %}
+                    <p class="text-red-600 dark:text-red-400 font-medium mt-2">{{ error_message }}</p>
+                    {% endif %}
+                    <p class="text-sm text-gray-600 dark:text-gray-400 mt-3">
+                        Requested scope: <code class="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded text-xs">{{ scope if scope else '(none)' }}</code>
+                    </p>
+                </div>
+
+                <form method="post" action="/oauth/authorize" class="space-y-6">
+                    <!-- Hidden fields -->
+                    <input type="hidden" name="client_id" value="{{ client_id }}">
+                    <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+                    <input type="hidden" name="scope" value="{{ scope }}">
+                    <input type="hidden" name="state" value="{{ state }}">
+                    <input type="hidden" name="response_type" value="code">
+
+                    <!-- Username field -->
+                    <div>
+                        <label for="username" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Username</label>
+                        <input type="text"
+                               id="username"
+                               name="username"
+                               placeholder="Enter your username"
+                               autofocus
+                               required
+                               class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 dark:bg-gray-700 dark:text-white placeholder-gray-400 dark:placeholder-gray-500">
+                    </div>
+
+                    <!-- Password field -->
+                    <div>
+                        <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Password</label>
+                        <input type="password"
+                               id="password"
+                               name="password"
+                               placeholder="Enter your password"
+                               required
+                               class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 dark:bg-gray-700 dark:text-white placeholder-gray-400 dark:placeholder-gray-500">
+                    </div>
+
+                    <!-- Submit button -->
+                    <button type="submit"
+                            class="w-full bg-green-600 hover:bg-green-700 dark:bg-green-600 dark:hover:bg-green-700 text-white font-medium py-2 px-4 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800">
+                        Authorize
+                    </button>
+                </form>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="border-t border-gray-300 dark:border-gray-600 pt-4 mt-auto">
+            <div class="text-center text-sm text-gray-600 dark:text-gray-400">
+                <p>Secure OAuth 2.0 Authorization</p>
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        // Dark mode toggle functionality
+        function toggleDarkMode() {
+            document.documentElement.classList.toggle('dark');
+            localStorage.setItem('darkMode', document.documentElement.classList.contains('dark'));
+        }
+
+        // Initialize dark mode based on system preference or saved setting
+        if (localStorage.getItem('darkMode') === 'true' ||
+            (!localStorage.getItem('darkMode') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+        }
+    </script>
+</body>
+
+</html>

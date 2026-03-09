@@ -3,13 +3,16 @@ import base64
 import secrets
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from jinja2 import Environment, FileSystemLoader
 
-from firm.core.interfaces import Tenant
+from firm.core.auth.http_basic import verify_hash
+from firm.core.interfaces import FIRM_NS, JSONObject, Tenant
 from firm.oauth2.models import (
     AuthorizationCode,
     OAuth2Client,
@@ -29,10 +32,23 @@ def get_issuer(request: Request) -> str:
     return f"{scheme}://{host}"
 
 
-async def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
-    """Stub: replace with real user lookup."""
-    if username and password:
-        return {"user_id": username}
+async def authenticate_user(tenant: Tenant, username: str, password: str) -> JSONObject | None:
+    actor = await tenant.public_store.query_one(
+        {
+            "preferredUsername": username,
+        }
+    )
+    if actor:
+        credentials = await tenant.private_store.query_one(
+            {
+                "type": FIRM_NS.Credentials.value,
+                "attributedTo": actor["id"],
+            }
+        )
+        if credentials and FIRM_NS.password in credentials:
+            stored_hash = str(credentials[FIRM_NS.password])
+            if verify_hash(password, stored_hash):
+                return actor
     return None
 
 
@@ -46,6 +62,9 @@ def create_oauth2_router() -> APIRouter:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.oauth2_stores = {}
+        # Initialize Jinja2 environment for templates
+        templates_dir = Path(__file__).parent / "templates"
+        app.state.jinja2_env = Environment(loader=FileSystemLoader(templates_dir))
         yield
 
     router = APIRouter(lifespan=lifespan)
@@ -104,33 +123,15 @@ def create_oauth2_router() -> APIRouter:
             client.redirect_uris[0] if client.redirect_uris else ""
         )
 
-        hidden = ""
-        for k, v in [
-            ("client_id", client_id),
-            ("redirect_uri", effective_redirect),
-            ("scope", scope),
-            ("state", state),
-            ("response_type", response_type),
-        ]:
-            hidden += f'<input type="hidden" name="{k}" value="{v}">\n'
-
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head><title>Authorize</title></head>
-        <body>
-          <h2>Sign in to authorize <strong>{client_id}</strong></h2>
-          <p>Requested scope: <code>{scope or '(none)'}</code></p>
-          <form method="post" action="/oauth/authorize">
-            {hidden}
-            <label>Username: <input type="text" name="username" autofocus required></label><br><br>
-            <label>Password: <input type="password" name="password" required></label><br><br>
-            <button type="submit">Authorize</button>
-          </form>
-        </body>
-        </html>
-        """
-        return HTMLResponse(content=html)
+        # Render template
+        template = request.app.state.jinja2_env.get_template("authorize.jinja2")
+        html_content = template.render(
+            client_id=client_id,
+            redirect_uri=effective_redirect,
+            scope=scope,
+            state=state,
+        )
+        return HTMLResponse(content=html_content)
 
     @router.post("/oauth/authorize")
     async def authorize_post(request: Request):
@@ -155,36 +156,18 @@ def create_oauth2_router() -> APIRouter:
         if not client:
             raise HTTPException(status_code=400, detail="Unknown client_id")
 
-        user = await authenticate_user(username, password)
+        user = await authenticate_user(request.state.tenant, username, password)
         if not user:
-            # Re-render form with error
-            hidden = ""
-            for k, v in [
-                ("client_id", client_id),
-                ("redirect_uri", redirect_uri),
-                ("scope", scope),
-                ("state", state),
-                ("response_type", "code"),
-            ]:
-                hidden += f'<input type="hidden" name="{k}" value="{v}">\n'
-            html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head><title>Authorize</title></head>
-            <body>
-              <h2>Sign in to authorize <strong>{client_id}</strong></h2>
-              <p style="color:red">Invalid username or password.</p>
-              <p>Requested scope: <code>{scope or '(none)'}</code></p>
-              <form method="post" action="/oauth/authorize">
-                {hidden}
-                <label>Username: <input type="text" name="username" autofocus required></label><br><br>
-                <label>Password: <input type="password" name="password" required></label><br><br>
-                <button type="submit">Authorize</button>
-              </form>
-            </body>
-            </html>
-            """
-            return HTMLResponse(content=html, status_code=401)
+            # Re-render form with error via template
+            template = request.app.state.jinja2_env.get_template("authorize.jinja2")
+            html_content = template.render(
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                scope=scope,
+                state=state,
+                error_message="Invalid username or password.",
+            )
+            return HTMLResponse(content=html_content, status_code=401)
 
         code = secrets.token_urlsafe(24)
         auth_code = AuthorizationCode(
@@ -192,7 +175,7 @@ def create_oauth2_router() -> APIRouter:
             client_id=client_id,
             redirect_uri=redirect_uri,
             scope=scope,
-            user_id=user["user_id"],
+            user_id=username,
             issued_at=int(time.time()),
         )
 
@@ -268,7 +251,7 @@ def create_oauth2_router() -> APIRouter:
             password = body.get("password")
             if not username or not password:
                 raise HTTPException(status_code=400, detail="username and password are required")
-            user = await authenticate_user(username, password)
+            user = await authenticate_user(request.state.tenant, username, password)
             if not user:
                 raise HTTPException(status_code=401, detail="Invalid user credentials")
             user_id = user["user_id"]
