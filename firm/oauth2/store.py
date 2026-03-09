@@ -1,8 +1,10 @@
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, cast
 
 import aiosqlite
-from fedi_spikes.oauth2.models import (
+
+from firm.core.interfaces import JSONObject, Tenant
+from firm.oauth2.models import (
     AuthorizationCode,
     OAuth2Client,
     OAuth2Token,
@@ -420,4 +422,229 @@ class SqliteOAuth2DataStore(OAuth2DataStore):
             user_id=row["user_id"],
             issued_at=row["issued_at"],
             expires_in=row["expires_in"],
+        )
+
+
+#
+# Tenant Storage
+#
+
+# Store in Tenant private storage
+#  Object type:
+#    firm:OAuth2Client
+#    firm:OAuth2Token
+#    firm:OAuth2RefreshToken
+#    firm:OAuth2AuthorizationCode
+
+
+class FirmOAuth2DataStore(OAuth2DataStore):
+    _TYPE_CLIENT = "firm:OAuth2Client"
+    _TYPE_TOKEN = "firm:OAuth2Token"
+    _TYPE_REFRESH_TOKEN = "firm:OAuth2RefreshToken"
+    _TYPE_AUTHORIZATION_CODE = "firm:OAuth2AuthorizationCode"
+
+    def __init__(self, tenant: Tenant):
+        self._tenant = tenant
+
+    @staticmethod
+    def _client_resource_id(client_id: str) -> str:
+        return f"urn:firm:oauth2:client:{client_id}"
+
+    @staticmethod
+    def _token_resource_id(access_token: str) -> str:
+        return f"urn:firm:oauth2:token:{access_token}"
+
+    @staticmethod
+    def _refresh_token_resource_id(refresh_token: str) -> str:
+        return f"urn:firm:oauth2:refresh-token:{refresh_token}"
+
+    @staticmethod
+    def _code_resource_id(code: str) -> str:
+        return f"urn:firm:oauth2:code:{code}"
+
+    async def _find_one(self, criteria: Dict[str, str]) -> JSONObject | None:
+        return await self._tenant.private_store.query_one(dict(criteria))
+
+    # Clients
+    async def get_client(self, client_id: str) -> Optional[OAuth2Client]:
+        resource = await self._find_one(
+            {
+                "type": self._TYPE_CLIENT,
+                "client_id": client_id,
+            }
+        )
+        if not resource:
+            return None
+        return OAuth2Client(
+            client_id=str(resource["client_id"]),
+            client_secret=str(resource["client_secret"]),
+            redirect_uris=list(cast(list, resource.get("redirect_uris", []))),
+            grant_types=list(cast(list, resource.get("grant_types", []))),
+            response_types=list(cast(list, resource.get("response_types", []))),
+            scope=str(resource.get("scope", "")),
+            token_endpoint_auth_method=str(
+                resource.get("token_endpoint_auth_method", "client_secret_basic")
+            ),
+        )
+
+    async def save_client(self, client: OAuth2Client) -> None:
+        await self._tenant.private_store.put(
+            {
+                "id": self._client_resource_id(client.client_id),
+                "type": self._TYPE_CLIENT,
+                "client_id": client.client_id,
+                "client_secret": client.client_secret,
+                "redirect_uris": client.redirect_uris,
+                "grant_types": client.grant_types,
+                "response_types": client.response_types,
+                "scope": client.scope,
+                "token_endpoint_auth_method": client.token_endpoint_auth_method,
+            }
+        )
+
+    async def authenticate_client(
+        self, client_id: str, client_secret: str
+    ) -> Optional[OAuth2Client]:
+        client = await self.get_client(client_id)
+        if client and client.client_secret == client_secret:
+            return client
+        return None
+
+    # Access tokens
+    async def save_token(self, token: OAuth2Token) -> None:
+        await self._tenant.private_store.put(
+            {
+                "id": self._token_resource_id(token.access_token),
+                "type": self._TYPE_TOKEN,
+                "access_token": token.access_token,
+                "client_id": token.client_id,
+                "user_id": token.user_id,
+                "scope": token.scope,
+                "issued_at": token.issued_at,
+                "expires_in": token.expires_in,
+                "token_type": token.token_type,
+            }
+        )
+
+    async def get_token(self, access_token: str) -> Optional[OAuth2Token]:
+        resource = await self._find_one(
+            {
+                "type": self._TYPE_TOKEN,
+                "access_token": access_token,
+            }
+        )
+        if not resource:
+            return None
+        issued_at = int(str(resource["issued_at"]))
+        expires_in = int(str(resource["expires_in"]))
+        if int(time.time()) > issued_at + expires_in:
+            await self._tenant.private_store.remove(str(resource["id"]))
+            return None
+        return OAuth2Token(
+            access_token=str(resource["access_token"]),
+            client_id=str(resource["client_id"]),
+            user_id=str(resource["user_id"]),
+            scope=str(resource.get("scope", "")),
+            issued_at=issued_at,
+            expires_in=expires_in,
+            token_type=str(resource.get("token_type", "bearer")),
+        )
+
+    async def delete_token(self, access_token: str) -> None:
+        resource = await self._find_one(
+            {
+                "type": self._TYPE_TOKEN,
+                "access_token": access_token,
+            }
+        )
+        if resource:
+            await self._tenant.private_store.remove(str(resource["id"]))
+
+    # Refresh tokens
+    async def save_refresh_token(self, token: RefreshToken) -> None:
+        await self._tenant.private_store.put(
+            {
+                "id": self._refresh_token_resource_id(token.refresh_token),
+                "type": self._TYPE_REFRESH_TOKEN,
+                "refresh_token": token.refresh_token,
+                "client_id": token.client_id,
+                "user_id": token.user_id,
+                "scope": token.scope,
+                "issued_at": token.issued_at,
+                "expires_in": token.expires_in,
+            }
+        )
+
+    async def get_refresh_token(self, refresh_token: str) -> Optional[RefreshToken]:
+        resource = await self._find_one(
+            {
+                "type": self._TYPE_REFRESH_TOKEN,
+                "refresh_token": refresh_token,
+            }
+        )
+        if not resource:
+            return None
+        issued_at = int(str(resource["issued_at"]))
+        expires_in = int(str(resource["expires_in"]))
+        if int(time.time()) > issued_at + expires_in:
+            await self._tenant.private_store.remove(str(resource["id"]))
+            return None
+        return RefreshToken(
+            refresh_token=str(resource["refresh_token"]),
+            client_id=str(resource["client_id"]),
+            user_id=str(resource["user_id"]),
+            scope=str(resource.get("scope", "")),
+            issued_at=issued_at,
+            expires_in=expires_in,
+        )
+
+    async def delete_refresh_token(self, refresh_token: str) -> None:
+        resource = await self._find_one(
+            {
+                "type": self._TYPE_REFRESH_TOKEN,
+                "refresh_token": refresh_token,
+            }
+        )
+        if resource:
+            await self._tenant.private_store.remove(str(resource["id"]))
+
+    # Authorization codes
+    async def save_code(self, auth_code: AuthorizationCode) -> None:
+        await self._tenant.private_store.put(
+            {
+                "id": self._code_resource_id(auth_code.code),
+                "type": self._TYPE_AUTHORIZATION_CODE,
+                "code": auth_code.code,
+                "client_id": auth_code.client_id,
+                "redirect_uri": auth_code.redirect_uri,
+                "scope": auth_code.scope,
+                "user_id": auth_code.user_id,
+                "issued_at": auth_code.issued_at,
+                "expires_in": auth_code.expires_in,
+            }
+        )
+
+    async def consume_code(self, code: str) -> Optional[AuthorizationCode]:
+        """Return and delete the code (single-use)."""
+        resource = await self._find_one(
+            {
+                "type": self._TYPE_AUTHORIZATION_CODE,
+                "code": code,
+            }
+        )
+        if not resource:
+            return None
+        await self._tenant.private_store.remove(str(resource["id"]))
+        issued_at = int(str(resource["issued_at"]))
+        expires_in = int(str(resource["expires_in"]))
+        if int(time.time()) > issued_at + expires_in:
+            return None
+        return AuthorizationCode(
+            code=str(resource["code"]),
+            client_id=str(resource["client_id"]),
+            redirect_uri=str(resource.get("redirect_uri", "")),
+            scope=str(resource.get("scope", "")),
+            user_id=str(resource["user_id"]),
+            issued_at=issued_at,
+            expires_in=expires_in,
         )

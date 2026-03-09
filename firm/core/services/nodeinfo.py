@@ -2,7 +2,6 @@ from typing import cast
 
 from firm.core.interfaces import (
     FIRM_NS,
-    JSON,
     JSONObject,
     ResourceStore,
     Tenant,
@@ -12,17 +11,15 @@ from firm.core.services.exception import MissingStore, ServiceException
 from firm.core.util import get_version
 
 
-async def nodeinfo_index(request_url: str) -> JSON:
-    return (
-        {
-            "links": [
-                {
-                    "rel": "http://nodeinfo.diaspora.software/ns/schema/2.0",
-                    "href": f"{get_uri_prefix(request_url)}/nodeinfo/2.0",
-                }
-            ]
-        },
-    )
+async def nodeinfo_index(request_url: str) -> JSONObject:
+    return {
+        "links": [
+            {
+                "rel": "http://nodeinfo.diaspora.software/ns/schema/2.0",
+                "href": f"{get_uri_prefix(request_url)}/nodeinfo/2.0",
+            }
+        ]
+    }
 
 
 class UnsupportedNodeInfoVersion(ServiceException):

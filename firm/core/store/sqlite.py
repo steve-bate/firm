@@ -17,7 +17,7 @@ class SqliteResourceStore(ResourceStore):
     def commit(self) -> None:
         self.connection.commit()
 
-    def close(self) -> None:
+    async def close(self) -> None:
         self.connection.close()
 
     def _initialize_table(self) -> None:

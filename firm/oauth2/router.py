@@ -6,16 +6,17 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from fedi_spikes.oauth2.models import (
+
+from firm.core.interfaces import Tenant
+from firm.oauth2.models import (
     AuthorizationCode,
     OAuth2Client,
     OAuth2Token,
     RefreshToken,
 )
-from fedi_spikes.oauth2.store import OAuth2DataStore
+from firm.oauth2.store import FirmOAuth2DataStore
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -40,50 +41,37 @@ async def authenticate_user(username: str, password: str) -> Optional[Dict[str, 
 # -----------------------------------------------------------------------------
 
 
-def create_oauth2_router(
-    data_store: Optional[OAuth2DataStore],
-) -> APIRouter:
-    assert data_store, "OAuth2DataStore instance is required to create the router"
-    _store = data_store
+def create_oauth2_router() -> APIRouter:
 
     @asynccontextmanager
-    async def lifespan(_: Any):
-        # Bootstrap a demo client on startup
-        demo_client = OAuth2Client(
-            client_id="demo-client",
-            client_secret=secrets.token_urlsafe(24),
-            redirect_uris=["http://localhost:3301/callback"],
-            grant_types=["password", "authorization_code", "client_credentials", "refresh_token"],
-            response_types=["code"],
-            scope="read write",
-        )
-        await _store.save_client(demo_client)
+    async def lifespan(app: FastAPI):
+        app.state.oauth2_stores = {}
         yield
 
     router = APIRouter(lifespan=lifespan)
 
-    http_bearer = HTTPBearer(auto_error=False)
+    # http_bearer = HTTPBearer(auto_error=False)
 
     # --- Shared dependency ------------------------------------------------
 
-    async def get_current_token(
-        credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
-    ) -> OAuth2Token:
-        if not credentials or credentials.scheme.lower() != "bearer":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing or invalid authorization header",
-            )
-        token = await _store.get_token(credentials.credentials)
-        if not token:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired token",
-            )
-        return token
+    # async def get_current_token(
+    #     credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
+    # ) -> OAuth2Token:
+    #     if not credentials or credentials.scheme.lower() != "bearer":
+    #         raise HTTPException(
+    #             status_code=status.HTTP_401_UNAUTHORIZED,
+    #             detail="Missing or invalid authorization header",
+    #         )
+    #     token = await _store.get_token(credentials.credentials)
+    #     if not token:
+    #         raise HTTPException(
+    #             status_code=status.HTTP_401_UNAUTHORIZED,
+    #             detail="Invalid or expired token",
+    #         )
+    #     return token
 
-    # Expose for external use (e.g. main.py)
-    router.get_current_token = get_current_token  # type: ignore[attr-defined]
+    # # Expose for external use (e.g. main.py)
+    # router.get_current_token = get_current_token  # type: ignore[attr-defined]
 
     # --- Endpoints --------------------------------------------------------
 
@@ -104,7 +92,8 @@ def create_oauth2_router(
         if not client_id:
             raise HTTPException(status_code=400, detail="client_id is required")
 
-        client = await _store.get_client(client_id)
+        store = get_store(request)
+        client = await store.get_client(client_id)
         if not client:
             raise HTTPException(status_code=400, detail="Unknown client_id")
 
@@ -161,7 +150,8 @@ def create_oauth2_router(
         if not client_id:
             raise HTTPException(status_code=400, detail="client_id is required")
 
-        client = await _store.get_client(client_id)
+        store = get_store(request)
+        client = store.get_client(client_id)
         if not client:
             raise HTTPException(status_code=400, detail="Unknown client_id")
 
@@ -205,7 +195,9 @@ def create_oauth2_router(
             user_id=user["user_id"],
             issued_at=int(time.time()),
         )
-        await _store.save_code(auth_code)
+
+        store = get_store(request)
+        await store.save_code(auth_code)
 
         qs = urlencode({"code": code, **(({"state": state}) if state else {})})
         return RedirectResponse(url=f"{redirect_uri}?{qs}", status_code=302)
@@ -246,7 +238,8 @@ def create_oauth2_router(
         if not client_id:
             raise HTTPException(status_code=401, detail="client_id is required")
 
-        client = await _store.authenticate_client(client_id, client_secret)
+        store = get_store(request)
+        client = await store.authenticate_client(client_id, client_secret)
         if not client:
             raise HTTPException(status_code=401, detail="Invalid client credentials")
 
@@ -260,7 +253,7 @@ def create_oauth2_router(
             code = body.get("code")
             if not code:
                 raise HTTPException(status_code=400, detail="code is required")
-            auth_code = await _store.consume_code(code)
+            auth_code = await store.consume_code(code)
             if not auth_code:
                 raise HTTPException(status_code=400, detail="Invalid or expired authorization code")
             if auth_code.client_id != client_id:
@@ -287,7 +280,7 @@ def create_oauth2_router(
             raw_refresh = body.get("refresh_token")
             if not raw_refresh:
                 raise HTTPException(status_code=400, detail="refresh_token is required")
-            stored_rt = await _store.get_refresh_token(raw_refresh)
+            stored_rt = await store.get_refresh_token(raw_refresh)
             if not stored_rt:
                 raise HTTPException(status_code=400, detail="Invalid or expired refresh_token")
             if stored_rt.client_id != client_id:
@@ -295,7 +288,7 @@ def create_oauth2_router(
                     status_code=400, detail="refresh_token was not issued to this client"
                 )
             # Rotate: invalidate the old refresh token
-            await _store.delete_refresh_token(raw_refresh)
+            await store.delete_refresh_token(raw_refresh)
             user_id = stored_rt.user_id
             scope = body.get("scope", stored_rt.scope)
         else:
@@ -314,14 +307,17 @@ def create_oauth2_router(
             issued_at=int(time.time()),
             expires_in=expires_in,
         )
-        await _store.save_token(token)
+
+        await store.save_token(token)
+
+        actor = await get_actor(request, user_id)
 
         response_body: Dict[str, Any] = {
             "access_token": access_token,
             "token_type": "bearer",
             "expires_in": expires_in,
             "scope": token.scope,
-            "me": get_issuer(request) + "/users/" + user_id,  # ActivityPub actor URL
+            "me": actor["id"],  # ActivityPub actor URL
         }
 
         # Issue a refresh token for grants that bind to a user identity
@@ -334,7 +330,7 @@ def create_oauth2_router(
                 scope=scope,
                 issued_at=int(time.time()),
             )
-            await _store.save_refresh_token(refresh_token)
+            await store.save_refresh_token(refresh_token)
             response_body["refresh_token"] = rt_value
 
         return JSONResponse(content=response_body)
@@ -364,7 +360,9 @@ def create_oauth2_router(
                 "token_endpoint_auth_method", "client_secret_basic"
             ),
         )
-        await _store.save_client(client)
+
+        store = get_store(request)
+        await store.save_client(client)
 
         return JSONResponse(
             status_code=201,
@@ -378,6 +376,19 @@ def create_oauth2_router(
                 "token_endpoint_auth_method": client.token_endpoint_auth_method,
             },
         )
+
+    def get_store(request):
+        tenant = request.state.tenant
+        stores = request.app.state.oauth2_stores
+        store = stores.get(tenant.prefix)
+        if not store:
+            store = FirmOAuth2DataStore(tenant)
+            stores[tenant.prefix] = store
+        return store
+
+    async def get_actor(request, user_id: str):
+        tenant: Tenant = request.state.tenant
+        return await tenant.public_store.query_one({"preferredUsername": user_id})
 
     @router.post("/oauth/revoke")
     async def revoke_token(request: Request):
@@ -410,7 +421,8 @@ def create_oauth2_router(
         if not rev_client_id:
             raise HTTPException(status_code=401, detail="client_id is required")
 
-        rev_client = await _store.authenticate_client(rev_client_id, rev_client_secret)
+        store = get_store(request)
+        rev_client = await store.authenticate_client(rev_client_id, rev_client_secret)
         if not rev_client:
             raise HTTPException(status_code=401, detail="Invalid client credentials")
 
@@ -423,13 +435,13 @@ def create_oauth2_router(
 
         # Try to revoke as access token and/or refresh token
         if token_type_hint == "refresh_token":
-            await _store.delete_refresh_token(token_value)
+            await store.delete_refresh_token(token_value)
         elif token_type_hint == "access_token":
-            await _store.delete_token(token_value)
+            await store.delete_token(token_value)
         else:
             # No hint — try both
-            await _store.delete_token(token_value)
-            await _store.delete_refresh_token(token_value)
+            await store.delete_token(token_value)
+            await store.delete_refresh_token(token_value)
 
         return JSONResponse(content={})
 

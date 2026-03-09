@@ -41,6 +41,7 @@ class FIRM_NS(StrEnum):
     NodeInfo = "firm:NodeInfo"
     WebFinger = "firm:WebFinger"
     Credentials = "firm:Credentials"
+    OAuth2Token = "firm:OAuth2Token"
     privateKey = "firm:privateKey"
     password = "firm:password"
     token = "firm:token"

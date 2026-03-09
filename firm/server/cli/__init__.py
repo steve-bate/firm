@@ -1,6 +1,5 @@
 import logging
-from dataclasses import dataclass
-from functools import cache
+from dataclasses import dataclass, field
 
 import click
 import coloredlogs
@@ -20,9 +19,12 @@ class Context:
     tenant_uri: str
     config: ServerConfig
 
-    @cache
+    _tenant: Tenant | None = field(default=None, init=False)
+
     def get_tenant(self) -> Tenant:
-        return init_tenant(self.config, self.tenant_uri)
+        if not self._tenant:
+            self._tenant = init_tenant(self.config, self.tenant_uri)
+        return self._tenant
 
     def get_store(self, uri: str) -> ResourceStore:
         """Get the appropriate store based on the URI."""

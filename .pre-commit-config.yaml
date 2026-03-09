@@ -48,6 +48,7 @@ repos:
         additional_dependencies:
             - attrs
             - types-PyYAML
+            - types-cachetools
         args:
         - --ignore-missing-imports
         - --namespace-packages

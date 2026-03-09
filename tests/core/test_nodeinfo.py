@@ -13,7 +13,7 @@ async def test_nodeinfo_index():
     # store = MemoryResourceStore()
     # request.app.state.store = store
     data = await nodeinfo_index(request_url="https://example.com/.well-known/nodeinfo")
-    assert data[0]["links"][0]["rel"] == "http://nodeinfo.diaspora.software/ns/schema/2.0"
+    assert data["links"][0]["rel"] == "http://nodeinfo.diaspora.software/ns/schema/2.0"
 
 
 @pytest.fixture

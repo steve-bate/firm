@@ -39,6 +39,8 @@ from firm.core.util import (
     AS2_CONTENT_TYPES,
 )
 from firm.jsonschema.validation import create_validator
+from firm.oauth2.middleware import OAuth2BearerTokenAuthenticator
+from firm.oauth2.router import create_oauth2_router
 from firm.server.adapters import (
     HttpConnectionAdapter,
 )
@@ -51,7 +53,13 @@ from .proxy import proxy
 log = logging.getLogger(__name__)
 
 
-_auth_chain = AuthenticatorChain([BearerTokenAuthenticator(), HttpSigAuthenticator()])
+_auth_chain = AuthenticatorChain(
+    [
+        OAuth2BearerTokenAuthenticator(),
+        BearerTokenAuthenticator(),
+        HttpSigAuthenticator(),
+    ]
+)
 
 
 async def get_principal(request: Request) -> Identity | None:
@@ -376,6 +384,9 @@ def create_router(config: ServerConfig) -> APIRouter:
     router.add_api_route("/.well-known/webfinger", webfinger_endpoint, methods=["GET"])
     router.add_api_route("/proxy", proxy_endpoint, methods=["POST"])
     router.add_api_route("/static/{file_path:path}", html_static_endpoint, methods=["GET"])
+
+    # TODO integrate this into tenant store
+    router.include_router(create_oauth2_router())
 
     validator = JsonSchemaValidator(config)
 

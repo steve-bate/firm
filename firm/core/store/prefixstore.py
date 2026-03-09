@@ -90,6 +90,13 @@ class PrefixAwareResourceStore(ResourceStore):
             criteria, updates
         )
 
+    async def close(self) -> None:
+        for store in self.tenant_private_stores.values():
+            await store.close()
+        for store in self.tenant_public_stores.values():
+            await store.close()
+        await self.remote_store.close()
+
 
 def is_http_uri(uri: str) -> bool:
     return uri.startswith("http://") or uri.startswith("https://")
