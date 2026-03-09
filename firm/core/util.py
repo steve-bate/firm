@@ -136,7 +136,7 @@ def resource_id(resource: JSON | str) -> str:
 def get_id(resource: JSON | str) -> str | None:
     if isinstance(resource, str):
         return resource
-    if isinstance(resource, Mapping):
+    if isinstance(resource, Mapping) and "id" in resource:
         return str(resource["id"])
     return None
 

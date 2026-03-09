@@ -8,7 +8,7 @@ from typing import Awaitable, Callable, cast
 
 import mimeparse
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from jsonschema.exceptions import ValidationError
 
 from firm.core.auth.authorization import CoreAuthorizationService
@@ -22,7 +22,9 @@ from firm.core.interfaces import (
     Identity,
     JSONObject,
     JsonResponse,
-    PlainTextResponse,
+)
+from firm.core.interfaces import PlainTextResponse as FirmPlainTextResponse
+from firm.core.interfaces import (
     Principal,
     Validator,
     get_query_params,
@@ -53,7 +55,7 @@ log = logging.getLogger(__name__)
 def _adapt_response(r: HttpResponse) -> Response:
     if isinstance(r, JsonResponse):
         return JSONResponse(r.json, status_code=r.status_code, headers=r.headers)
-    if isinstance(r, PlainTextResponse):
+    if isinstance(r, FirmPlainTextResponse):
         return PlainTextResponse(r.content, status_code=r.status_code, headers=r.headers)
     return Response(status_code=r.status_code, headers=r.headers, content=r.body)
 
@@ -411,6 +413,7 @@ def create_router(config: ServerConfig) -> APIRouter:
 
     async def activitypub_endpoint(request: Request) -> Response:
         if request.method in ["GET", "HEAD"]:
+            # TODO Handle exceptions
             resource = await activitypub_service.process_get(
                 request.app.state.tenants,
                 request.state.tenant,
@@ -426,10 +429,17 @@ def create_router(config: ServerConfig) -> APIRouter:
                 headers={"Content-Type": "application/activity+json"},
             )
         elif request.method == "POST":
-            result = await activitypub_service.process_post(request)
+            # TODO Handle exceptions
+            await activitypub_service.process_post(
+                tenants=request.app.state.tenants,
+                tenant=request.state.tenant,
+                principal=request.scope["user"],
+                target_uri=request.url,
+                resource=await request.json(),
+            )
+            return PlainTextResponse("OK", media_type="text/plain")
         else:
             raise HttpException(HTTPStatus.METHOD_NOT_ALLOWED)
-        return _adapt_response(result)
 
     router.add_api_route(
         "/{path:path}",

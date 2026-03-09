@@ -1,22 +1,24 @@
-import json
 from typing import Sequence
 
 import pytest
 
 from firm.core.interfaces import (
-    HttpException,
     Identity,
     JSONObject,
     ResourceStore,
     Tenant,
 )
-from firm.core.services.activitypub import ActivityPubService, NotFoundException
+from firm.core.services.activitypub import (
+    ActivityPubService,
+    InvalidResourceTypeException,
+    NotAuthorizedException,
+    NotFoundException,
+    ResourceOwnerException,
+)
 from firm.core.store.memory import MemoryResourceStore
-from firm.core.util import AS2_CONTENT_TYPES
 from tests.support import (
     StubAuthorizationService,
     StubDeliveryService,
-    StubHttpRequest,
     StubIdentity,
     StubUrl,
 )
@@ -60,9 +62,8 @@ def service():
 
 
 async def test_dereference_unknown_resource(service: ActivityPubService, tenant: Tenant):
-    with pytest.raises(NotFoundException) as ex:
+    with pytest.raises(NotFoundException):
         await service.process_get(dict(), tenant, None, StubUrl.parse("http://tenant1.test/bogus"))
-        assert ex.value.status_code == 404
 
 
 async def test_dereference(service: ActivityPubService, tenant: Tenant):
@@ -75,72 +76,40 @@ async def test_dereference(service: ActivityPubService, tenant: Tenant):
 
 
 async def test_inbox_no_auth(service: ActivityPubService, tenant: Tenant):
-    request = StubHttpRequest(
-        "POST",
-        "http://tenant1.test/inbox",
-        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
-        tenant=tenant,
-    )
-    with pytest.raises(HttpException) as ex:
-        await service.process_post(request)
-        assert ex.value.status_code == 403
+    with pytest.raises(NotAuthorizedException):
+        await service.process_post(
+            dict(), tenant, None, StubUrl.parse("http://tenant1.test/inbox"), {"id": "TEST"}
+        )
 
 
-async def test_inbox_bad_uri(service: ActivityPubService, identity):
-    request = StubHttpRequest(
-        "POST",
-        "http://tenant1.test/inbox",
-        auth=identity,
-        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
-    )
-    with pytest.raises(HttpException) as ex:
-        await service.process_post(request)
-        assert ex.value.status_code == 400
+async def test_inbox_bad_uri(service: ActivityPubService, tenant: Tenant, identity: Identity):
+    with pytest.raises(NotFoundException):
+        await service.process_post(
+            dict(), tenant, identity, StubUrl.parse("http://tenant1.test/inbox"), {"id": "TEST"}
+        )
 
 
-async def test_inbox_bad_type(service: ActivityPubService, identity: Identity):
-    await identity.tenant.public_store.put(
-        {"id": "http://tenant1.test/inbox", "type": "Collection"}
-    )
-    request = StubHttpRequest(
-        "POST",
-        "http://tenant1.test/inbox",
-        auth=identity,
-        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
-    )
-    with pytest.raises(HttpException) as ex:
-        await service.process_post(request)
-        assert ex.value.status_code == 400
+async def test_inbox_bad_type(service: ActivityPubService, tenant: Tenant, identity: Identity):
+    await tenant.public_store.put({"id": "http://tenant1.test/inbox", "type": "Collection"})
+    with pytest.raises(InvalidResourceTypeException):
+        await service.process_post(
+            dict(), tenant, identity, StubUrl.parse("http://tenant1.test/inbox"), {"id": "TEST"}
+        )
 
 
-async def test_inbox_no_attribution(service: ActivityPubService, tenant: Tenant):
+async def test_inbox_no_attribution(
+    service: ActivityPubService, tenant: Tenant, identity: Identity
+):
     await tenant.public_store.put(
         {
             "id": "http://tenant1.test/inbox",
             "type": "OrderedCollection",
         }
     )
-    request = StubHttpRequest(
-        "POST",
-        "http://tenant1.test/inbox",
-        auth=StubIdentity(
-            {
-                "id": "http://tenant1.test/user1",
-                "type": "Person",
-                "inbox": "http://tenant1.test/inbox2",
-                "outbox": "",
-                "followers": "",
-                "following": "",
-                "likes": "",
-                # "liked": ""
-            },
-            tenant,
-        ),
-        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
-    )
-    with pytest.raises(HttpException) as ex:
-        await service.process_post(request)
-        assert ex.value.status_code == 400
+    with pytest.raises(ResourceOwnerException):
+        await service.process_post(
+            dict(), tenant, identity, StubUrl.parse("http://tenant1.test/inbox"), {"id": "TEST"}
+        )
 
 
 async def setup_resources(p: ResourceStore, resources: list[JSONObject]):
@@ -179,25 +148,17 @@ async def test_inbox_follow(service: ActivityPubService, remote_identity: StubId
         ],
     )
 
-    # Follow request
-    request = StubHttpRequest(
-        "POST",
-        "http://tenant1.test/inbox",
-        auth=remote_identity,
-        body=json.dumps(
-            {
-                "id": "http://remote.test/follow1",
-                "type": "Follow",
-                "actor": "http://remote.test/user1",
-                "object": "http://tenant1.test/user2",
-            }
-        ).encode(),
-        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
-    )
-    response = await service.process_post(request)
+    resource: JSONObject = {
+        "id": "http://remote.test/follow1",
+        "type": "Follow",
+        "actor": "http://remote.test/user1",
+        "object": "http://tenant1.test/user2",
+    }
 
-    assert response.status_code == 200
-    assert response.reason_phrase == "OK"
+    await service.process_post(
+        dict(), tenant, remote_identity, StubUrl.parse("http://tenant1.test/inbox"), resource
+    )
+
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
     assert inbox and isinstance(inbox["orderedItems"], Sequence)
     assert isinstance(inbox["orderedItems"], list)
@@ -250,27 +211,20 @@ async def test_inbox_undo_follow(service: ActivityPubService, remote_identity: S
         ],
     )
 
-    # Follow request
-    request = StubHttpRequest(
-        "POST",
-        "http://tenant1.test/inbox",
-        auth=remote_identity,
-        body=json.dumps(
-            {
-                "type": "Undo",
-                "actor": "http://remote.test/user1",
-                "object": {
-                    # The Follow activity
-                    "type": "Follow",
-                    "object": "http://tenant1.test/user2",
-                },
-            }
-        ).encode(),
-        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
+    resource: JSONObject = {
+        "type": "Undo",
+        "actor": "http://remote.test/user1",
+        "object": {
+            # The Follow activity
+            "type": "Follow",
+            "object": "http://tenant1.test/user2",
+        },
+    }
+
+    await service.process_post(
+        dict(), tenant, remote_identity, StubUrl.parse("http://tenant1.test/inbox"), resource
     )
-    response = await service.process_post(request)
-    assert response.status_code == 200
-    assert response.reason_phrase == "OK"
+
     followers = await tenant.public_store.get("http://tenant1.test/user2/followers")
     assert followers and isinstance(followers["items"], Sequence)
     assert followers["items"] == []
@@ -311,26 +265,17 @@ async def test_inbox_like(service: ActivityPubService, remote_identity: StubIden
         ],
     )
 
-    # Follow request
-    request = StubHttpRequest(
-        "POST",
-        "http://tenant1.test/inbox",
-        auth=remote_identity,
-        body=json.dumps(
-            {
-                "id": "http://remote.test/follow1",
-                "type": "Like",
-                "actor": "http://remote.test/user1",
-                # They are liking the user in this case
-                "object": "http://tenant1.test/user2/note",
-            }
-        ).encode(),
-        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
+    resource: JSONObject = {
+        "id": "http://remote.test/follow1",
+        "type": "Like",
+        "actor": "http://remote.test/user1",
+        # They are liking the user in this case
+        "object": "http://tenant1.test/user2/note",
+    }
+    await service.process_post(
+        dict(), tenant, remote_identity, StubUrl.parse("http://tenant1.test/inbox"), resource
     )
-    response = await service.process_post(request)
 
-    assert response.status_code == 200
-    assert response.reason_phrase == "OK"
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
     assert inbox and isinstance(inbox["orderedItems"], Sequence)
     assert len(inbox["orderedItems"]) == 1
@@ -372,27 +317,19 @@ async def test_inbox_undo_like(service: ActivityPubService, remote_identity: Stu
         ],
     )
 
-    # Follow request
-    request = StubHttpRequest(
-        "POST",
-        "http://tenant1.test/inbox",
-        auth=remote_identity,
-        body=json.dumps(
-            {
-                "type": "Undo",
-                "actor": "http://remote.test/user1",
-                "object": {
-                    "type": "Like",
-                    "object": "http://tenant1.test/user2/note",
-                },
-            }
-        ).encode(),
-        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
-    )
-    response = await service.process_post(request)
+    resource: JSONObject = {
+        "type": "Undo",
+        "actor": "http://remote.test/user1",
+        "object": {
+            "type": "Like",
+            "object": "http://tenant1.test/user2/note",
+        },
+    }
 
-    assert response.status_code == 200
-    assert response.reason_phrase == "OK"
+    await service.process_post(
+        dict(), tenant, remote_identity, StubUrl.parse("http://tenant1.test/inbox"), resource
+    )
+
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
     assert inbox and isinstance(inbox["orderedItems"], Sequence)
     assert len(inbox["orderedItems"]) == 1
@@ -422,29 +359,20 @@ async def test_inbox_create_object(service: ActivityPubService, remote_identity:
         ],
     )
 
-    request = StubHttpRequest(
-        "POST",
-        "http://tenant1.test/inbox",
-        auth=remote_identity,
-        body=json.dumps(
-            {
-                "id": "http://remote.test/create1",
-                "type": "Create",
-                "actor": "http://remote.test/user1",
-                "object": {
-                    "id": "http://tenant1.test/user2/document",
-                    "type": "Document",
-                    "content": "Some stuff...",
-                },
-            }
-        ).encode(),
-        headers={"Content-Type": AS2_CONTENT_TYPES[0]},
+    resource: JSONObject = {
+        "id": "http://remote.test/create1",
+        "type": "Create",
+        "actor": "http://remote.test/user1",
+        "object": {
+            "id": "http://tenant1.test/user2/document",
+            "type": "Document",
+            "content": "Some stuff...",
+        },
+    }
+    await service.process_post(
+        dict(), tenant, remote_identity, StubUrl.parse("http://tenant1.test/inbox"), resource
     )
 
-    response = await service.process_post(request)
-
-    assert response.status_code == 200
-    assert response.reason_phrase == "OK"
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
     assert inbox and isinstance(inbox["orderedItems"], Sequence)
     assert len(inbox["orderedItems"]) == 1

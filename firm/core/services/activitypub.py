@@ -1,8 +1,7 @@
 import logging
 import uuid
 from datetime import datetime
-from http import HTTPStatus
-from typing import Mapping, cast
+from typing import Any, Mapping, cast
 from urllib.parse import parse_qs
 
 from firm.core.interfaces import (
@@ -11,13 +10,10 @@ from firm.core.interfaces import (
     APActor,
     AuthorizationService,
     DeliveryService,
-    HttpException,
-    HttpRequest,
-    HttpResponse,
+    Identity,
     JSONObject,
     NoOpValidator,
     PlainTextResponse,
-    Principal,
     ResourceStore,
     Tenant,
     Url,
@@ -40,8 +36,8 @@ OK = PlainTextResponse("", 200, reason_phrase="OK")
 
 
 class NotAuthorizedException(ServiceException):
-    def __init__(self, reason: str):
-        super().__init__(reason)
+    def __init__(self, reason: str | None = None):
+        super().__init__(reason or "Not authorized")
 
     @property
     def reason(self):
@@ -49,7 +45,38 @@ class NotAuthorizedException(ServiceException):
 
 
 class NotFoundException(ServiceException):
-    pass
+    def __init__(self, url: Any):
+        super().__init__(str(url))
+
+    @property
+    def url(self):
+        return self.args[0]
+
+
+class InvalidRequestException(ServiceException):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+class InvalidResourceTypeException(InvalidRequestException):
+    def __init__(self, actual_type: Any, expected_type: Any):
+        super().__init__(f"Invalid resource type: {actual_type}, expected: {expected_type}")
+
+    @property
+    def actual_type(self):
+        return self.args[0]
+
+    @property
+    def expected_type(self):
+        return self.args[1]
+
+
+class ResourceOwnerException(InvalidRequestException): ...
+
+
+class InvalidResourceException(InvalidRequestException):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 
 class ActivityPubTenant:
@@ -137,7 +164,7 @@ class ActivityPubTenant:
     ) -> JSONObject:
         """Handle requests to the shared inbox."""
         # if request.auth is None:
-        #     raise HttpException(HTTPStatus.FORBIDDEN, "Not authenticated")
+        #     raise NotAuthorizedException("Shared inbox requires authentication")
         store = tenant.public_store
         default_page_Size = 20
         # TODO Implement pagination
@@ -204,7 +231,7 @@ class ActivityPubTenant:
         self,
         tenants: Mapping[str, Tenant],
         tenant: Tenant,
-        principal: Principal | None,
+        principal: Identity | None,
         resource_uri: Url,
     ) -> JSONObject:
         if tenant.shared_inbox_uri and str(resource_uri).startswith(tenant.shared_inbox_uri):
@@ -217,80 +244,94 @@ class ActivityPubTenant:
             else:
                 raise NotAuthorizedException(decision.reason or "Not authorized")
         else:
-            raise NotFoundException()
+            raise NotFoundException(resource_uri)
 
-    async def _process_post(self, request: HttpRequest) -> HttpResponse:
-        tenant = request.state.tenant
-        if tenant.shared_inbox_uri and str(request.url).startswith(tenant.shared_inbox_uri):
-            raise HttpException(
-                HTTPStatus.NOT_IMPLEMENTED, "Shared inbox does not support POST requests yet"
-            )
+    async def _process_post(
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        target_uri: Url,
+        resource: JSONObject,
+    ) -> Any:
+        target_uri_str = str(target_uri)
+        if tenant.shared_inbox_uri and str(target_uri_str).startswith(tenant.shared_inbox_uri):
+            raise NotImplementedError("Shared inbox does not support POST requests yet")
         store = tenant.public_store
         # All POST requests must be authenticated
-        if request.auth is None:
-            raise HttpException(HTTPStatus.FORBIDDEN)
-        target = await self._dereference(store, request.url)
+        if principal is None:
+            raise NotAuthorizedException("Not authenticated")
+        target = await self._dereference(store, target_uri)
         if not target:
-            raise HttpException(HTTPStatus.BAD_REQUEST, "Unknown target resource")
+            raise NotFoundException(target_uri)
         # Boxes must be collections
         if not has_value(target, "type", "OrderedCollection"):
-            raise HttpException(HTTPStatus.BAD_REQUEST, "Invalid target resource type")
+            raise InvalidResourceTypeException(target.get("type"), "OrderedCollection")
         # Found a box, now find the box owner
         box_owner_uri = target.get("attributedTo")
         if box_owner_uri is None or not isinstance(box_owner_uri, str):
-            raise HttpException(HTTPStatus.BAD_REQUEST, "No owner for box")
+            raise ResourceOwnerException("No owner for box")
         box_owner = await self._dereference(store, box_owner_uri)
         if not box_owner:
-            raise HttpException(HTTPStatus.BAD_REQUEST, "Unknown box owner")
+            raise ResourceOwnerException("Unknown box owner")
         # Determine the type of box and dispatch accordingly
-        request_url = str(request.url)
-        if request_url == box_owner.get("inbox"):
+        if target_uri_str == box_owner.get("inbox"):
             decision = await self._authorizer.is_post_authorized(
-                request.state.tenant, request.auth, "inbox", request_url
+                tenant, principal, "inbox", target_uri_str
             )
             if decision.authorized:
-                return await self._process_inbox(request, cast(APActor, box_owner))
+                return await self._process_inbox(
+                    tenants, tenant, principal, resource, cast(APActor, box_owner)
+                )
             else:
-                raise HttpException(decision.status_code, decision.reason)
-        elif request_url == box_owner.get("outbox"):
+                raise NotAuthorizedException(decision.reason)
+        elif target_uri_str == box_owner.get("outbox"):
             decision = await self._authorizer.is_post_authorized(
-                request.state.tenant, request.auth, "outbox", request_url
+                tenant, principal, "outbox", target_uri_str
             )
             if decision.authorized:
-                return await self._process_outbox(request, cast(APActor, box_owner))
+                return await self._process_outbox(
+                    tenants, tenant, principal, resource, cast(APActor, box_owner)
+                )
             else:
-                raise HttpException(decision.status_code, decision.reason)
+                raise NotAuthorizedException(decision.reason)
         else:
-            raise HttpException(HTTPStatus.BAD_REQUEST, "Unsupported box type")
+            raise InvalidResourceException(target.get("type"), "Unsupported box type")
 
-    async def _process_inbox(self, request: HttpRequest, box_owner: APActor) -> HttpResponse:
-        store = request.state.tenant.public_store
-        activity = cast(JSONObject, await request.json())
+    async def _process_inbox(
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        activity: JSONObject,
+        box_owner: APActor,
+    ) -> None:
+        store = tenant.public_store
         self._validator.validate(activity)
-        decision = await self._authorizer.is_activity_authorized(
-            request.state.tenant, request.auth, activity
-        )
+        decision = await self._authorizer.is_activity_authorized(tenant, principal, activity)
         if not decision.authorized:
-            raise HttpException(decision.status_code, decision.reason)
+            raise NotAuthorizedException(decision.reason)
         if log.isEnabledFor(logging.DEBUG):
             log.debug(f"Inbox: activity={activity.get('type')}")
-        log.info(f"Inbox: box={request.url}, activity_type={activity.get('type')}")
+        log.info(f"Inbox: box={activity.get('id')}, activity_type={activity.get('type')}")
         await store.put(activity)
         await self._put_collection_item(store, box_owner["inbox"], resource_id(activity))
         if has_value(activity, "type", "Follow"):
-            return await self._process_inbox_follow(request, box_owner, activity)
+            return await self._process_inbox_follow(tenants, tenant, principal, box_owner, activity)
         if has_value(activity, "type", "Accept"):
-            return await self._process_inbox_accept(request, box_owner, activity)
+            return await self._process_inbox_accept(tenants, tenant, principal, box_owner, activity)
         elif has_value(activity, "type", "Like"):
-            return await self._process_inbox_like(request, box_owner, activity)
+            return await self._process_inbox_like(tenants, tenant, principal, box_owner, activity)
         elif has_value(activity, "type", "Create"):
-            return await self._process_inbox_create(request, activity)
+            return await self._process_inbox_create(tenants, tenant, principal, box_owner, activity)
         elif has_value(activity, "type", "Undo"):
-            return await self._process_inbox_undo(request, box_owner, activity)
+            return await self._process_inbox_undo(tenants, tenant, principal, box_owner, activity)
         elif has_value(activity, "type", "Announce"):
-            return await self._process_inbox_announce(request, box_owner, activity)
+            return await self._process_inbox_announce(
+                tenants, tenant, principal, box_owner, activity
+            )
         else:
-            raise HttpException(HTTPStatus.NOT_IMPLEMENTED)
+            raise NotImplementedError(f"Unsupported activity type: {activity.get('type')}")
 
     async def _put_collection_item(
         self,
@@ -336,20 +377,24 @@ class ActivityPubTenant:
         await store.put(collection)
 
     async def _process_inbox_follow(
-        self, request: HttpRequest, box_owner: APActor, activity: JSONObject
-    ) -> HttpResponse:
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        box_owner: APActor,
+        activity: JSONObject,
+    ) -> None:
         """The actor is requesting to follow the box owner."""
         actor_uri = resource_id(activity.get("actor"))
         # TODO Does the authorization framework handle this already?
-        self._assert_authorized_actor(request, actor_uri)
+        self._assert_authorized_actor(principal, actor_uri)
         if resource_id(activity.get("object")) != box_owner.get("id"):
-            raise HttpException(HTTPStatus.BAD_REQUEST, "Mismatch between object and box owner")
+            raise InvalidRequestException("Mismatch between object and box owner")
         if actor_uri == box_owner.get("id"):
-            raise HttpException(HTTPStatus.BAD_REQUEST, "Cannot follow self")
+            raise InvalidRequestException("Cannot follow self")
         collection_uri = box_owner.get("followers")
         if not collection_uri:
-            raise HttpException(HTTPStatus.NOT_IMPLEMENTED, "Following not supported")
-        tenant = request.state.tenant
+            raise NotImplementedError("Following not supported")
         store = tenant.public_store
         await self._put_collection_item(store, collection_uri, resource_id(actor_uri))
         # TODO Make auto-accept configurable
@@ -357,7 +402,7 @@ class ActivityPubTenant:
         log.info(f"Sending Accept to {actor_uri}")
         await self._process_outbox_internal(
             tenant,
-            request.app.state.tenants,
+            tenants,
             box_owner,
             {
                 "@context": "https://www.w3.org/ns/activitystreams",
@@ -368,125 +413,151 @@ class ActivityPubTenant:
                 "object": activity,
             },
         )
-        return OK
 
     async def _process_inbox_accept(
-        self, request: HttpRequest, box_owner: APActor, activity: JSONObject
-    ) -> HttpResponse:
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        box_owner: APActor,
+        activity: JSONObject,
+    ) -> None:
         """A remote actor has accepted our follow request."""
         actor_uri = resource_id(activity.get("actor"))
         # TODO Does the authorization framework handle this already?
-        self._assert_authorized_actor(request, actor_uri)
+        self._assert_authorized_actor(principal, actor_uri)
         accepted_activity_uri = resource_id(activity.get("object"))
-        store = request.state.tenant.public_store
+        store = tenant.public_store
         if accepted_activity := await self._dereference(store, accepted_activity_uri):
             if not is_type(accepted_activity, "Follow"):
-                raise HttpException(HTTPStatus.BAD_REQUEST, "Accepting non-Follow object")
+                raise InvalidRequestException("Accepting non-Follow object")
             following_uri = box_owner.get("following")
             if not following_uri:
-                raise HttpException(HTTPStatus.NOT_IMPLEMENTED, "Following not supported")
+                raise NotImplementedError("Following not supported")
             await self._put_collection_item(
                 store, following_uri, resource_id(accepted_activity["object"])
             )
-            return OK
         else:
-            raise HttpException(HTTPStatus.BAD_REQUEST, "Unknown accepted object")
+            raise InvalidResourceException("Unknown accepted object")
 
-    def _assert_authorized_actor(self, request, actor_uri):
-        if request.auth is None or actor_uri != request.auth.uri:
-            raise HttpException(HTTPStatus.FORBIDDEN, "Not authorized")
+    def _assert_authorized_actor(self, principal: Identity | None, actor_uri):
+        if principal is None or actor_uri != principal.uri:
+            raise NotAuthorizedException()
 
     async def _process_inbox_like(
-        self, request: HttpRequest, box_owner: APActor, activity: JSONObject
-    ) -> HttpResponse:
-        store = request.state.tenant.public_store
-        self._assert_authorized_actor(request, activity.get("actor"))
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        box_owner: APActor,
+        activity: JSONObject,
+    ) -> None:
+        store = tenant.public_store
+        self._assert_authorized_actor(principal, activity.get("actor"))
         liked_object_uri = resource_id(activity.get("object"))
         if liked_object := await store.get(liked_object_uri):
             collection_uri = cast(URI, liked_object["likes"])
             await self._put_collection_item(
                 store, collection_uri, resource_id(activity.get("actor"))
             )
-            return OK
         else:
-            raise HttpException(HTTPStatus.BAD_REQUEST, "Unknown liked object")
+            raise InvalidResourceException("Unknown liked object")
 
     async def _process_inbox_create(
-        self, request: HttpRequest, activity: JSONObject
-    ) -> HttpResponse:
-        store = request.state.tenant.public_store
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        box_owner: APActor,
+        activity: JSONObject,
+    ) -> None:
+        store = tenant.public_store
         activity_object = activity["object"]
         if isinstance(activity_object, Mapping):
             activity["object"] = resource_id(activity_object)
             await store.put(activity_object)
             await store.put(activity)
-        return OK
 
     async def _process_inbox_undo(
-        self, request: HttpRequest, box_owner: APActor, activity: JSONObject
-    ) -> HttpResponse:
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        box_owner: APActor,
+        activity: JSONObject,
+    ) -> None:
         # TODO If only URI retrieve remote object
         if resource_get(activity, "object", "type") == "Follow":
-            return await self._process_undo_follow(
-                request.state.tenant.public_store, box_owner, activity
-            )
+            return await self._process_undo_follow(tenant.public_store, box_owner, activity)
         elif resource_get(activity, "object", "type") == "Like":
-            return await self._process_inbox_undo_like(request, activity)
+            await self._process_inbox_undo_like(tenants, tenant, principal, box_owner, activity)
         else:
-            raise HttpException(HTTPStatus.NOT_IMPLEMENTED)
+            raise NotImplementedError("Undo not supported for this object type")
 
     async def _process_undo_follow(
         self, store: ResourceStore, box_owner: APActor, activity: JSONObject
-    ) -> HttpResponse:
+    ) -> None:
         followed_uri = resource_id(resource_get(activity, "object", "object"))
         if followed_uri is None:
-            raise HttpException(HTTPStatus.BAD_REQUEST, "Request has not activity to undo")
+            raise InvalidRequestException("Request has no activity to undo")
         followed_object = cast(APActor, await self._dereference(store, followed_uri))
         if followed_object is None:
-            raise HttpException(HTTPStatus.BAD_REQUEST, "Unknown box owner")
+            raise InvalidResourceException("Unknown box owner")
         followers_uri = followed_object["followers"]
         if followers_uri is None:
-            raise HttpException(HTTPStatus.BAD_REQUEST, "No followers collection")
+            raise InvalidResourceException("No followers collection")
         await self._remove_collection_item(store, followers_uri, resource_id(activity.get("actor")))
         await self._remove_collection_item(store, box_owner["following"], followed_uri)
-        return OK
 
     async def _process_inbox_undo_like(
-        self, request: HttpRequest, activity: JSONObject
-    ) -> HttpResponse:
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        box_owner: APActor,
+        activity: JSONObject,
+    ) -> None:
         liked_object_uri = resource_id(resource_get(activity, "object", "object"))
-        store = request.state.tenant.public_store
+        store = tenant.public_store
         if liked_object := await store.get(liked_object_uri):
             if collection_uri := cast(URI, liked_object["likes"]):
                 await self._remove_collection_item(
                     store, collection_uri, resource_id(activity.get("actor"))
                 )
-                return OK
-        raise HttpException(HTTPStatus.BAD_REQUEST, "Unable to undo like")
+                return
+        raise InvalidRequestException("Unable to undo like")
 
     async def _process_inbox_undo_announce(
-        self, request: HttpRequest, activity: JSONObject
-    ) -> HttpResponse:
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        box_owner: APActor,
+        activity: JSONObject,
+    ) -> None:
         announced_object_uri = resource_id(resource_get(activity, "object", "object"))
-        store = request.state.tenant.public_store
+        store = tenant.public_store
         if announced_object := await store.get(announced_object_uri):
             if collection_uri := cast(URI | None, announced_object.get("shares", None)):
                 await self._remove_collection_item(
                     store, collection_uri, resource_id(activity.get("actor"))
                 )
-                return OK
-        raise HttpException(HTTPStatus.BAD_REQUEST, "Unable to undo announce")
+        raise InvalidRequestException("Unable to undo announce")
 
     async def _process_inbox_announce(
-        self, request: HttpRequest, box_owner: APActor, activity: JSONObject
-    ) -> HttpResponse:
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        box_owner: APActor,
+        activity: JSONObject,
+    ) -> None:
         if "object" not in activity:
-            raise HttpException(HTTPStatus.BAD_REQUEST, "Missing object in announce")
+            raise InvalidRequestException("Missing object in announce")
         announced_object_uri = resource_id(activity["object"])
-        tenant = request.state.tenant
         announced_object = await self._dereference(tenant.public_store, announced_object_uri)
         if announced_object is None:
-            raise HttpException(HTTPStatus.BAD_REQUEST, "Unknown announced object")
+            raise InvalidRequestException("Unknown announced object")
         if "shares" not in announced_object:
             shares = {
                 "id": f"{announced_object['id']}/shares",
@@ -506,7 +577,6 @@ class ActivityPubTenant:
         await tenant.public_store.put(shares)
         announced_object["shares"] = shares["id"]
         await tenant.public_store.put(announced_object)
-        return OK
 
     def _generate_id(self, subpath: str, actor: APActor) -> str:
         return f"{actor.get('id')}/{subpath}/{uuid.uuid4()}"
@@ -520,7 +590,7 @@ class ActivityPubTenant:
     ) -> None:
         outbox_uri = box_owner.get("outbox")
         if not outbox_uri:
-            raise HttpException(HTTPStatus.INTERNAL_SERVER_ERROR, "Box owner has no outbox")
+            raise InvalidResourceException("Box owner has no outbox")
         store = tenant.public_store
         if has_value(activity, "type", "Create"):
             object_ = activity["object"]
@@ -592,23 +662,21 @@ class ActivityPubTenant:
                     if isinstance(target, str):
                         target = await self._safe_dereference_or_uri(store, target)
                     if not target or not isinstance(target, Mapping):
-                        raise HttpException(HTTPStatus.BAD_REQUEST, "Invalid target collection")
+                        raise InvalidResourceException("Invalid target collection")
                     if "id" not in target:
-                        raise HttpException(HTTPStatus.BAD_REQUEST, "Target collection has no ID")
+                        raise InvalidRequestException("Target collection has no ID")
                     if "items" not in target and "orderedItems" not in target:
-                        raise HttpException(
-                            HTTPStatus.BAD_REQUEST, "Target collection has no items"
-                        )
+                        raise InvalidResourceException("Target collection has no items property")
                     if "object" not in activity:
-                        raise HttpException(HTTPStatus.BAD_REQUEST, "Missing object in Add")
+                        raise InvalidRequestException("Missing object in Add")
                     object_ = activity["object"]
                     if isinstance(object_, str):
                         object_ = await self._safe_dereference_or_uri(store, object_)
                     if not object_ or not isinstance(object_, Mapping):
-                        raise HttpException(HTTPStatus.BAD_REQUEST, "Invalid object to add")
+                        raise InvalidRequestException("Invalid object to add")
                     # Add the object to the collection
                     if "id" not in object_:
-                        raise Exception(HTTPStatus.BAD_REQUEST, "Object has no ID")
+                        raise InvalidResourceException("Object has no ID")
                     if "attributedTo" not in object_:
                         object_["attributedTo"] = activity.get("actor", tenant.prefix)
                     await store.put(object_)
@@ -631,23 +699,21 @@ class ActivityPubTenant:
                     if isinstance(target, str):
                         target = await self._safe_dereference_or_uri(store, target)
                     if not target or not isinstance(target, Mapping):
-                        raise HttpException(HTTPStatus.BAD_REQUEST, "Invalid target collection")
+                        raise InvalidResourceException("Invalid target collection")
                     if "id" not in target:
-                        raise HttpException(HTTPStatus.BAD_REQUEST, "Target collection has no ID")
+                        raise InvalidResourceException("Target collection has no ID")
                     if "items" not in target and "orderedItems" not in target:
-                        raise HttpException(
-                            HTTPStatus.BAD_REQUEST, "Target collection has no items"
-                        )
+                        raise InvalidResourceException("Target collection has no items property")
                     if "object" not in activity:
-                        raise HttpException(HTTPStatus.BAD_REQUEST, "Missing object in Remove")
+                        raise InvalidRequestException("Missing object in Remove")
                     object_ = activity["object"]
                     if isinstance(object_, str):
                         object_ = await self._safe_dereference_or_uri(store, object_)
                     if not object_ or not isinstance(object_, Mapping):
-                        raise HttpException(HTTPStatus.BAD_REQUEST, "Invalid object to remove")
+                        raise InvalidRequestException("Invalid object to remove")
                     # Remove the object from the collection
                     if "id" not in object_:
-                        raise Exception(HTTPStatus.BAD_REQUEST, "Object has no ID")
+                        raise InvalidResourceException("Object has no ID")
                     if "items" in target:
                         if resource_id(object_) in cast(list, target["items"]):
                             cast(list, target["items"]).remove(resource_id(object_))
@@ -655,9 +721,7 @@ class ActivityPubTenant:
                         if resource_id(object_) in cast(list, target["orderedItems"]):
                             cast(list, target["orderedItems"]).remove(resource_id(object_))
                     else:
-                        raise HttpException(
-                            HTTPStatus.BAD_REQUEST, "Target collection has no items"
-                        )
+                        raise InvalidResourceException("Target collection has no items")
                     target["totalItems"] = len(cast(list, target.get("items", []))) + len(
                         cast(list, target.get("orderedItems", []))
                     )
@@ -683,7 +747,7 @@ class ActivityPubTenant:
                                     store, liked_collection_uri, liked_object_uri
                                 )
                     else:
-                        raise HttpException(HTTPStatus.BAD_REQUEST, "Unknown liked object")
+                        raise InvalidRequestException("Unknown liked object")
                 elif has_value(activity, "type", "Undo"):
                     # implement undo for follow, like, announce
                     if resource_get(activity, "object", "type") == "Follow":
@@ -703,24 +767,28 @@ class ActivityPubTenant:
         # TODO Process activity
         await self._delivery_service.deliver(tenant, all_tenants, activity)
 
-    async def _process_outbox(self, request: HttpRequest, box_owner: APActor) -> HttpResponse:
+    async def _process_outbox(
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        activity: JSONObject,
+        box_owner: APActor,
+    ) -> None:
         # TODO Use JSONObject?
-        activity = dict(await request.json())
         self._validator.validate(activity)
         if "@context" not in activity:
             activity["@context"] = "https://www.w3.org/ns/activitystreams"
         for activity_type in get_types(activity):
             if activity_type in ACTIVITIES_REQUIRING_OBJECT:
                 if "object" not in activity:
-                    raise HttpException(HTTPStatus.BAD_REQUEST, "Missing object")
+                    raise InvalidRequestException("Missing object")
             if activity_type in ACTIVITIES_REQUIRING_TARGET:
                 if "target" not in activity:
-                    raise HttpException(HTTPStatus.BAD_REQUEST, "Missing target")
-        decision = await self._authorizer.is_activity_authorized(
-            request.state.tenant, request.auth, activity
-        )
+                    raise InvalidRequestException("Missing target")
+        decision = await self._authorizer.is_activity_authorized(tenant, principal, activity)
         if not decision.authorized:
-            raise HttpException(decision.status_code, decision.reason)
+            raise NotAuthorizedException(decision.reason)
         actor_uri = box_owner["id"]
         activity["id"] = f"{actor_uri}/{'_'.join(get_types(activity)).lower()}-{uuid.uuid4()}"
         # Fill in missing fields
@@ -728,16 +796,10 @@ class ActivityPubTenant:
             activity["actor"] = actor_uri
         log.info(f"Outbox activity: {activity.get('type')}")
         await self._process_outbox_internal(
-            request.state.tenant,
-            request.app.state.tenants,
+            tenant,
+            tenants,
             box_owner,
             activity,
-        )
-        return PlainTextResponse(
-            "Processed",
-            200,
-            reason_phrase="OK",
-            headers={"Location": activity["id"]},
         )
 
 
@@ -754,7 +816,7 @@ class ActivityPubService:
         self,
         tenants: Mapping[str, Tenant],
         tenant: Tenant,
-        principal: Principal | None,
+        principal: Identity | None,
         resource_uri: Url,
     ) -> JSONObject:
         return await self._handler._process_get(
@@ -764,5 +826,18 @@ class ActivityPubService:
             resource_uri,
         )
 
-    async def process_post(self, request: HttpRequest) -> HttpResponse:
-        return await self._handler._process_post(request)
+    async def process_post(
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        target_uri: Url,
+        resource: JSONObject,
+    ) -> None:
+        return await self._handler._process_post(
+            tenants=tenants,
+            tenant=tenant,
+            principal=principal,
+            target_uri=target_uri,
+            resource=resource,
+        )
