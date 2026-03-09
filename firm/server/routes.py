@@ -391,8 +391,8 @@ def create_router(config: ServerConfig) -> APIRouter:
 
     router.add_api_route("/.well-known/nodeinfo", nodeinfo_index_endpoint, methods=["GET"])
     router.add_api_route("/nodeinfo/{version}", nodeinfo_version_endpoint, methods=["GET"])
-
     router.add_api_route("/.well-known/webfinger", webfinger_endpoint, methods=["GET"])
+
     router.add_api_route("/static/{file_path:path}", html_static_endpoint, methods=["GET"])
     router.add_api_route("/proxy", _adapt_endpoint(proxy, protected=True), methods=["POST"])
 

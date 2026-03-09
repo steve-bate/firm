@@ -4,18 +4,19 @@ from http import HTTPStatus
 from typing import cast
 
 import httpx
+from fastapi import HTTPException, Request, Response
 
 from firm.core.auth.http_signature import HttpSignatureAuth
-from firm.core.interfaces import FIRM_NS, HttpException, HttpRequest, HttpResponse
+from firm.core.interfaces import FIRM_NS
 from firm.server.adapters import HttpxAuthAdapter
 
 log = logging.getLogger(__name__)
 
 
-async def proxy(request: HttpRequest) -> HttpResponse:
+async def proxy(request: Request) -> Response:
     """Proxy request to remote instance (HTTP Signatures)"""
     if request.auth is None:
-        raise HttpException(HTTPStatus.FORBIDDEN, "Authentication required")
+        raise HTTPException(HTTPStatus.FORBIDDEN, "Authentication required")
     if log.isEnabledFor(logging.DEBUG):
         log.debug(f"Proxying request: {request.method} {request.url}")
     # get id from request form body
@@ -23,7 +24,7 @@ async def proxy(request: HttpRequest) -> HttpResponse:
     form_data = await request.form()
     requested_uri = form_data.get("id")
     if not requested_uri:
-        raise HttpException(HTTPStatus.BAD_REQUEST, "Missing id")
+        raise HTTPException(HTTPStatus.BAD_REQUEST, "Missing id")
 
     actor = request.auth.actor
     tenant = request.state.tenant
@@ -32,14 +33,14 @@ async def proxy(request: HttpRequest) -> HttpResponse:
     if config.is_local(requested_uri):
         # If the URI is local, fetch it from the tenant's public store
         if resource := await tenant.public_store.get(requested_uri):
-            return HttpResponse(
+            return Response(
                 status_code=HTTPStatus.OK.value,
                 headers={"Content-Type": "application/activity+json"},
                 body=json.dumps(resource).encode("utf-8"),
                 reason_phrase="OK",
             )
         else:
-            raise HttpException(HTTPStatus.NOT_FOUND, "Resource not found in local storage")
+            raise HTTPException(HTTPStatus.NOT_FOUND, "Resource not found in local storage")
 
     # Else do remote query
     # TODO cache the response
@@ -52,7 +53,7 @@ async def proxy(request: HttpRequest) -> HttpResponse:
     )
 
     if not credentials or FIRM_NS.privateKey not in credentials:
-        raise HttpException(HTTPStatus.UNAUTHORIZED, "No private key found for actor")
+        raise HTTPException(HTTPStatus.UNAUTHORIZED, "No private key found for actor")
 
     # TODO Make the AP proxy more generic and move to firm core project
 
@@ -64,14 +65,14 @@ async def proxy(request: HttpRequest) -> HttpResponse:
     ) as client:
         try:
             response = await client.get(requested_uri)
-            proxy_response = HttpResponse(
+            proxy_response = Response(
                 status_code=response.status_code,
                 headers=response.headers,
-                body=response.content,
+                content=response.content,
                 reason_phrase=response.reason_phrase,
             )
             return proxy_response
         except httpx.HTTPStatusError as e:
-            raise HttpException(e.response.status_code, str(e))
+            raise HTTPException(e.response.status_code, str(e))
         except httpx.RequestError as e:
-            raise HttpException(HTTPStatus.BAD_GATEWAY, str(e))
+            raise HTTPException(HTTPStatus.BAD_GATEWAY, str(e))

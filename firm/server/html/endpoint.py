@@ -12,8 +12,6 @@ from starlette.templating import Jinja2Templates
 
 from firm.core.interfaces import (
     FIRM_NS,
-    HttpRequest,
-    HttpResponse,
     JSONObject,
     Tenant,
 )
@@ -143,7 +141,7 @@ def _get_tenant_templates(tenant: Tenant) -> Jinja2Templates:
     return templates
 
 
-async def html_endpoint(request: HttpRequest) -> HttpResponse:
+async def html_endpoint(request: Request) -> Response:
     tenant = request.state.tenant
     templates = _get_tenant_templates(tenant)
     request_url = str(request.url)
