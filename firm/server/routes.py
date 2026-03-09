@@ -386,23 +386,50 @@ async def webfinger_endpoint(request: Request) -> Response:
         raise HTTPException(HTTPStatus.NOT_FOUND, detail=str(e))
 
 
+def proxy_endpoint(request: Request, principal: Principal = Depends(get_principal)) -> Response:
+    if not principal:
+        raise HTTPException(HTTPStatus.FORBIDDEN, "Authentication required")
+    return proxy(request)
+
+
 def create_router(config: ServerConfig) -> APIRouter:
     router = APIRouter()
 
     router.add_api_route("/.well-known/nodeinfo", nodeinfo_index_endpoint, methods=["GET"])
     router.add_api_route("/nodeinfo/{version}", nodeinfo_version_endpoint, methods=["GET"])
     router.add_api_route("/.well-known/webfinger", webfinger_endpoint, methods=["GET"])
-
+    router.add_api_route("/proxy", proxy_endpoint, methods=["POST"])
     router.add_api_route("/static/{file_path:path}", html_static_endpoint, methods=["GET"])
-    router.add_api_route("/proxy", _adapt_endpoint(proxy, protected=True), methods=["POST"])
 
     validator = JsonSchemaValidator(config)
 
-    ap_service = ActivityPubService(
+    activitypub_service = ActivityPubService(
         authorizer=CoreAuthorizationService(),
         delivery_service=FirmDeliveryService(config),
         validator=validator,
     )
+
+    async def activitypub_endpoint(request: Request) -> Response:
+        if request.method in ["GET", "HEAD"]:
+            resource = await activitypub_service.process_get(
+                request.app.state.tenants,
+                request.state.tenant,
+                request.scope["user"],
+                request.url,
+            )
+            status_code = 200
+            if resource.get("type") == "Tombstone":
+                status_code = HTTPStatus.GONE
+            return JSONResponse(
+                resource,
+                status_code=status_code,
+                headers={"Content-Type": "application/activity+json"},
+            )
+        elif request.method == "POST":
+            result = await activitypub_service.process_post(request)
+        else:
+            raise HttpException(HTTPStatus.METHOD_NOT_ALLOWED)
+        return _adapt_response(result)
 
     router.add_api_route(
         "/{path:path}",
@@ -416,7 +443,8 @@ def create_router(config: ServerConfig) -> APIRouter:
                 RoutingRule(
                     predicate=lambda req: accepts_activitypub(req)
                     or has_content_type(req, AS2_CONTENT_TYPES),
-                    handler=_adapt_endpoint(ap_service.process_request),
+                    # handler=_adapt_endpoint(activitypub_service.process_request),
+                    handler=activitypub_endpoint,
                     allowed_methods=["GET", "HEAD", "POST"],
                 ),
             ]

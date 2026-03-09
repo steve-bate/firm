@@ -10,7 +10,7 @@ from firm.core.interfaces import (
     ResourceStore,
     Tenant,
 )
-from firm.core.services.activitypub import ActivityPubService
+from firm.core.services.activitypub import ActivityPubService, NotFoundException
 from firm.core.store.memory import MemoryResourceStore
 from firm.core.util import AS2_CONTENT_TYPES
 from tests.support import (
@@ -18,6 +18,7 @@ from tests.support import (
     StubDeliveryService,
     StubHttpRequest,
     StubIdentity,
+    StubUrl,
 )
 
 
@@ -59,20 +60,18 @@ def service():
 
 
 async def test_dereference_unknown_resource(service: ActivityPubService, tenant: Tenant):
-    request = StubHttpRequest("GET", "http://tenant1.test/bogus", tenant=tenant)
-    with pytest.raises(HttpException) as ex:
-        await service.process_request(request)
+    with pytest.raises(NotFoundException) as ex:
+        await service.process_get(dict(), tenant, None, StubUrl.parse("http://tenant1.test/bogus"))
         assert ex.value.status_code == 404
 
 
 async def test_dereference(service: ActivityPubService, tenant: Tenant):
     resource: JSONObject = {"id": "http://tenant1.test/obj1", "type": "Object"}
     await tenant.public_store.put(resource)
-    request = StubHttpRequest("GET", "http://tenant1.test/obj1", tenant=tenant)
-    response = await service.process_request(request)
-    assert response.status_code == 200
-    assert response.media_type == "application/activity+json"
-    assert response.body == json.dumps(resource).encode()
+    resource = await service.process_get(
+        dict(), tenant, None, StubUrl.parse("http://tenant1.test/obj1")
+    )
+    assert resource == {"id": "http://tenant1.test/obj1", "type": "Object"}
 
 
 async def test_inbox_no_auth(service: ActivityPubService, tenant: Tenant):
@@ -83,7 +82,7 @@ async def test_inbox_no_auth(service: ActivityPubService, tenant: Tenant):
         tenant=tenant,
     )
     with pytest.raises(HttpException) as ex:
-        await service.process_request(request)
+        await service.process_post(request)
         assert ex.value.status_code == 403
 
 
@@ -95,7 +94,7 @@ async def test_inbox_bad_uri(service: ActivityPubService, identity):
         headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
     with pytest.raises(HttpException) as ex:
-        await service.process_request(request)
+        await service.process_post(request)
         assert ex.value.status_code == 400
 
 
@@ -110,7 +109,7 @@ async def test_inbox_bad_type(service: ActivityPubService, identity: Identity):
         headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
     with pytest.raises(HttpException) as ex:
-        await service.process_request(request)
+        await service.process_post(request)
         assert ex.value.status_code == 400
 
 
@@ -140,7 +139,7 @@ async def test_inbox_no_attribution(service: ActivityPubService, tenant: Tenant)
         headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
     with pytest.raises(HttpException) as ex:
-        await service.process_request(request)
+        await service.process_post(request)
         assert ex.value.status_code == 400
 
 
@@ -195,7 +194,7 @@ async def test_inbox_follow(service: ActivityPubService, remote_identity: StubId
         ).encode(),
         headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
-    response = await service.process_request(request)
+    response = await service.process_post(request)
 
     assert response.status_code == 200
     assert response.reason_phrase == "OK"
@@ -269,7 +268,7 @@ async def test_inbox_undo_follow(service: ActivityPubService, remote_identity: S
         ).encode(),
         headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
-    response = await service.process_request(request)
+    response = await service.process_post(request)
     assert response.status_code == 200
     assert response.reason_phrase == "OK"
     followers = await tenant.public_store.get("http://tenant1.test/user2/followers")
@@ -328,7 +327,7 @@ async def test_inbox_like(service: ActivityPubService, remote_identity: StubIden
         ).encode(),
         headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
-    response = await service.process_request(request)
+    response = await service.process_post(request)
 
     assert response.status_code == 200
     assert response.reason_phrase == "OK"
@@ -390,7 +389,7 @@ async def test_inbox_undo_like(service: ActivityPubService, remote_identity: Stu
         ).encode(),
         headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
-    response = await service.process_request(request)
+    response = await service.process_post(request)
 
     assert response.status_code == 200
     assert response.reason_phrase == "OK"
@@ -442,7 +441,7 @@ async def test_inbox_create_object(service: ActivityPubService, remote_identity:
         headers={"Content-Type": AS2_CONTENT_TYPES[0]},
     )
 
-    response = await service.process_request(request)
+    response = await service.process_post(request)
 
     assert response.status_code == 200
     assert response.reason_phrase == "OK"

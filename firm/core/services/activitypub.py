@@ -7,7 +7,6 @@ from urllib.parse import parse_qs
 
 from firm.core.interfaces import (
     FIRM_NS,
-    JSON,
     URI,
     APActor,
     AuthorizationService,
@@ -16,14 +15,15 @@ from firm.core.interfaces import (
     HttpRequest,
     HttpResponse,
     JSONObject,
-    JsonResponse,
     NoOpValidator,
     PlainTextResponse,
+    Principal,
     ResourceStore,
     Tenant,
     Url,
     Validator,
 )
+from firm.core.services.exception import ServiceException
 from firm.core.util import (
     ACTIVITIES_REQUIRING_OBJECT,
     ACTIVITIES_REQUIRING_TARGET,
@@ -37,6 +37,19 @@ from firm.core.util import (
 )
 
 OK = PlainTextResponse("", 200, reason_phrase="OK")
+
+
+class NotAuthorizedException(ServiceException):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+
+    @property
+    def reason(self):
+        return self.args[0]
+
+
+class NotFoundException(ServiceException):
+    pass
 
 
 class ActivityPubTenant:
@@ -66,7 +79,7 @@ class ActivityPubTenant:
         except Exception:
             return str(url)
 
-    async def serialize(self, store: ResourceStore, resource: JSON) -> JSON:
+    async def serialize(self, store: ResourceStore, resource: JSONObject) -> JSONObject:
         """Embed specific resources to match typical AP expectations."""
         if not isinstance(resource, dict):
             return resource
@@ -119,39 +132,36 @@ class ActivityPubTenant:
             return default_value
         return values[0]
 
-    async def _get_shared_inbox(self, tenant: Tenant, request: HttpRequest) -> HttpResponse:
+    async def _get_shared_inbox(
+        self, tenants: Mapping[str, Tenant], tenant: Tenant, resource_uri: Url
+    ) -> JSONObject:
         """Handle requests to the shared inbox."""
-        if request.auth is None:
-            raise HttpException(HTTPStatus.FORBIDDEN, "Not authenticated")
+        # if request.auth is None:
+        #     raise HttpException(HTTPStatus.FORBIDDEN, "Not authenticated")
         store = tenant.public_store
         default_page_Size = 20
         # TODO Implement pagination
         # This is brute force and limited for now, but we can optimize later
         # It's primarily here for Flowz demonstration purposes
-        query_params = parse_qs(request.url.query)
-        path_parts = request.url.path.split("/")
+        query_params = parse_qs(resource_uri.query)
+        path_parts = resource_uri.path.split("/")
         federated = len(path_parts) == 3 and path_parts[-1] == "federated"
         offset_param = self._get_query_param(query_params, "offset", "")
         limit = int(self._get_query_param(query_params, "limit", str(default_page_Size)))
         # strip query and fragment
-        box_id = f"{request.url.scheme}://{request.url.netloc}{request.url.path}"
+        box_id = f"{resource_uri.scheme}://{resource_uri.netloc}{resource_uri.path}"
         if offset_param == "":
-            return JsonResponse(
-                {
-                    "@context": "https://www.w3.org/ns/activitystreams",
-                    "id": box_id,
-                    "type": "OrderedCollection",
-                    "first": f"{box_id}?offset=0",
-                },
-                status_code=200,
-                headers={"Content-Type": "application/activity+json"},
-            )
+            return {
+                "@context": "https://www.w3.org/ns/activitystreams",
+                "id": box_id,
+                "type": "OrderedCollection",
+                "first": f"{box_id}?offset=0",
+            }
         else:
             offset = int(offset_param)
             all_public_activities: list[JSONObject] = []
             if federated:
                 # This is obviously not scalable, but for demonstration purposes
-                tenants = request.app.state.tenants
                 for tenant in tenants.values():
                     all_public_activities.extend(
                         a
@@ -188,35 +198,26 @@ class ActivityPubTenant:
             if len(items) > 0 and (offset + limit < len(all_public_activities)):
                 page["next"] = f"{box_id}?offset={int(offset) + limit}"
 
-            return JsonResponse(
-                cast(JSONObject, await self.serialize(store, page)),
-                status_code=200,
-                headers={"Content-Type": "application/activity+json"},
-            )
+            return await self.serialize(store, page)
 
-    async def _process_get(self, request: HttpRequest) -> HttpResponse:
-        tenant = request.state.tenant
-        if tenant.shared_inbox_uri and str(request.url).startswith(tenant.shared_inbox_uri):
-            return await self._get_shared_inbox(tenant, request)
+    async def _process_get(
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Principal | None,
+        resource_uri: Url,
+    ) -> JSONObject:
+        if tenant.shared_inbox_uri and str(resource_uri).startswith(tenant.shared_inbox_uri):
+            return await self._get_shared_inbox(tenants, tenant, resource_uri)
         store = tenant.public_store
-        if resource := await self._dereference(store, request.url):
-            decision = await self._authorizer.is_get_authorized(
-                request.state.tenant, request.auth, resource
-            )
+        if resource := await self._dereference(store, resource_uri):
+            decision = await self._authorizer.is_get_authorized(tenant, principal, resource)
             if decision.authorized:
-                resource = await self.serialize(store, resource)
-                status_code = 200
-                if resource.get("type") == "Tombstone":
-                    status_code = HTTPStatus.GONE
-                return JsonResponse(
-                    resource,
-                    status_code=status_code,
-                    headers={"Content-Type": "application/activity+json"},
-                )
+                return await self.serialize(store, resource)
             else:
-                raise HttpException(decision.status_code, decision.reason)
+                raise NotAuthorizedException(decision.reason or "Not authorized")
         else:
-            raise HttpException(HTTPStatus.NOT_FOUND)
+            raise NotFoundException()
 
     async def _process_post(self, request: HttpRequest) -> HttpResponse:
         tenant = request.state.tenant
@@ -261,14 +262,6 @@ class ActivityPubTenant:
                 raise HttpException(decision.status_code, decision.reason)
         else:
             raise HttpException(HTTPStatus.BAD_REQUEST, "Unsupported box type")
-
-    async def process_request(self, request: HttpRequest) -> HttpResponse:
-        if request.method in ["GET", "HEAD"]:
-            return await self._process_get(request)
-        elif request.method == "POST":
-            return await self._process_post(request)
-        else:
-            raise HttpException(HTTPStatus.METHOD_NOT_ALLOWED)
 
     async def _process_inbox(self, request: HttpRequest, box_owner: APActor) -> HttpResponse:
         store = request.state.tenant.public_store
@@ -757,11 +750,19 @@ class ActivityPubService:
     ) -> None:
         self._handler = ActivityPubTenant(authorizer, delivery_service, validator)
 
-    async def process_request(self, request: HttpRequest) -> HttpResponse:
-        if log.isEnabledFor(logging.DEBUG):
-            log.debug(
-                f"Request: {request.method} {request.url} "
-                f"authenticated_actor={request.auth.uri if request.auth else 'none'}"
-            )
-        # TODO Clean up the handler after the refactoring
-        return await self._handler.process_request(request)
+    async def process_get(
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Principal | None,
+        resource_uri: Url,
+    ) -> JSONObject:
+        return await self._handler._process_get(
+            tenants,
+            tenant,
+            principal,
+            resource_uri,
+        )
+
+    async def process_post(self, request: HttpRequest) -> HttpResponse:
+        return await self._handler._process_post(request)
