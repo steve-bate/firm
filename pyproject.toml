@@ -9,6 +9,7 @@ authors = [
     { name = "Steve Bate", email = "svc-github@stevebate.net" }
 ]
 dependencies = [
+  "anyio>=4,<5",
   "cryptography>=43.0.0,<44.0.0",
   "bcrypt>=4.2.0,<5.0.0",
   "uvicorn>=0.30.6,<0.31.0",
@@ -23,7 +24,7 @@ dependencies = [
   "python-multipart>=0.0.20,<0.0.21",
   "bleach>=6.2.0,<7.0.0",
   "fastapi>=0.135",
-  "httpx-cache>=0.13.0",
+  #"httpx-cache>=0.13.0",
   "pyld>=2.0.4",
   "rdflib>=7.6.0",
   "rdflib-endpoint>=0.6.1",

@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SSE Test Client</title>
+  <style>
+    body { font-family: sans-serif; margin: 2rem; max-width: 860px; }
+    h2 { margin-top: 1.5rem; margin-bottom: 0.4rem; font-size: 1rem; color: #444; text-transform: uppercase; letter-spacing: .04em; }
+    .card {
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1rem;
+      background: #fafafa;
+    }
+    .card label { display: block; margin-bottom: 0.4rem; font-size: 0.9rem; }
+    .card input[type=text], .card select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0.35rem 0.5rem;
+      border: 1px solid #bbb;
+      border-radius: 4px;
+      font-size: 0.95rem;
+      margin-bottom: 0.5rem;
+    }
+    .card select { background: #fff; }
+    .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    button {
+      padding: 0.35rem 0.9rem;
+      border: 1px solid #888;
+      border-radius: 4px;
+      background: #fff;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    button:hover { background: #eee; }
+    button.primary { background: #0078d4; color: #fff; border-color: #0078d4; }
+    button.primary:hover { background: #005fa3; }
+    button.danger { background: #c00; color: #fff; border-color: #900; }
+    button.danger:hover { background: #900; }
+    #events {
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      height: 280px;
+      overflow-y: auto;
+      padding: 0.75rem;
+      white-space: pre-wrap;
+      background: #111;
+      color: #0f0;
+      font-family: monospace;
+      font-size: 0.85rem;
+    }
+    #subscription-list { list-style: none; padding: 0; margin: 0.4rem 0; }
+    #subscription-list li {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.2rem 0;
+      font-size: 0.9rem;
+    }
+    .tag {
+      background: #e1ecff; border: 1px solid #aac8ff; border-radius: 3px;
+      padding: 0.1rem 0.45rem; font-size: 0.85rem;
+    }
+    .empty-note { color: #888; font-style: italic; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <h1>SSE Test Client</h1>
+
+  <!-- Session (must exist before subscriptions can be managed) -->
+  <h2>Session</h2>
+  <div class="card">
+    <div class="row">
+      <button id="btn-issue-ticket" type="button" class="primary">POST /sse/control (issue ticket)</button>
+      <button id="btn-stop" type="button">Stop stream</button>
+      <button id="btn-revoke" type="button" class="danger">DELETE /sse/control (revoke session)</button>
+      <span id="ticket-result"></span>
+    </div>
+  </div>
+
+  <!-- Subscriptions section -->
+  <h2>Subscriptions</h2>
+  <div class="card">
+    <div class="row" style="margin-bottom:0.6rem">
+      <button id="btn-refresh-subs" type="button">Refresh</button>
+      <span id="subs-status" class="empty-note">not loaded</span>
+    </div>
+    <ul id="subscription-list"><li class="empty-note">—</li></ul>
+  </div>
+
+  <h2>Add Subscription</h2>
+  <div class="card">
+    <label for="topic-input">Topic</label>
+    <input id="topic-input" type="text" placeholder="e.g. notifications" />
+    <div class="row">
+      <button id="btn-subscribe" type="button" class="primary">POST /sse/control/subscriptions</button>
+      <span id="subscribe-result"></span>
+    </div>
+  </div>
+
+  <h2>Remove Subscription</h2>
+  <div class="card">
+    <label for="unsub-select">Select topic to remove</label>
+    <select id="unsub-select"><option value="">— refresh subscriptions first —</option></select>
+    <div class="row">
+      <button id="btn-unsubscribe" type="button" class="danger">DELETE /sse/control/subscriptions</button>
+      <span id="unsubscribe-result"></span>
+    </div>
+  </div>
+
+  <!-- Test endpoint -->
+  <h2>Test Notification</h2>
+  <div class="card">
+    <div class="row">
+      <button id="send-test" type="button">GET /sse/test</button>
+      <span id="test-result"></span>
+    </div>
+  </div>
+
+  <!-- Event log -->
+  <h2>Event Log</h2>
+  <div class="row" style="margin-bottom:0.4rem">
+    <button id="btn-clear-log" type="button">Clear</button>
+  </div>
+  <div id="events" aria-live="polite"></div>
+
+  <script type="module">
+    import { SseClient } from '/static/js/sse-client.js';
+
+    // ── DOM refs ──────────────────────────────────────────────────
+    const eventsEl        = document.getElementById('events');
+    const subsList        = document.getElementById('subscription-list');
+    const unsubSelect     = document.getElementById('unsub-select');
+    const subsStatus      = document.getElementById('subs-status');
+    const topicInput      = document.getElementById('topic-input');
+    const subscribeResult = document.getElementById('subscribe-result');
+    const unsubResult     = document.getElementById('unsubscribe-result');
+    const ticketResult    = document.getElementById('ticket-result');
+    const testResult      = document.getElementById('test-result');
+    const revokeResult    = ticketResult; // reuse the same status span
+
+    // ── Helpers ───────────────────────────────────────────────────
+    const log = (line) => {
+      const stamp = new Date().toISOString();
+      eventsEl.textContent += `[${stamp}] ${line}\n`;
+      eventsEl.scrollTop = eventsEl.scrollHeight;
+    };
+
+    const setResult = (el, text, ok = true) => {
+      el.textContent = text;
+      el.style.color = ok ? '#080' : '#c00';
+    };
+
+    const renderSubscriptions = (topics) => {
+      subsList.innerHTML = '';
+      unsubSelect.innerHTML = '';
+      if (!topics || topics.length === 0) {
+        subsList.innerHTML = '<li class="empty-note">no subscriptions</li>';
+        unsubSelect.innerHTML = '<option value="">— no subscriptions —</option>';
+        subsStatus.textContent = '0 topics';
+        return;
+      }
+      subsStatus.textContent = `${topics.length} topic(s)`;
+      for (const t of topics) {
+        const li = document.createElement('li');
+        li.innerHTML = `<span class="tag">${t}</span>`;
+        subsList.appendChild(li);
+
+        const opt = document.createElement('option');
+        opt.value = t;
+        opt.textContent = t;
+        unsubSelect.appendChild(opt);
+      }
+    };
+
+    // ── SseClient ─────────────────────────────────────────────────
+    const client = new SseClient({
+      onStatusChange(status) {
+        log(`status=${status}`);
+      },
+      onError(message) {
+        log(`error=${message}`);
+      },
+      onEvent(eventType, data) {
+        log(`event=${eventType} data=${JSON.stringify(data)}`);
+      },
+      onTopicsChange(topics) {
+        renderSubscriptions([...topics]);
+      },
+    });
+
+    // ── Refresh subscriptions ─────────────────────────────────────
+    // Fetches the server-side topic list and syncs the client's internal
+    // #topics set so that client.start() has an accurate topic count.
+    const refreshSubscriptions = async () => {
+      try {
+        const serverTopics = await client.getSubscriptions();
+        // Sync: subscribe client-side to any topics the server already has
+        // (client.subscribe is idempotent on the server since it uses a set).
+        const clientTopics = client.topics;
+        for (const t of serverTopics) {
+          if (!clientTopics.has(t)) {
+            await client.subscribe(t);
+          }
+        }
+        renderSubscriptions(serverTopics);
+        log(`GET /sse/control/subscriptions -> ${JSON.stringify(serverTopics)}`);
+      } catch (err) {
+        subsStatus.textContent = 'error';
+        log(`GET /sse/control/subscriptions failed: ${err}`);
+      }
+    };
+
+    document.getElementById('btn-refresh-subs').addEventListener('click', refreshSubscriptions);
+
+    // ── Add subscription ──────────────────────────────────────────
+    // Use client.subscribe() so the client's internal #topics set stays in
+    // sync — required for client.start() to pass its topic-count guard.
+    document.getElementById('btn-subscribe').addEventListener('click', async () => {
+      const topic = topicInput.value.trim();
+      if (!topic) { setResult(subscribeResult, 'enter a topic', false); return; }
+      try {
+        await client.subscribe(topic);
+        // onTopicsChange fires and re-renders the list automatically.
+        setResult(subscribeResult, `subscribed to "${topic}"`, true);
+        log(`POST /sse/control/subscriptions topic=${topic} -> ok (client topics: ${JSON.stringify([...client.topics])})`);
+        topicInput.value = '';
+      } catch (err) {
+        setResult(subscribeResult, String(err), false);
+        log(`POST /sse/control/subscriptions failed: ${err}`);
+      }
+    });
+
+    // ── Remove subscription ───────────────────────────────────────
+    document.getElementById('btn-unsubscribe').addEventListener('click', async () => {
+      const topic = unsubSelect.value;
+      if (!topic) { setResult(unsubResult, 'select a topic', false); return; }
+      try {
+        await client.unsubscribe(topic);
+        // onTopicsChange fires and re-renders the list automatically.
+        setResult(unsubResult, `unsubscribed from "${topic}"`, true);
+        log(`DELETE /sse/control/subscriptions?topic=${topic} -> ok (client topics: ${JSON.stringify([...client.topics])})`);
+      } catch (err) {
+        setResult(unsubResult, String(err), false);
+        log(`DELETE /sse/control/subscriptions failed: ${err}`);
+      }
+    });
+
+    // ── Issue ticket & open stream ────────────────────────────────
+    // client.start() calls POST /sse/control internally; don't call it
+    // separately or the ticket endpoint gets hit twice.
+    document.getElementById('btn-issue-ticket').addEventListener('click', async () => {
+      try {
+        await client.start();
+        setResult(ticketResult, 'stream started', true);
+        log(`POST /sse/control -> ok, EventSource opened`);
+        await refreshSubscriptions();
+      } catch (err) {
+        setResult(ticketResult, String(err), false);
+        log(`POST /sse/control failed: ${err}`);
+      }
+    });
+
+    // ── Stop stream ───────────────────────────────────────────────
+    document.getElementById('btn-stop').addEventListener('click', () => {
+      client.stop();
+      log('stream stopped');
+    });
+
+    // ── Revoke session ────────────────────────────────────────────
+    document.getElementById('btn-revoke').addEventListener('click', async () => {
+      try {
+        await client.revoke();
+        setResult(revokeResult, 'session revoked', true);
+        log('DELETE /sse/control -> ok, ticket invalidated');
+      } catch (err) {
+        setResult(revokeResult, String(err), false);
+        log(`DELETE /sse/control failed: ${err}`);
+      }
+    });
+
+    // ── Test endpoint ─────────────────────────────────────────────
+    document.getElementById('send-test').addEventListener('click', async () => {
+      try {
+        const res = await fetch('/sse/test');
+        const payload = await res.text();
+        setResult(testResult, `${res.status} ${payload}`, res.ok);
+        log(`GET /sse/test -> ${res.status} ${payload}`);
+      } catch (err) {
+        setResult(testResult, String(err), false);
+        log(`GET /sse/test failed: ${err}`);
+      }
+    });
+
+    // ── Clear log ─────────────────────────────────────────────────
+    document.getElementById('btn-clear-log').addEventListener('click', () => {
+      eventsEl.textContent = '';
+    });
+
+  </script>
+</body>
+</html>

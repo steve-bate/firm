@@ -15,6 +15,7 @@ from firm.core.interfaces import (
     Identity,
     Principal,
 )
+from firm.core.util import get_id
 
 log = logging.getLogger(__name__)
 
@@ -39,10 +40,21 @@ class BasicHttpAuthenticator:
             raise AuthenticationError("Invalid basic auth credentials")
 
         idx = decoded.rindex(":")
-        actor_uri = decoded[:idx]
+        username = decoded[:idx]
         password = decoded[idx + 1 :]
 
         tenant = request.state.tenant
+
+        actor = await tenant.public_store.query_one(
+            {"type": "Person", "preferredUsername": username}
+        )
+
+        if not actor:
+            log.info("Authentication failed: user not found: %s", username)
+            return None
+
+        actor_uri = get_id(actor)
+
         credentials_resource = await tenant.private_store.query_one(
             {"type": FIRM_NS.Credentials.value, "attributedTo": actor_uri}
         )
@@ -53,7 +65,6 @@ class BasicHttpAuthenticator:
             and verify_hash(password, str(credentials_resource[FIRM_NS.password]))
         ):
             log.info("Authentication succeeded: %s", actor_uri)
-            actor = await tenant.public_store.get(actor_uri)
             return Principal(cast(APActor, actor), request.state.tenant)
         else:
             # _logger.info("Authentication failed: %s", uri)

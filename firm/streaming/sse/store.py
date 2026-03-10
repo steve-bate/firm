@@ -1,10 +1,11 @@
+import logging
 import secrets
 from datetime import datetime, timedelta
 from typing import Dict
 
 from pydantic import BaseModel
 
-from firm.streaming.router import logger
+logger = logging.getLogger(__name__)
 
 
 class TicketData(BaseModel):

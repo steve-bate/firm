@@ -3,11 +3,15 @@
 # -------------------------------------------------------------------
 
 import asyncio
+import dataclasses
 import logging
 import re
+import uuid
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Dict, Mapping, Set
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Mapping, cast
 
+from fastapi import Request
 from fastapi.sse import ServerSentEvent
 
 logger = logging.getLogger(__name__)
@@ -33,7 +37,10 @@ class StreamNotifier(ABC):
     async def has_subscriptions(self, user_id: str) -> bool: ...
 
     @abstractmethod
-    async def notify(self, topic: str, data: Mapping[str, Any]) -> None:
+    async def get_subscriptions(self, user_id: str) -> list[str]: ...
+
+    @abstractmethod
+    async def notify(self, topic: str, data: Mapping[str, Any] | object) -> None:
         """
         Publish an event to all users currently subscribed to *topic*.
         """
@@ -68,9 +75,9 @@ class InMemoryStreamNotifier(StreamNotifier):
     """
 
     def __init__(self) -> None:
-        self._subscriptions: Dict[str, Set[str]] = {}
+        self._subscriptions: dict[str, set[str]] = {}
         # One queue per user; created lazily and torn down after streaming ends.
-        self._queues: Dict[str, asyncio.Queue[tuple[str, Mapping[str, Any]]]] = {}
+        self._queues: dict[str, asyncio.Queue[tuple[str, Mapping[str, Any]]]] = {}
 
     async def add_subscription(self, user_id: str, topic: str) -> None:
         self._subscriptions.setdefault(user_id, set()).add(topic)
@@ -85,12 +92,19 @@ class InMemoryStreamNotifier(StreamNotifier):
         logger.info("has_subscriptions: user_id=%s result=%s", user_id, result)
         return result
 
-    async def notify(self, topic: str, data: Mapping[str, Any]) -> None:
+    async def get_subscriptions(self, user_id: str) -> list[str]:
+        return sorted(self._subscriptions.get(user_id, set()))
+
+    async def notify(self, topic: str, data: Mapping[str, Any] | object) -> None:
         """Publish *data* to every user subscribed to *topic*."""
+        if dataclasses.is_dataclass(data):
+            payload: Mapping[str, Any] = dataclasses.asdict(data)  # type: ignore
+        else:
+            payload = cast(Mapping[str, Any], data)
         for user_id, topics in self._subscriptions.items():
             if topic in topics or any(re.match(t, topic) for t in topics):
                 q = self._queues.setdefault(user_id, asyncio.Queue())
-                await q.put((topic, data))
+                await q.put((topic, payload))
                 logger.info("send_event: queued event for user_id=%s topic=%s", user_id, topic)
 
     async def notification_stream(self, user_id: str) -> AsyncIterator[ServerSentEvent]:
@@ -101,9 +115,26 @@ class InMemoryStreamNotifier(StreamNotifier):
             while True:
                 topic, data = await q.get()
                 logger.info("update event for user_id=%s topic=%s", user_id, topic)
-                yield ServerSentEvent(event="update", topic=topic, data=dict(data))
+                id_ = data.get("id") if isinstance(data, dict) else uuid.uuid4().hex
+                yield ServerSentEvent(id=id_, event="notification", data=dict(data))
         except (asyncio.CancelledError, GeneratorExit):
             logger.info("stream_events: stream closed for user_id=%s", user_id)
             raise
         finally:
             self._queues.pop(user_id, None)
+
+
+@dataclass
+class StreamEvent:
+    id: str
+    topic: str
+    type: str  # TODO replace with enum
+    published: str
+    payload: Mapping[str, Any]
+
+
+# Dependency Injection Support
+
+
+def get_notifier(request: Request) -> StreamNotifier:
+    return request.app.state.sse_notifier

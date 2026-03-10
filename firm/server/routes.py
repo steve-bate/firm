@@ -1,6 +1,8 @@
 import asyncio
+import datetime
 import logging
 import re
+import uuid
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
@@ -12,11 +14,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from jsonschema.exceptions import ValidationError
 
 from firm.core.auth.authorization import CoreAuthorizationService
-from firm.core.auth.bearer_token import BearerTokenAuthenticator
-from firm.core.auth.chained import AuthenticatorChain
-from firm.core.auth.http_signature import HttpSigAuthenticator
 from firm.core.interfaces import (
-    Identity,
     JSONObject,
     Principal,
     Validator,
@@ -39,31 +37,18 @@ from firm.core.util import (
     AS2_CONTENT_TYPES,
 )
 from firm.jsonschema.validation import create_validator
-from firm.oauth2.middleware import OAuth2BearerTokenAuthenticator
 from firm.oauth2.router import create_oauth2_router
-from firm.server.adapters import (
-    HttpConnectionAdapter,
-)
+from firm.server.auth import get_principal
 from firm.server.config import ServerConfig, StorageKind
 from firm.server.delivery import FirmDeliveryService
 from firm.server.html.endpoint import html_endpoint, html_static_endpoint
+from firm.streaming.endpoint import sse_client_page_endpoint
+from firm.streaming.sse.notifier import StreamEvent, StreamNotifier, get_notifier
+from firm.streaming.sse.router import create_sse_router
 
 from .proxy import proxy
 
 log = logging.getLogger(__name__)
-
-
-_auth_chain = AuthenticatorChain(
-    [
-        OAuth2BearerTokenAuthenticator(),
-        BearerTokenAuthenticator(),
-        HttpSigAuthenticator(),
-    ]
-)
-
-
-async def get_principal(request: Request) -> Identity | None:
-    return await _auth_chain.authenticate(HttpConnectionAdapter(request))
 
 
 # TODO Consider redesign of FirmDeliveryService (abstract class?)
@@ -385,8 +370,36 @@ def create_router(config: ServerConfig) -> APIRouter:
     router.add_api_route("/proxy", proxy_endpoint, methods=["POST"])
     router.add_api_route("/static/{file_path:path}", html_static_endpoint, methods=["GET"])
 
-    # TODO integrate this into tenant store
     router.include_router(create_oauth2_router())
+
+    router.add_api_route("/sse/client", sse_client_page_endpoint, methods=["GET"])
+    router.include_router(create_sse_router())
+
+    @router.get("/sse/test")
+    async def sse_test_endpoint(
+        request: Request,
+        notifier: StreamNotifier = Depends(get_notifier),
+    ) -> dict:
+        topic = "test-topic"
+        tenant = request.state.tenant
+        actor = await tenant.public_store.query_one(
+            {"type": "Person", "preferredUsername": "eric80"}
+        )
+        if actor:
+            message = {"id": actor["id"], "summary": actor["summary"]}
+        else:
+            message = {"content": "No actor found"}
+        await notifier.notify(
+            topic,
+            StreamEvent(
+                id=uuid.uuid4().hex,
+                topic=topic,
+                type="Update",
+                published=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                payload=message,
+            ),
+        )
+        return {"status": "ok"}
 
     validator = JsonSchemaValidator(config)
 
