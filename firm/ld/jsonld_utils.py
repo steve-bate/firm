@@ -2,9 +2,13 @@ import json
 import re
 from typing import Any
 
-import httpx_cache
+import httpx
 import rdflib
 from pyld import jsonld
+
+# Versioning issue
+# import httpx_cache
+
 
 AS2 = rdflib.Namespace("https://www.w3.org/ns/activitystreams#")
 
@@ -31,7 +35,8 @@ def httpx_document_loader(url: str, options: dict[str, Any]) -> dict[str, Any]:
     else:
         options["headers"] = _JSON_LD_ACCEPT
     del options["documentLoader"]
-    with httpx_cache.Client(cache=httpx_cache.FileCache(cache_dir="/tmp")) as client:
+    # with httpx_cache.Client(cache=httpx_cache.FileCache(cache_dir="/tmp")) as client:
+    with httpx.Client() as client:
         response = client.get(
             url,
             **options,

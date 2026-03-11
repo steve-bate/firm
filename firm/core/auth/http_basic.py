@@ -45,7 +45,7 @@ class BasicHttpAuthenticator:
 
         tenant = request.state.tenant
 
-        actor = await tenant.public_store.query_one(
+        actor = await tenant.public_store.get(username) or await tenant.public_store.query_one(
             {"type": "Person", "preferredUsername": username}
         )
 

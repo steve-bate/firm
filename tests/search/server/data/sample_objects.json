@@ -1,0 +1,2959 @@
+[
+  {
+    "uri": "https://example.com/users/alice",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/alice",
+      "type": "Person",
+      "preferredUsername": "alice",
+      "actor": "https://example.com/users/alice",
+      "content": "Alice enjoys activitypub and fediverse discussions.",
+      "summary": "Alice the fediverse enthusiast",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "activitypub"
+        }
+      ],
+      "rank": 1,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/users/evan",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/evan",
+      "type": "Person",
+      "preferredUsername": "evan",
+      "actor": "https://example.com/users/evan",
+      "content": "Evan writes about distributed social networks.",
+      "summary": "Evan the engineer",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "socialweb"
+        }
+      ],
+      "rank": 2,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/users/eve",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/eve",
+      "type": "Person",
+      "preferredUsername": "eve",
+      "actor": "https://example.com/users/eve",
+      "content": "Eve is testing the search system.",
+      "summary": "Test account",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "testing"
+        }
+      ],
+      "rank": 3,
+      "language": "en",
+      "visibility": "unlisted"
+    }
+  },
+  {
+    "uri": "https://example.com/notes/1",
+    "type": "Note",
+    "doc": {
+      "id": "https://example.com/notes/1",
+      "type": "Note",
+      "actor": "https://example.com/users/alice",
+      "content": "This is a note about ActivityPub client search.",
+      "summary": "",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        }
+      ],
+      "rank": 4,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/notes/2",
+    "type": "Note",
+    "doc": {
+      "id": "https://example.com/notes/2",
+      "type": "Note",
+      "actor": "https://example.com/users/evan",
+      "content": "Another note mentioning cats and dogs.",
+      "summary": "",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "pets"
+        }
+      ],
+      "rank": 5,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/users/user01",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/user01",
+      "type": "Person",
+      "preferredUsername": "user01",
+      "actor": "https://example.com/users/user01",
+      "content": "user01 posts about ActivityPub testing.",
+      "summary": "user01 profile",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "activitypub"
+        },
+        {
+          "type": "Hashtag",
+          "name": "testing"
+        }
+      ],
+      "rank": 101,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/users/user02",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/user02",
+      "type": "Person",
+      "preferredUsername": "user02",
+      "actor": "https://example.com/users/user02",
+      "content": "user02 posts about ActivityPub testing.",
+      "summary": "user02 profile",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "activitypub"
+        },
+        {
+          "type": "Hashtag",
+          "name": "testing"
+        }
+      ],
+      "rank": 102,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/users/user03",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/user03",
+      "type": "Person",
+      "preferredUsername": "user03",
+      "actor": "https://example.com/users/user03",
+      "content": "user03 posts about ActivityPub testing.",
+      "summary": "user03 profile",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "activitypub"
+        },
+        {
+          "type": "Hashtag",
+          "name": "testing"
+        }
+      ],
+      "rank": 103,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/users/user04",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/user04",
+      "type": "Person",
+      "preferredUsername": "user04",
+      "actor": "https://example.com/users/user04",
+      "content": "user04 posts about ActivityPub testing.",
+      "summary": "user04 profile",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "activitypub"
+        },
+        {
+          "type": "Hashtag",
+          "name": "testing"
+        }
+      ],
+      "rank": 104,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/users/user05",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/user05",
+      "type": "Person",
+      "preferredUsername": "user05",
+      "actor": "https://example.com/users/user05",
+      "content": "user05 posts about ActivityPub testing.",
+      "summary": "user05 profile",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "activitypub"
+        },
+        {
+          "type": "Hashtag",
+          "name": "testing"
+        }
+      ],
+      "rank": 105,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/users/user06",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/user06",
+      "type": "Person",
+      "preferredUsername": "user06",
+      "actor": "https://example.com/users/user06",
+      "content": "user06 posts about ActivityPub testing.",
+      "summary": "user06 profile",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "activitypub"
+        },
+        {
+          "type": "Hashtag",
+          "name": "testing"
+        }
+      ],
+      "rank": 106,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/users/user07",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/user07",
+      "type": "Person",
+      "preferredUsername": "user07",
+      "actor": "https://example.com/users/user07",
+      "content": "user07 posts about ActivityPub testing.",
+      "summary": "user07 profile",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "activitypub"
+        },
+        {
+          "type": "Hashtag",
+          "name": "testing"
+        }
+      ],
+      "rank": 107,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/users/user08",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/user08",
+      "type": "Person",
+      "preferredUsername": "user08",
+      "actor": "https://example.com/users/user08",
+      "content": "user08 posts about ActivityPub testing.",
+      "summary": "user08 profile",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "activitypub"
+        },
+        {
+          "type": "Hashtag",
+          "name": "testing"
+        }
+      ],
+      "rank": 108,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/users/user09",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/user09",
+      "type": "Person",
+      "preferredUsername": "user09",
+      "actor": "https://example.com/users/user09",
+      "content": "user09 posts about ActivityPub testing.",
+      "summary": "user09 profile",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "activitypub"
+        },
+        {
+          "type": "Hashtag",
+          "name": "testing"
+        }
+      ],
+      "rank": 109,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/users/user10",
+    "type": "Person",
+    "doc": {
+      "id": "https://example.com/users/user10",
+      "type": "Person",
+      "preferredUsername": "user10",
+      "actor": "https://example.com/users/user10",
+      "content": "user10 posts about ActivityPub testing.",
+      "summary": "user10 profile",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "activitypub"
+        },
+        {
+          "type": "Hashtag",
+          "name": "testing"
+        }
+      ],
+      "rank": 110,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/001",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/001",
+      "type": "Create",
+      "actor": "https://example.com/users/user01",
+      "object": "https://example.com/notes/activity-001",
+      "target": "https://example.com/users/user02",
+      "content": "Create activity number 1 by user01.",
+      "summary": "Sample create activity 1",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 201,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/002",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/002",
+      "type": "Announce",
+      "actor": "https://example.com/users/user02",
+      "object": "https://example.com/notes/activity-002",
+      "target": "https://example.com/users/user03",
+      "content": "Announce activity number 2 by user02.",
+      "summary": "Sample announce activity 2",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 202,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/003",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/003",
+      "type": "Like",
+      "actor": "https://example.com/users/user03",
+      "object": "https://example.com/notes/activity-003",
+      "target": "https://example.com/users/user04",
+      "content": "Like activity number 3 by user03.",
+      "summary": "Sample like activity 3",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 203,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/004",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/004",
+      "type": "Follow",
+      "actor": "https://example.com/users/user04",
+      "object": "https://example.com/notes/activity-004",
+      "target": "https://example.com/users/user05",
+      "content": "Follow activity number 4 by user04.",
+      "summary": "Sample follow activity 4",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 204,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/005",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/005",
+      "type": "Undo",
+      "actor": "https://example.com/users/user05",
+      "object": "https://example.com/notes/activity-005",
+      "target": "https://example.com/users/user06",
+      "content": "Undo activity number 5 by user05.",
+      "summary": "Sample undo activity 5",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 205,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/006",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/006",
+      "type": "Create",
+      "actor": "https://example.com/users/user06",
+      "object": "https://example.com/notes/activity-006",
+      "target": "https://example.com/users/user07",
+      "content": "Create activity number 6 by user06.",
+      "summary": "Sample create activity 6",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 206,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/007",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/007",
+      "type": "Announce",
+      "actor": "https://example.com/users/user07",
+      "object": "https://example.com/notes/activity-007",
+      "target": "https://example.com/users/user08",
+      "content": "Announce activity number 7 by user07.",
+      "summary": "Sample announce activity 7",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 207,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/008",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/008",
+      "type": "Like",
+      "actor": "https://example.com/users/user08",
+      "object": "https://example.com/notes/activity-008",
+      "target": "https://example.com/users/user09",
+      "content": "Like activity number 8 by user08.",
+      "summary": "Sample like activity 8",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 208,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/009",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/009",
+      "type": "Follow",
+      "actor": "https://example.com/users/user09",
+      "object": "https://example.com/notes/activity-009",
+      "target": "https://example.com/users/user10",
+      "content": "Follow activity number 9 by user09.",
+      "summary": "Sample follow activity 9",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 209,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/010",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/010",
+      "type": "Undo",
+      "actor": "https://example.com/users/user10",
+      "object": "https://example.com/notes/activity-010",
+      "target": "https://example.com/users/user01",
+      "content": "Undo activity number 10 by user10.",
+      "summary": "Sample undo activity 10",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 210,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/011",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/011",
+      "type": "Create",
+      "actor": "https://example.com/users/user01",
+      "object": "https://example.com/notes/activity-011",
+      "target": "https://example.com/users/user02",
+      "content": "Create activity number 11 by user01.",
+      "summary": "Sample create activity 11",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 211,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/012",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/012",
+      "type": "Announce",
+      "actor": "https://example.com/users/user02",
+      "object": "https://example.com/notes/activity-012",
+      "target": "https://example.com/users/user03",
+      "content": "Announce activity number 12 by user02.",
+      "summary": "Sample announce activity 12",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 212,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/013",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/013",
+      "type": "Like",
+      "actor": "https://example.com/users/user03",
+      "object": "https://example.com/notes/activity-013",
+      "target": "https://example.com/users/user04",
+      "content": "Like activity number 13 by user03.",
+      "summary": "Sample like activity 13",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 213,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/014",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/014",
+      "type": "Follow",
+      "actor": "https://example.com/users/user04",
+      "object": "https://example.com/notes/activity-014",
+      "target": "https://example.com/users/user05",
+      "content": "Follow activity number 14 by user04.",
+      "summary": "Sample follow activity 14",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 214,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/015",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/015",
+      "type": "Undo",
+      "actor": "https://example.com/users/user05",
+      "object": "https://example.com/notes/activity-015",
+      "target": "https://example.com/users/user06",
+      "content": "Undo activity number 15 by user05.",
+      "summary": "Sample undo activity 15",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 215,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/016",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/016",
+      "type": "Create",
+      "actor": "https://example.com/users/user06",
+      "object": "https://example.com/notes/activity-016",
+      "target": "https://example.com/users/user07",
+      "content": "Create activity number 16 by user06.",
+      "summary": "Sample create activity 16",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 216,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/017",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/017",
+      "type": "Announce",
+      "actor": "https://example.com/users/user07",
+      "object": "https://example.com/notes/activity-017",
+      "target": "https://example.com/users/user08",
+      "content": "Announce activity number 17 by user07.",
+      "summary": "Sample announce activity 17",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 217,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/018",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/018",
+      "type": "Like",
+      "actor": "https://example.com/users/user08",
+      "object": "https://example.com/notes/activity-018",
+      "target": "https://example.com/users/user09",
+      "content": "Like activity number 18 by user08.",
+      "summary": "Sample like activity 18",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 218,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/019",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/019",
+      "type": "Follow",
+      "actor": "https://example.com/users/user09",
+      "object": "https://example.com/notes/activity-019",
+      "target": "https://example.com/users/user10",
+      "content": "Follow activity number 19 by user09.",
+      "summary": "Sample follow activity 19",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 219,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/020",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/020",
+      "type": "Undo",
+      "actor": "https://example.com/users/user10",
+      "object": "https://example.com/notes/activity-020",
+      "target": "https://example.com/users/user01",
+      "content": "Undo activity number 20 by user10.",
+      "summary": "Sample undo activity 20",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 220,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/021",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/021",
+      "type": "Create",
+      "actor": "https://example.com/users/user01",
+      "object": "https://example.com/notes/activity-021",
+      "target": "https://example.com/users/user02",
+      "content": "Create activity number 21 by user01.",
+      "summary": "Sample create activity 21",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 221,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/022",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/022",
+      "type": "Announce",
+      "actor": "https://example.com/users/user02",
+      "object": "https://example.com/notes/activity-022",
+      "target": "https://example.com/users/user03",
+      "content": "Announce activity number 22 by user02.",
+      "summary": "Sample announce activity 22",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 222,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/023",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/023",
+      "type": "Like",
+      "actor": "https://example.com/users/user03",
+      "object": "https://example.com/notes/activity-023",
+      "target": "https://example.com/users/user04",
+      "content": "Like activity number 23 by user03.",
+      "summary": "Sample like activity 23",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 223,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/024",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/024",
+      "type": "Follow",
+      "actor": "https://example.com/users/user04",
+      "object": "https://example.com/notes/activity-024",
+      "target": "https://example.com/users/user05",
+      "content": "Follow activity number 24 by user04.",
+      "summary": "Sample follow activity 24",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 224,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/025",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/025",
+      "type": "Undo",
+      "actor": "https://example.com/users/user05",
+      "object": "https://example.com/notes/activity-025",
+      "target": "https://example.com/users/user06",
+      "content": "Undo activity number 25 by user05.",
+      "summary": "Sample undo activity 25",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 225,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/026",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/026",
+      "type": "Create",
+      "actor": "https://example.com/users/user06",
+      "object": "https://example.com/notes/activity-026",
+      "target": "https://example.com/users/user07",
+      "content": "Create activity number 26 by user06.",
+      "summary": "Sample create activity 26",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 226,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/027",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/027",
+      "type": "Announce",
+      "actor": "https://example.com/users/user07",
+      "object": "https://example.com/notes/activity-027",
+      "target": "https://example.com/users/user08",
+      "content": "Announce activity number 27 by user07.",
+      "summary": "Sample announce activity 27",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 227,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/028",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/028",
+      "type": "Like",
+      "actor": "https://example.com/users/user08",
+      "object": "https://example.com/notes/activity-028",
+      "target": "https://example.com/users/user09",
+      "content": "Like activity number 28 by user08.",
+      "summary": "Sample like activity 28",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 228,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/029",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/029",
+      "type": "Follow",
+      "actor": "https://example.com/users/user09",
+      "object": "https://example.com/notes/activity-029",
+      "target": "https://example.com/users/user10",
+      "content": "Follow activity number 29 by user09.",
+      "summary": "Sample follow activity 29",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 229,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/030",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/030",
+      "type": "Undo",
+      "actor": "https://example.com/users/user10",
+      "object": "https://example.com/notes/activity-030",
+      "target": "https://example.com/users/user01",
+      "content": "Undo activity number 30 by user10.",
+      "summary": "Sample undo activity 30",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 230,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/031",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/031",
+      "type": "Create",
+      "actor": "https://example.com/users/user01",
+      "object": "https://example.com/notes/activity-031",
+      "target": "https://example.com/users/user02",
+      "content": "Create activity number 31 by user01.",
+      "summary": "Sample create activity 31",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 231,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/032",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/032",
+      "type": "Announce",
+      "actor": "https://example.com/users/user02",
+      "object": "https://example.com/notes/activity-032",
+      "target": "https://example.com/users/user03",
+      "content": "Announce activity number 32 by user02.",
+      "summary": "Sample announce activity 32",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 232,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/033",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/033",
+      "type": "Like",
+      "actor": "https://example.com/users/user03",
+      "object": "https://example.com/notes/activity-033",
+      "target": "https://example.com/users/user04",
+      "content": "Like activity number 33 by user03.",
+      "summary": "Sample like activity 33",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 233,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/034",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/034",
+      "type": "Follow",
+      "actor": "https://example.com/users/user04",
+      "object": "https://example.com/notes/activity-034",
+      "target": "https://example.com/users/user05",
+      "content": "Follow activity number 34 by user04.",
+      "summary": "Sample follow activity 34",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 234,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/035",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/035",
+      "type": "Undo",
+      "actor": "https://example.com/users/user05",
+      "object": "https://example.com/notes/activity-035",
+      "target": "https://example.com/users/user06",
+      "content": "Undo activity number 35 by user05.",
+      "summary": "Sample undo activity 35",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 235,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/036",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/036",
+      "type": "Create",
+      "actor": "https://example.com/users/user06",
+      "object": "https://example.com/notes/activity-036",
+      "target": "https://example.com/users/user07",
+      "content": "Create activity number 36 by user06.",
+      "summary": "Sample create activity 36",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 236,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/037",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/037",
+      "type": "Announce",
+      "actor": "https://example.com/users/user07",
+      "object": "https://example.com/notes/activity-037",
+      "target": "https://example.com/users/user08",
+      "content": "Announce activity number 37 by user07.",
+      "summary": "Sample announce activity 37",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 237,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/038",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/038",
+      "type": "Like",
+      "actor": "https://example.com/users/user08",
+      "object": "https://example.com/notes/activity-038",
+      "target": "https://example.com/users/user09",
+      "content": "Like activity number 38 by user08.",
+      "summary": "Sample like activity 38",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 238,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/039",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/039",
+      "type": "Follow",
+      "actor": "https://example.com/users/user09",
+      "object": "https://example.com/notes/activity-039",
+      "target": "https://example.com/users/user10",
+      "content": "Follow activity number 39 by user09.",
+      "summary": "Sample follow activity 39",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 239,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/040",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/040",
+      "type": "Undo",
+      "actor": "https://example.com/users/user10",
+      "object": "https://example.com/notes/activity-040",
+      "target": "https://example.com/users/user01",
+      "content": "Undo activity number 40 by user10.",
+      "summary": "Sample undo activity 40",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 240,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/041",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/041",
+      "type": "Create",
+      "actor": "https://example.com/users/user01",
+      "object": "https://example.com/notes/activity-041",
+      "target": "https://example.com/users/user02",
+      "content": "Create activity number 41 by user01.",
+      "summary": "Sample create activity 41",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 241,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/042",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/042",
+      "type": "Announce",
+      "actor": "https://example.com/users/user02",
+      "object": "https://example.com/notes/activity-042",
+      "target": "https://example.com/users/user03",
+      "content": "Announce activity number 42 by user02.",
+      "summary": "Sample announce activity 42",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 242,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/043",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/043",
+      "type": "Like",
+      "actor": "https://example.com/users/user03",
+      "object": "https://example.com/notes/activity-043",
+      "target": "https://example.com/users/user04",
+      "content": "Like activity number 43 by user03.",
+      "summary": "Sample like activity 43",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 243,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/044",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/044",
+      "type": "Follow",
+      "actor": "https://example.com/users/user04",
+      "object": "https://example.com/notes/activity-044",
+      "target": "https://example.com/users/user05",
+      "content": "Follow activity number 44 by user04.",
+      "summary": "Sample follow activity 44",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 244,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/045",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/045",
+      "type": "Undo",
+      "actor": "https://example.com/users/user05",
+      "object": "https://example.com/notes/activity-045",
+      "target": "https://example.com/users/user06",
+      "content": "Undo activity number 45 by user05.",
+      "summary": "Sample undo activity 45",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 245,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/046",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/046",
+      "type": "Create",
+      "actor": "https://example.com/users/user06",
+      "object": "https://example.com/notes/activity-046",
+      "target": "https://example.com/users/user07",
+      "content": "Create activity number 46 by user06.",
+      "summary": "Sample create activity 46",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 246,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/047",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/047",
+      "type": "Announce",
+      "actor": "https://example.com/users/user07",
+      "object": "https://example.com/notes/activity-047",
+      "target": "https://example.com/users/user08",
+      "content": "Announce activity number 47 by user07.",
+      "summary": "Sample announce activity 47",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 247,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/048",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/048",
+      "type": "Like",
+      "actor": "https://example.com/users/user08",
+      "object": "https://example.com/notes/activity-048",
+      "target": "https://example.com/users/user09",
+      "content": "Like activity number 48 by user08.",
+      "summary": "Sample like activity 48",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 248,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/049",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/049",
+      "type": "Follow",
+      "actor": "https://example.com/users/user09",
+      "object": "https://example.com/notes/activity-049",
+      "target": "https://example.com/users/user10",
+      "content": "Follow activity number 49 by user09.",
+      "summary": "Sample follow activity 49",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 249,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/050",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/050",
+      "type": "Undo",
+      "actor": "https://example.com/users/user10",
+      "object": "https://example.com/notes/activity-050",
+      "target": "https://example.com/users/user01",
+      "content": "Undo activity number 50 by user10.",
+      "summary": "Sample undo activity 50",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 250,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/051",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/051",
+      "type": "Create",
+      "actor": "https://example.com/users/user01",
+      "object": "https://example.com/notes/activity-051",
+      "target": "https://example.com/users/user02",
+      "content": "Create activity number 51 by user01.",
+      "summary": "Sample create activity 51",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 251,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/052",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/052",
+      "type": "Announce",
+      "actor": "https://example.com/users/user02",
+      "object": "https://example.com/notes/activity-052",
+      "target": "https://example.com/users/user03",
+      "content": "Announce activity number 52 by user02.",
+      "summary": "Sample announce activity 52",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 252,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/053",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/053",
+      "type": "Like",
+      "actor": "https://example.com/users/user03",
+      "object": "https://example.com/notes/activity-053",
+      "target": "https://example.com/users/user04",
+      "content": "Like activity number 53 by user03.",
+      "summary": "Sample like activity 53",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 253,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/054",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/054",
+      "type": "Follow",
+      "actor": "https://example.com/users/user04",
+      "object": "https://example.com/notes/activity-054",
+      "target": "https://example.com/users/user05",
+      "content": "Follow activity number 54 by user04.",
+      "summary": "Sample follow activity 54",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 254,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/055",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/055",
+      "type": "Undo",
+      "actor": "https://example.com/users/user05",
+      "object": "https://example.com/notes/activity-055",
+      "target": "https://example.com/users/user06",
+      "content": "Undo activity number 55 by user05.",
+      "summary": "Sample undo activity 55",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 255,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/056",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/056",
+      "type": "Create",
+      "actor": "https://example.com/users/user06",
+      "object": "https://example.com/notes/activity-056",
+      "target": "https://example.com/users/user07",
+      "content": "Create activity number 56 by user06.",
+      "summary": "Sample create activity 56",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 256,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/057",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/057",
+      "type": "Announce",
+      "actor": "https://example.com/users/user07",
+      "object": "https://example.com/notes/activity-057",
+      "target": "https://example.com/users/user08",
+      "content": "Announce activity number 57 by user07.",
+      "summary": "Sample announce activity 57",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 257,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/058",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/058",
+      "type": "Like",
+      "actor": "https://example.com/users/user08",
+      "object": "https://example.com/notes/activity-058",
+      "target": "https://example.com/users/user09",
+      "content": "Like activity number 58 by user08.",
+      "summary": "Sample like activity 58",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 258,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/059",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/059",
+      "type": "Follow",
+      "actor": "https://example.com/users/user09",
+      "object": "https://example.com/notes/activity-059",
+      "target": "https://example.com/users/user10",
+      "content": "Follow activity number 59 by user09.",
+      "summary": "Sample follow activity 59",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 259,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/060",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/060",
+      "type": "Undo",
+      "actor": "https://example.com/users/user10",
+      "object": "https://example.com/notes/activity-060",
+      "target": "https://example.com/users/user01",
+      "content": "Undo activity number 60 by user10.",
+      "summary": "Sample undo activity 60",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 260,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/061",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/061",
+      "type": "Create",
+      "actor": "https://example.com/users/user01",
+      "object": "https://example.com/notes/activity-061",
+      "target": "https://example.com/users/user02",
+      "content": "Create activity number 61 by user01.",
+      "summary": "Sample create activity 61",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 261,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/062",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/062",
+      "type": "Announce",
+      "actor": "https://example.com/users/user02",
+      "object": "https://example.com/notes/activity-062",
+      "target": "https://example.com/users/user03",
+      "content": "Announce activity number 62 by user02.",
+      "summary": "Sample announce activity 62",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 262,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/063",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/063",
+      "type": "Like",
+      "actor": "https://example.com/users/user03",
+      "object": "https://example.com/notes/activity-063",
+      "target": "https://example.com/users/user04",
+      "content": "Like activity number 63 by user03.",
+      "summary": "Sample like activity 63",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 263,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/064",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/064",
+      "type": "Follow",
+      "actor": "https://example.com/users/user04",
+      "object": "https://example.com/notes/activity-064",
+      "target": "https://example.com/users/user05",
+      "content": "Follow activity number 64 by user04.",
+      "summary": "Sample follow activity 64",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 264,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/065",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/065",
+      "type": "Undo",
+      "actor": "https://example.com/users/user05",
+      "object": "https://example.com/notes/activity-065",
+      "target": "https://example.com/users/user06",
+      "content": "Undo activity number 65 by user05.",
+      "summary": "Sample undo activity 65",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 265,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/066",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/066",
+      "type": "Create",
+      "actor": "https://example.com/users/user06",
+      "object": "https://example.com/notes/activity-066",
+      "target": "https://example.com/users/user07",
+      "content": "Create activity number 66 by user06.",
+      "summary": "Sample create activity 66",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 266,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/067",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/067",
+      "type": "Announce",
+      "actor": "https://example.com/users/user07",
+      "object": "https://example.com/notes/activity-067",
+      "target": "https://example.com/users/user08",
+      "content": "Announce activity number 67 by user07.",
+      "summary": "Sample announce activity 67",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 267,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/068",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/068",
+      "type": "Like",
+      "actor": "https://example.com/users/user08",
+      "object": "https://example.com/notes/activity-068",
+      "target": "https://example.com/users/user09",
+      "content": "Like activity number 68 by user08.",
+      "summary": "Sample like activity 68",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 268,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/069",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/069",
+      "type": "Follow",
+      "actor": "https://example.com/users/user09",
+      "object": "https://example.com/notes/activity-069",
+      "target": "https://example.com/users/user10",
+      "content": "Follow activity number 69 by user09.",
+      "summary": "Sample follow activity 69",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 269,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/070",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/070",
+      "type": "Undo",
+      "actor": "https://example.com/users/user10",
+      "object": "https://example.com/notes/activity-070",
+      "target": "https://example.com/users/user01",
+      "content": "Undo activity number 70 by user10.",
+      "summary": "Sample undo activity 70",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 270,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/071",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/071",
+      "type": "Create",
+      "actor": "https://example.com/users/user01",
+      "object": "https://example.com/notes/activity-071",
+      "target": "https://example.com/users/user02",
+      "content": "Create activity number 71 by user01.",
+      "summary": "Sample create activity 71",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 271,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/072",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/072",
+      "type": "Announce",
+      "actor": "https://example.com/users/user02",
+      "object": "https://example.com/notes/activity-072",
+      "target": "https://example.com/users/user03",
+      "content": "Announce activity number 72 by user02.",
+      "summary": "Sample announce activity 72",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 272,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/073",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/073",
+      "type": "Like",
+      "actor": "https://example.com/users/user03",
+      "object": "https://example.com/notes/activity-073",
+      "target": "https://example.com/users/user04",
+      "content": "Like activity number 73 by user03.",
+      "summary": "Sample like activity 73",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 273,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/074",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/074",
+      "type": "Follow",
+      "actor": "https://example.com/users/user04",
+      "object": "https://example.com/notes/activity-074",
+      "target": "https://example.com/users/user05",
+      "content": "Follow activity number 74 by user04.",
+      "summary": "Sample follow activity 74",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 274,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/075",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/075",
+      "type": "Undo",
+      "actor": "https://example.com/users/user05",
+      "object": "https://example.com/notes/activity-075",
+      "target": "https://example.com/users/user06",
+      "content": "Undo activity number 75 by user05.",
+      "summary": "Sample undo activity 75",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 275,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/076",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/076",
+      "type": "Create",
+      "actor": "https://example.com/users/user06",
+      "object": "https://example.com/notes/activity-076",
+      "target": "https://example.com/users/user07",
+      "content": "Create activity number 76 by user06.",
+      "summary": "Sample create activity 76",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 276,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/077",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/077",
+      "type": "Announce",
+      "actor": "https://example.com/users/user07",
+      "object": "https://example.com/notes/activity-077",
+      "target": "https://example.com/users/user08",
+      "content": "Announce activity number 77 by user07.",
+      "summary": "Sample announce activity 77",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 277,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/078",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/078",
+      "type": "Like",
+      "actor": "https://example.com/users/user08",
+      "object": "https://example.com/notes/activity-078",
+      "target": "https://example.com/users/user09",
+      "content": "Like activity number 78 by user08.",
+      "summary": "Sample like activity 78",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 278,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/079",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/079",
+      "type": "Follow",
+      "actor": "https://example.com/users/user09",
+      "object": "https://example.com/notes/activity-079",
+      "target": "https://example.com/users/user10",
+      "content": "Follow activity number 79 by user09.",
+      "summary": "Sample follow activity 79",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 279,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/080",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/080",
+      "type": "Undo",
+      "actor": "https://example.com/users/user10",
+      "object": "https://example.com/notes/activity-080",
+      "target": "https://example.com/users/user01",
+      "content": "Undo activity number 80 by user10.",
+      "summary": "Sample undo activity 80",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 280,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/081",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/081",
+      "type": "Create",
+      "actor": "https://example.com/users/user01",
+      "object": "https://example.com/notes/activity-081",
+      "target": "https://example.com/users/user02",
+      "content": "Create activity number 81 by user01.",
+      "summary": "Sample create activity 81",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 281,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/082",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/082",
+      "type": "Announce",
+      "actor": "https://example.com/users/user02",
+      "object": "https://example.com/notes/activity-082",
+      "target": "https://example.com/users/user03",
+      "content": "Announce activity number 82 by user02.",
+      "summary": "Sample announce activity 82",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 282,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/083",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/083",
+      "type": "Like",
+      "actor": "https://example.com/users/user03",
+      "object": "https://example.com/notes/activity-083",
+      "target": "https://example.com/users/user04",
+      "content": "Like activity number 83 by user03.",
+      "summary": "Sample like activity 83",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 283,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/084",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/084",
+      "type": "Follow",
+      "actor": "https://example.com/users/user04",
+      "object": "https://example.com/notes/activity-084",
+      "target": "https://example.com/users/user05",
+      "content": "Follow activity number 84 by user04.",
+      "summary": "Sample follow activity 84",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 284,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/085",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/085",
+      "type": "Undo",
+      "actor": "https://example.com/users/user05",
+      "object": "https://example.com/notes/activity-085",
+      "target": "https://example.com/users/user06",
+      "content": "Undo activity number 85 by user05.",
+      "summary": "Sample undo activity 85",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 285,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/086",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/086",
+      "type": "Create",
+      "actor": "https://example.com/users/user06",
+      "object": "https://example.com/notes/activity-086",
+      "target": "https://example.com/users/user07",
+      "content": "Create activity number 86 by user06.",
+      "summary": "Sample create activity 86",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 286,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/087",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/087",
+      "type": "Announce",
+      "actor": "https://example.com/users/user07",
+      "object": "https://example.com/notes/activity-087",
+      "target": "https://example.com/users/user08",
+      "content": "Announce activity number 87 by user07.",
+      "summary": "Sample announce activity 87",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 287,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/088",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/088",
+      "type": "Like",
+      "actor": "https://example.com/users/user08",
+      "object": "https://example.com/notes/activity-088",
+      "target": "https://example.com/users/user09",
+      "content": "Like activity number 88 by user08.",
+      "summary": "Sample like activity 88",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 288,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/089",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/089",
+      "type": "Follow",
+      "actor": "https://example.com/users/user09",
+      "object": "https://example.com/notes/activity-089",
+      "target": "https://example.com/users/user10",
+      "content": "Follow activity number 89 by user09.",
+      "summary": "Sample follow activity 89",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 289,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/090",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/090",
+      "type": "Undo",
+      "actor": "https://example.com/users/user10",
+      "object": "https://example.com/notes/activity-090",
+      "target": "https://example.com/users/user01",
+      "content": "Undo activity number 90 by user10.",
+      "summary": "Sample undo activity 90",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 290,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/091",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/091",
+      "type": "Create",
+      "actor": "https://example.com/users/user01",
+      "object": "https://example.com/notes/activity-091",
+      "target": "https://example.com/users/user02",
+      "content": "Create activity number 91 by user01.",
+      "summary": "Sample create activity 91",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 291,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/092",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/092",
+      "type": "Announce",
+      "actor": "https://example.com/users/user02",
+      "object": "https://example.com/notes/activity-092",
+      "target": "https://example.com/users/user03",
+      "content": "Announce activity number 92 by user02.",
+      "summary": "Sample announce activity 92",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 292,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/093",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/093",
+      "type": "Like",
+      "actor": "https://example.com/users/user03",
+      "object": "https://example.com/notes/activity-093",
+      "target": "https://example.com/users/user04",
+      "content": "Like activity number 93 by user03.",
+      "summary": "Sample like activity 93",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 293,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/094",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/094",
+      "type": "Follow",
+      "actor": "https://example.com/users/user04",
+      "object": "https://example.com/notes/activity-094",
+      "target": "https://example.com/users/user05",
+      "content": "Follow activity number 94 by user04.",
+      "summary": "Sample follow activity 94",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 294,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/095",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/095",
+      "type": "Undo",
+      "actor": "https://example.com/users/user05",
+      "object": "https://example.com/notes/activity-095",
+      "target": "https://example.com/users/user06",
+      "content": "Undo activity number 95 by user05.",
+      "summary": "Sample undo activity 95",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 295,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/096",
+    "type": "Create",
+    "doc": {
+      "id": "https://example.com/activities/096",
+      "type": "Create",
+      "actor": "https://example.com/users/user06",
+      "object": "https://example.com/notes/activity-096",
+      "target": "https://example.com/users/user07",
+      "content": "Create activity number 96 by user06.",
+      "summary": "Sample create activity 96",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "create"
+        }
+      ],
+      "rank": 296,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/097",
+    "type": "Announce",
+    "doc": {
+      "id": "https://example.com/activities/097",
+      "type": "Announce",
+      "actor": "https://example.com/users/user07",
+      "object": "https://example.com/notes/activity-097",
+      "target": "https://example.com/users/user08",
+      "content": "Announce activity number 97 by user07.",
+      "summary": "Sample announce activity 97",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "announce"
+        }
+      ],
+      "rank": 297,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/098",
+    "type": "Like",
+    "doc": {
+      "id": "https://example.com/activities/098",
+      "type": "Like",
+      "actor": "https://example.com/users/user08",
+      "object": "https://example.com/notes/activity-098",
+      "target": "https://example.com/users/user09",
+      "content": "Like activity number 98 by user08.",
+      "summary": "Sample like activity 98",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "like"
+        }
+      ],
+      "rank": 298,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/099",
+    "type": "Follow",
+    "doc": {
+      "id": "https://example.com/activities/099",
+      "type": "Follow",
+      "actor": "https://example.com/users/user09",
+      "object": "https://example.com/notes/activity-099",
+      "target": "https://example.com/users/user10",
+      "content": "Follow activity number 99 by user09.",
+      "summary": "Sample follow activity 99",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "follow"
+        }
+      ],
+      "rank": 299,
+      "language": "en",
+      "visibility": "public"
+    }
+  },
+  {
+    "uri": "https://example.com/activities/100",
+    "type": "Undo",
+    "doc": {
+      "id": "https://example.com/activities/100",
+      "type": "Undo",
+      "actor": "https://example.com/users/user10",
+      "object": "https://example.com/notes/activity-100",
+      "target": "https://example.com/users/user01",
+      "content": "Undo activity number 100 by user10.",
+      "summary": "Sample undo activity 100",
+      "tag": [
+        {
+          "type": "Hashtag",
+          "name": "fediverse"
+        },
+        {
+          "type": "Hashtag",
+          "name": "undo"
+        }
+      ],
+      "rank": 300,
+      "language": "en",
+      "visibility": "public"
+    }
+  }
+]

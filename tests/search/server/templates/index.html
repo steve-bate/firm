@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Search Test Server</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main>
+      <h1>ActivityPub Search Test UI</h1>
+
+      <section>
+        <h2>General Search Query</h2>
+        <form id="query-form">
+          <label for="query-input">Search query syntax</label>
+          <input id="query-input" name="query" type="text" value="type:Person preferredUsername:ev*">
+          <button type="submit">Run Search</button>
+        </form>
+        <div id="query-error" class="error" aria-live="polite"></div>
+        <div id="query-sql" class="query-sql"></div>
+        <div id="query-results"></div>
+      </section>
+
+      <section>
+        <h2>Actor Prefix Search</h2>
+        <form id="actor-form">
+          <label for="actor-prefix">Preferred Username Prefix</label>
+          <div class="autocomplete-wrap">
+            <input id="actor-prefix" name="prefix" type="text" autocomplete="off" placeholder="e.g. ev" role="combobox" aria-expanded="false" aria-controls="actor-suggestions" aria-autocomplete="list">
+            <ul id="actor-suggestions" class="suggestions" role="listbox" hidden></ul>
+          </div>
+          <button type="submit">Search Actors</button>
+        </form>
+        <div id="actor-selected-json" class="inline-json" hidden></div>
+        <div id="actor-results"></div>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>

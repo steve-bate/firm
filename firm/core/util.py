@@ -57,12 +57,30 @@ ACTIVITIES_REQUIRING_TARGET = {
 def is_public(resource: JSONObject | str) -> bool:
     if isinstance(resource, str):
         return resource in AP_PUBLIC_URIS
-    for key in ["to", "cc", "bto", "bcc", "audience"]:
+    for key in RECIPIENT_FIELDS:
         if key in resource:
             for uri in AP_PUBLIC_URIS:
                 if has_value(resource, key, uri):
                     return True
     return False
+
+
+def is_audience(uri: str, resource: JSONObject) -> bool:
+    for key in RECIPIENT_FIELDS:
+        if has_value(resource, key, uri):
+            return True
+    return False
+
+
+def is_accessible(subject_uri: str | None, resource: JSONObject) -> bool:
+    return is_public(resource) or (
+        subject_uri is not None
+        and (
+            has_value(resource, "attributedTo", subject_uri)
+            or has_value(resource, "actor", subject_uri)
+            or is_audience(subject_uri, resource)
+        )
+    )
 
 
 def get_types(resource: JSONObject) -> list[str]:

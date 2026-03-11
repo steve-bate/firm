@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import json
 import logging
 import re
 import uuid
@@ -15,8 +16,10 @@ from jsonschema.exceptions import ValidationError
 
 from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.interfaces import (
+    Identity,
     JSONObject,
     Principal,
+    Tenant,
     Validator,
     get_query_params,
 )
@@ -33,11 +36,14 @@ from firm.core.services.nodeinfo import (
     nodeinfo_version,
 )
 from firm.core.services.webfinger import InvalidResourceUri, ResourceNotFound, webfinger
+from firm.core.store.file import FileResourceStore
 from firm.core.util import (
     AS2_CONTENT_TYPES,
+    is_accessible,
 )
 from firm.jsonschema.validation import create_validator
 from firm.oauth2.router import create_oauth2_router
+from firm.search.transform.json import JsonMatcher
 from firm.server.auth import get_principal
 from firm.server.config import ServerConfig, StorageKind
 from firm.server.delivery import FirmDeliveryService
@@ -186,6 +192,39 @@ async def _filesystem_search_endpoint(request: Request) -> Response:
             "id": f"{prefix}/search?q={query}",
             "totalItems": len(matches["actors"]) + len(matches["objects"]),
             "orderedItems": list(matches["actors"].values()) + list(matches["objects"].values()),
+        },
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
+async def _filesystem_fulltext_search_endpoint(
+    request: Request, principal: Identity = Depends(get_principal)
+) -> Response:
+    matches = []
+
+    tenant: Tenant = request.state.tenant
+    if isinstance(tenant.public_store, FileResourceStore):
+        query = request.query_params.get("q", [""]).strip()
+        matcher = JsonMatcher(query, text_fields=["summary", "content"])
+
+        file_store = cast(FileResourceStore, tenant.public_store)
+        for base, _, files in file_store.store_path.walk():
+            for file in files:
+                f = base / file
+                doc = json.load(f.open())
+                if is_accessible(principal.uri if principal else None, doc):
+                    if matcher.is_match(doc):
+                        matches.append(doc)
+
+    # TODO Need to process docs for transport (embed, filter, etc.)
+
+    return JSONResponse(
+        {
+            "@context": "https://www.w3.org/ns/activitystreams",
+            "type": "OrderedCollection",
+            "id": f"{tenant.prefix}/search?q={query}",
+            "totalItems": len(matches),
+            "orderedItems": matches,
         },
         headers={"Access-Control-Allow-Origin": "*"},
     )
@@ -372,6 +411,10 @@ def create_router(config: ServerConfig) -> APIRouter:
 
     router.include_router(create_oauth2_router())
 
+    if config.store.kind == StorageKind.FILESYSTEM:
+        log.info("Registering file system search")
+        router.add_api_route("/search", _filesystem_fulltext_search_endpoint, methods=["GET"])
+
     router.add_api_route("/sse/client", sse_client_page_endpoint, methods=["GET"])
     router.include_router(create_sse_router())
 
@@ -494,9 +537,5 @@ def create_router(config: ServerConfig) -> APIRouter:
     #         routes.insert(4, Mount("/sparql", app=sparql_app, name="sparql"))
     #         # Add a search engine
     #         routes.insert(4, Route("/search", endpoint=_rdf_search(store)))d
-
-    if config.store.kind == StorageKind.FILESYSTEM:
-        log.info("Registering file system search")
-        router.add_api_route("/search", _filesystem_search_endpoint, methods=["GET"])
 
     return router

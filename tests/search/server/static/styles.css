@@ -1,0 +1,161 @@
+body {
+  font-family: Arial, sans-serif;
+  margin: 0;
+  padding: 2rem;
+  background: #f6f7f9;
+  color: #1d2128;
+}
+
+main {
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+h1 {
+  margin-top: 0;
+}
+
+section {
+  background: #fff;
+  border: 1px solid #d9dde3;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+form {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.autocomplete-wrap {
+  position: relative;
+}
+
+.suggestions {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #d9dde3;
+  border-radius: 4px;
+  background: #fff;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.suggestions li {
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+}
+
+.suggestions li.active,
+.suggestions li:hover {
+  background: #f3f5f8;
+}
+
+textarea,
+input,
+button {
+  font: inherit;
+  padding: 0.5rem;
+}
+
+button {
+  width: fit-content;
+  cursor: pointer;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.75rem;
+}
+
+th,
+td {
+  border: 1px solid #d9dde3;
+  text-align: left;
+  padding: 0.5rem;
+  vertical-align: top;
+}
+
+.error {
+  color: #c32020;
+  min-height: 1.2em;
+}
+
+.query-sql {
+  margin-top: 0.5rem;
+}
+
+.query-sql pre {
+  background: #f3f5f8;
+  border: 1px solid #d9dde3;
+  border-radius: 4px;
+  padding: 0.75rem;
+  overflow-x: auto;
+}
+
+ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.json-modal {
+  width: min(900px, 92vw);
+  max-height: 80vh;
+  border: 1px solid #d9dde3;
+  border-radius: 8px;
+  padding: 0;
+}
+
+.json-modal::backdrop {
+  background: rgba(18, 23, 31, 0.5);
+}
+
+.json-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #d9dde3;
+}
+
+.json-modal-title {
+  margin: 0;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.json-modal-content {
+  margin: 0;
+  padding: 1rem;
+  background: #f3f5f8;
+  max-height: calc(80vh - 64px);
+  overflow: auto;
+}
+
+.inline-json {
+  margin-top: 0.25rem;
+  border: 1px solid #d9dde3;
+  border-radius: 4px;
+  background: #f3f5f8;
+}
+
+.inline-json strong {
+  display: block;
+  padding: 0.5rem 0.75rem 0;
+}
+
+.inline-json pre {
+  margin: 0;
+  padding: 0.75rem;
+  overflow: auto;
+  max-height: 320px;
+}
