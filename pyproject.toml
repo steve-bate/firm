@@ -4,13 +4,13 @@ version = "0.1.0"
 description = "Federated Information Resource Manager (FIRM)"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.14"
+requires-python = ">=3.12,<3.15"
 authors = [
     { name = "Steve Bate", email = "svc-github@stevebate.net" }
 ]
 dependencies = [
   "anyio>=4,<5",
-  "cryptography>=43.0.0,<44.0.0",
+  "cryptography>=43.0.0,<45.0.0",
   "bcrypt>=4.2.0,<5.0.0",
   "uvicorn>=0.30.6,<0.31.0",
   "colorama>=0.4.6,<0.5.0",

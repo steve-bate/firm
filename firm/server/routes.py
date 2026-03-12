@@ -25,6 +25,7 @@ from firm.core.interfaces import (
 )
 from firm.core.services.activitypub import (
     ActivityPubService,
+    InvalidRequestException,
     InvalidResourceTypeException,
     NotAuthorizedException,
     NotFoundException,
@@ -298,6 +299,8 @@ def accepts_activitypub(request: Request) -> bool:
     """Returns True only if the accept header explicitly names an ActivityPub MIME type.
     Wildcard types like */* are ignored so browser requests route to HTML."""
     accepted = request.headers.get("accept", "")
+    if accepted in _AS2_CONTENT_TYPES:
+        return True
     split_header = [h for h in accepted.split(",") if h]
     parsed_header = [mimeparse.parse_media_range(r) for r in split_header]
     explicit = {f"{t}/{s}" for t, s, _ in parsed_header if t != "*" and s != "*"}
@@ -305,7 +308,7 @@ def accepts_activitypub(request: Request) -> bool:
 
 
 def has_content_type(request, content_types):
-    content_type = request.headers.get("content-type", "").split(";")[0].strip()
+    content_type = request.headers.get("content-type", "").strip()
     return content_type in content_types
 
 
@@ -474,22 +477,27 @@ def create_router(config: ServerConfig) -> APIRouter:
                 raise HTTPException(HTTPStatus.NOT_FOUND, detail=str(e))
             except NotAuthorizedException as e:
                 raise HTTPException(HTTPStatus.FORBIDDEN, detail=str(e))
+            except InvalidRequestException as e:
+                raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
             except InvalidResourceTypeException as e:
                 raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
             except ResourceOwnerException as e:
                 raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
         elif request.method == "POST":
             try:
-                await activitypub_service.process_post(
+                create_resource_uri = await activitypub_service.process_post(
                     tenants=request.app.state.tenants,
                     tenant=request.state.tenant,
                     principal=request.scope["user"],
                     target_uri=request.url,
                     resource=await request.json(),
                 )
-                return PlainTextResponse("OK", media_type="text/plain")
+                headers = {"Location": create_resource_uri} if create_resource_uri else {}
+                return PlainTextResponse("OK", media_type="text/plain", headers=headers)
             except NotAuthorizedException as e:
                 raise HTTPException(HTTPStatus.FORBIDDEN, detail=str(e))
+            except InvalidRequestException as e:
+                raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
             except InvalidResourceTypeException as e:
                 raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
             except ResourceOwnerException as e:

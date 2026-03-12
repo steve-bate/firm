@@ -29,6 +29,7 @@ class RdfStoreConfig:
 
 @dataclass(frozen=True)
 class MemoryStoreConfig:
+    files: Path
     kind: StorageKind = StorageKind.MEMORY
 
 

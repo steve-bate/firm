@@ -10,7 +10,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from firm.core.interfaces import FIRM_NS, ResourceStore, Tenant
-from firm.server.config import FileStoreConfig, ServerConfig, StorageKind
+from firm.server.config import (
+    FileStoreConfig,
+    MemoryStoreConfig,
+    ServerConfig,
+    StorageKind,
+)
 from firm.server.routes import create_router
 
 log = logging.getLogger(__name__ if __name__ != "__main__" else "firm.server.main")
@@ -41,7 +46,8 @@ def init_tenant_stores(
         case StorageKind.MEMORY:
             from firm.core.store.memory import MemoryResourceStore
 
-            return (MemoryResourceStore(), MemoryResourceStore(), Path())
+            memory_config = cast(MemoryStoreConfig, config.store)
+            return (MemoryResourceStore(), MemoryResourceStore(), memory_config.files)
         case StorageKind.RDF:
             # init_tenant_rdf_storage(config, tenant_uri)
             raise NotImplementedError("RDF storage not supported yet")
@@ -68,6 +74,10 @@ def init_remote_cache(config: ServerConfig) -> ResourceStore:
         case "rdf":
             # init_tenant_rdf_storage(config, tenant_uri)
             raise NotImplementedError("RDF storage not supported yet")
+        case "memory":
+            from firm.core.store.memory import MemoryResourceStore
+
+            return MemoryResourceStore()
     raise ValueError(
         f"Unknown storage kind: {config.store.kind}. " "Supported kinds are 'filesystem' and 'rdf'."
     )

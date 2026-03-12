@@ -25,6 +25,7 @@ from firm.core.util import (
     ACTIVITIES_REQUIRING_OBJECT,
     ACTIVITIES_REQUIRING_TARGET,
     get_collection_items_key,
+    get_list,
     get_types,
     has_value,
     is_accessible,
@@ -132,13 +133,24 @@ class ActivityPubTenant:
                 return dereferenced_items
         raise Exception("Collection items must be a list")
 
+    @classmethod
+    def _remove_empty_arrays(cls, resource: JSONObject) -> JSONObject:
+        for key in list(resource.keys()):
+            value = resource[key]
+            if isinstance(value, list) and len(value) == 0:
+                del resource[key]
+            elif isinstance(value, dict):
+                cls._remove_empty_arrays(value)
+        return resource
+
     async def serialize(self, store: ResourceStore, resource: JSONObject) -> JSONObject:
         """Embed specific resources to match typical AP expectations."""
         if not isinstance(resource, dict):
-            return resource
+            raise Exception("Can only serialize JSON objects")
 
-        if is_collection(resource):
-            return cast(
+        elif is_collection(resource):
+            # FIXME This is messy
+            resource = cast(
                 JSONObject, await self._dereference_collection_items(store, resource, inplace=True)
             )
 
@@ -167,7 +179,7 @@ class ActivityPubTenant:
         #     else:
         #         resource[items_key] = items
 
-        if is_type(resource, "Create") or is_type(resource, "Update"):
+        elif is_type(resource, "Create") or is_type(resource, "Update"):
             if isinstance(resource.get("object"), str):
                 obj = await self._safe_dereference(store, cast(str, resource["object"]))
                 resource["object"] = obj
@@ -177,7 +189,8 @@ class ActivityPubTenant:
                         collection.pop("items")
                         collection.pop("attributedTo")
                         obj[prop] = collection
-        return resource
+
+        return self._remove_empty_arrays(resource)
 
     @staticmethod
     def _get_query_param(params: Mapping[str, list[str]], key: str, default_value: str) -> str:
@@ -624,13 +637,43 @@ class ActivityPubTenant:
     def _generate_id(self, subpath: str, actor: APActor) -> str:
         return f"{actor.get('id')}/{subpath}/{uuid.uuid4()}"
 
+    @staticmethod
+    def _merge_audiences(activity: JSONObject):
+        object_ = cast(JSONObject, activity["object"])
+        to_audience = set(get_list(activity, "to") + get_list(object_, "to"))
+        cc_audience = set(get_list(activity, "cc") + get_list(object_, "cc")) - to_audience
+
+        bto_audience = (
+            set(get_list(activity, "bto") + get_list(object_, "bto")) - to_audience - cc_audience
+        )
+        bcc_audience = (
+            set(get_list(activity, "bcc") + get_list(object_, "bcc"))
+            - to_audience
+            - cc_audience
+            - bto_audience
+        )
+
+        audience = set(get_list(activity, "audience") + get_list(object_, "audience"))
+        audience -= to_audience | cc_audience | bto_audience | bcc_audience
+
+        activity["to"] = list(to_audience)
+        activity["cc"] = list(cc_audience)
+        activity["bto"] = list(bto_audience)
+        activity["bcc"] = list(bcc_audience)
+        activity["audience"] = list(audience)
+        object_["to"] = list(to_audience)
+        object_["cc"] = list(cc_audience)
+        object_["bto"] = list(bto_audience)
+        object_["bcc"] = list(bcc_audience)
+        object_["audience"] = list(audience)
+
     async def _process_outbox_internal(
         self,
         tenant: Tenant,
         all_tenants: Mapping[str, Tenant],
         box_owner: APActor,
         activity: JSONObject,
-    ) -> None:
+    ) -> str | None:
         outbox_uri = box_owner.get("outbox")
         if not outbox_uri:
             raise InvalidResourceException("Box owner has no outbox")
@@ -638,11 +681,14 @@ class ActivityPubTenant:
         if has_value(activity, "type", "Create"):
             object_ = activity["object"]
             if isinstance(object_, Mapping):
+                self._merge_audiences(activity)
                 # Always assign an URI to the object for now.
                 # TODO: check the object for an "attributedTo" the posting actor.
                 # This allows "announcing" an external create.
                 if "@context" not in object_:
                     object_["@context"] = "https://www.w3.org/ns/activitystreams"
+                activity_id = f"{activity['actor']}/create/{uuid.uuid4()}"
+                activity["id"] = activity_id
                 object_uri = f"{activity['actor']}/{get_types(object_)[0].lower()}/{uuid.uuid4()}"
                 object_["id"] = object_uri
                 if "attributedTo" not in object_:
@@ -650,6 +696,8 @@ class ActivityPubTenant:
                 await store.put(object_)
                 activity["object"] = resource_id(object_)
                 await store.put(activity)
+                await self._put_collection_item(store, outbox_uri, activity_id)
+                return activity_id
         else:
             try:
                 if has_value(activity, "type", "Delete"):
@@ -809,6 +857,7 @@ class ActivityPubTenant:
         await self._put_collection_item(store, outbox_uri, resource_id(activity))
         # TODO Process activity
         await self._delivery_service.deliver(tenant, all_tenants, activity)
+        return None
 
     async def _process_outbox(
         self,
@@ -817,7 +866,7 @@ class ActivityPubTenant:
         principal: Identity | None,
         activity: JSONObject,
         box_owner: APActor,
-    ) -> None:
+    ) -> str | None:
         # TODO Use JSONObject?
         self._validator.validate(activity)
         if "@context" not in activity:
@@ -838,7 +887,7 @@ class ActivityPubTenant:
         if "actor" not in activity:
             activity["actor"] = actor_uri
         log.info(f"Outbox activity: {activity.get('type')}")
-        await self._process_outbox_internal(
+        return await self._process_outbox_internal(
             tenant,
             tenants,
             box_owner,
@@ -872,7 +921,7 @@ class ActivityPubService:
         principal: Identity | None,
         target_uri: Url,
         resource: JSONObject,
-    ) -> None:
+    ) -> str | None:
         return await self._handler._process_post(
             tenants=tenants,
             tenant=tenant,

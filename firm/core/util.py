@@ -230,3 +230,13 @@ def get_collection_items(collection: JSONObject) -> list[JSON]:
 def set_collection_items(collection: JSONObject, items: list[JSON]) -> None:
     items_key = get_collection_items_key(collection)
     collection[items_key] = items
+
+
+def get_list(obj: JSONObject, key: str) -> list[JSON]:
+    value = obj.get(key)
+    if value is None:
+        return []
+    elif isinstance(value, list):
+        return value
+    else:
+        return [value]
