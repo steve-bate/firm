@@ -460,6 +460,7 @@ def create_router(config: ServerConfig) -> APIRouter:
                     request.state.tenant,
                     request.scope["user"],
                     request.url,
+                    request.query_params,
                 )
                 status_code = 200
                 if resource.get("type") == "Tombstone":

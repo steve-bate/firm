@@ -54,6 +54,11 @@ ACTIVITIES_REQUIRING_TARGET = {
 }
 
 
+def is_activity(resource: JSONObject) -> bool:
+    # duck typing
+    return "actor" in resource and "object" in resource
+
+
 def is_public(resource: JSONObject | str) -> bool:
     if isinstance(resource, str):
         return resource in AP_PUBLIC_URIS
@@ -193,4 +198,35 @@ def get_prefix_uri(uri: str, scheme_override: str | None = None) -> str:
 
 
 def is_collection(obj: JSONObject) -> bool:
-    return obj.get("type") in ["Collection", "OrderedCollection"]
+    for type_ in ["Collection", "CollectionPage", "OrderedCollection", "OrderedCollectionPage"]:
+        if has_value(obj, "type", type_):
+            return True
+    return False
+
+
+def is_ordered_collection(obj: JSONObject) -> bool:
+    for type_ in ["OrderedCollection", "OrderedCollectionPage"]:
+        if has_value(obj, "type", type_):
+            return True
+    return False
+
+
+def get_collection_items_key(collection: JSONObject) -> str:
+    if is_ordered_collection(collection):
+        return "orderedItems"
+    else:
+        return "items"
+
+
+def get_collection_items(collection: JSONObject) -> list[JSON]:
+    items_key = get_collection_items_key(collection)
+    items = collection.get(items_key, [])
+    if isinstance(items, list):
+        return items
+    else:
+        return []
+
+
+def set_collection_items(collection: JSONObject, items: list[JSON]) -> None:
+    items_key = get_collection_items_key(collection)
+    collection[items_key] = items

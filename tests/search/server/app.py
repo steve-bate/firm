@@ -26,7 +26,7 @@ def create_app() -> Flask:
         if not search_query:
             return jsonify({"error": "Search query is required."}), 400
 
-        conn: sqlite3.Connection = app.config["DB"]
+        conn: sqlite3.Connection = app.config["DB"]  # type: ignore
         try:
             ast = parse_query(search_query)
             where_sql, params = ast_to_sql(ast)
@@ -62,7 +62,7 @@ def create_app() -> Flask:
             return jsonify([])
 
         pattern = f"{prefix}%"
-        conn: sqlite3.Connection = app.config["DB"]
+        conn: sqlite3.Connection = app.config["DB"]  # type: ignore
         rows = conn.execute(
             """
             SELECT
@@ -84,7 +84,7 @@ def create_app() -> Flask:
             return jsonify([])
 
         pattern = f"{prefix}%"
-        conn: sqlite3.Connection = app.config["DB"]
+        conn: sqlite3.Connection = app.config["DB"]  # type: ignore
         rows = conn.execute(
             """
             SELECT
@@ -117,7 +117,7 @@ def create_app() -> Flask:
         if not uri:
             return jsonify({"error": "uri is required."}), 400
 
-        conn: sqlite3.Connection = app.config["DB"]
+        conn: sqlite3.Connection = app.config["DB"]  # type: ignore
         row = conn.execute(
             "SELECT document FROM objects WHERE uri = ?",
             (uri,),

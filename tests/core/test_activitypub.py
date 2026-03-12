@@ -63,16 +63,157 @@ def service():
 
 async def test_dereference_unknown_resource(service: ActivityPubService, tenant: Tenant):
     with pytest.raises(NotFoundException):
-        await service.process_get(dict(), tenant, None, StubUrl.parse("http://tenant1.test/bogus"))
+        await service.process_get(
+            dict(), tenant, None, StubUrl.parse("http://tenant1.test/bogus"), {}
+        )
 
 
 async def test_dereference(service: ActivityPubService, tenant: Tenant):
     resource: JSONObject = {"id": "http://tenant1.test/obj1", "type": "Object"}
     await tenant.public_store.put(resource)
     resource = await service.process_get(
-        dict(), tenant, None, StubUrl.parse("http://tenant1.test/obj1")
+        dict(), tenant, None, StubUrl.parse("http://tenant1.test/obj1"), {}
     )
     assert resource == {"id": "http://tenant1.test/obj1", "type": "Object"}
+
+
+async def test_dereference_collection(service: ActivityPubService, tenant: Tenant):
+    resources: list[JSONObject] = [
+        {
+            "id": "http://tenant1.test/collection",
+            "type": "Collection",
+            "items": [
+                "http://tenant1.test/obj1",
+                "http://tenant1.test/obj2",
+            ],
+        },
+        {
+            "id": "http://tenant1.test/obj1",
+            "type": "Object",
+            "name": "foo",
+        },
+        {
+            "id": "http://tenant1.test/obj2",
+            "type": "Object",
+            "name": "bar",
+        },
+    ]
+    for r in resources:
+        await tenant.public_store.put(r)
+    collection = await service.process_get(
+        dict(), tenant, None, StubUrl.parse("http://tenant1.test/collection"), {}
+    )
+    assert collection == {
+        "id": "http://tenant1.test/collection",
+        "type": "Collection",
+        "items": [
+            {
+                "id": "http://tenant1.test/obj1",
+                "type": "Object",
+                "name": "foo",
+            },
+            {
+                "id": "http://tenant1.test/obj2",
+                "type": "Object",
+                "name": "bar",
+            },
+        ],
+    }
+
+
+async def test_dereference_collection_filtered(service: ActivityPubService, tenant: Tenant):
+    resources: list[JSONObject] = [
+        {
+            "id": "http://tenant1.test/collection",
+            "type": "Collection",
+            "items": [
+                "http://tenant1.test/obj1",
+                "http://tenant1.test/obj2",
+            ],
+        },
+        {
+            "id": "http://tenant1.test/obj1",
+            "type": "Event",
+            "name": "foo",
+        },
+        {
+            "id": "http://tenant1.test/obj2",
+            "type": "Place",
+            "name": "bar",
+        },
+    ]
+    for r in resources:
+        await tenant.public_store.put(r)
+    collection = await service.process_get(
+        dict(),
+        tenant,
+        None,
+        StubUrl.parse("http://tenant1.test/collection"),
+        {
+            "filter": "$[?@.type == 'Place']",
+        },
+    )
+    assert collection == {
+        "id": "http://tenant1.test/collection",
+        "type": "Collection",
+        "items": [
+            {
+                "id": "http://tenant1.test/obj2",
+                "type": "Place",
+                "name": "bar",
+            },
+        ],
+    }
+
+
+async def test_dereference_sharedinbox_filtered(service: ActivityPubService, tenant: Tenant):
+    tenant.shared_inbox_uri = "http://tenant1.test/shared"
+
+    resources: list[JSONObject] = [
+        {
+            "id": "http://tenant1.test/obj1",
+            "type": "Create",
+            "to": ["as:Public"],
+            "actor": "http://remote.test/user1",
+            "object": "http://tenant1.test/obj1",
+            "name": "foo",
+        },
+        {
+            "id": "http://tenant1.test/obj2",
+            "type": "Update",
+            "to": ["as:Public"],
+            "actor": "http://remote.test/user1",
+            "object": "http://tenant1.test/obj1",
+            "name": "bar",
+        },
+    ]
+    for r in resources:
+        await tenant.public_store.put(r)
+    collection = await service.process_get(
+        dict(),
+        tenant,
+        None,
+        StubUrl.parse("http://tenant1.test/shared?offset=0"),
+        {
+            "filter": "$[?@.name == 'bar']",
+        },
+    )
+    assert collection == {
+        "@context": "https://www.w3.org/ns/activitystreams",
+        "id": "http://tenant1.test/shared?offset=0",
+        "type": "CollectionPage",
+        "totalItems": 1,
+        "items": [
+            {
+                "id": "http://tenant1.test/obj2",
+                "type": "Update",
+                "to": ["as:Public"],
+                "actor": "http://remote.test/user1",
+                "object": "http://tenant1.test/obj1",
+                "name": "bar",
+            },
+        ],
+    }
 
 
 async def test_inbox_no_auth(service: ActivityPubService, tenant: Tenant):

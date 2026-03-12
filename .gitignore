@@ -53,3 +53,4 @@ htmlcov/
 
 # pytest
 .pytest_cache/
+*.code-workspace

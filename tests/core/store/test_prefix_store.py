@@ -24,7 +24,7 @@ INSTANCE_PRIVATE_URI_2 = "private://instance2.test"
 
 
 @pytest.fixture
-def store():
+def store() -> PrefixAwareResourceStore:
     tenant_public_stores: dict[str, ResourceStore] = {
         INSTANCE_PUBLIC_URI_1: MemoryResourceStore(),
         INSTANCE_PUBLIC_URI_2: MemoryResourceStore(),

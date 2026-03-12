@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Any, Mapping, cast
 from urllib.parse import parse_qs
 
+import jsonpath_rfc9535 as jsonpath  # type: ignore
+
 from firm.core.interfaces import (
     FIRM_NS,
     URI,
@@ -13,7 +15,6 @@ from firm.core.interfaces import (
     Identity,
     JSONObject,
     NoOpValidator,
-    PlainTextResponse,
     ResourceStore,
     Tenant,
     Url,
@@ -23,16 +24,18 @@ from firm.core.services.exception import ServiceException
 from firm.core.util import (
     ACTIVITIES_REQUIRING_OBJECT,
     ACTIVITIES_REQUIRING_TARGET,
+    get_collection_items_key,
     get_types,
     has_value,
-    is_public,
+    is_accessible,
+    is_activity,
+    is_collection,
     is_type,
     log,
     resource_get,
     resource_id,
+    set_collection_items,
 )
-
-OK = PlainTextResponse("", 200, reason_phrase="OK")
 
 
 class NotAuthorizedException(ServiceException):
@@ -102,45 +105,69 @@ class ActivityPubTenant:
 
     async def _safe_dereference_or_uri(self, store: ResourceStore, url: Url | str):
         try:
-            return self._safe_dereference(store, url)
+            return await self._safe_dereference(store, url)
         except Exception:
             return str(url)
+
+    async def _dereference_collection_items(
+        self, store: ResourceStore, collection: JSONObject, inplace=False
+    ) -> list[JSONObject] | JSONObject | None:
+        items_key = get_collection_items_key(collection)
+        items = collection.get(items_key, [])
+        if isinstance(items, list):
+            dereferenced_items: list[JSONObject] = []
+            for item in items:
+                if isinstance(item, str):
+                    dereferenced_item = await self._dereference(store, item)
+                    if dereferenced_item:
+                        dereferenced_items.append(dereferenced_item)
+                    else:
+                        log.warning(f"Unable to dereference collection item: {item}")
+                else:
+                    dereferenced_items.append(item)
+            if inplace:
+                collection[items_key] = dereferenced_items
+                return collection
+            else:
+                return dereferenced_items
+        raise Exception("Collection items must be a list")
 
     async def serialize(self, store: ResourceStore, resource: JSONObject) -> JSONObject:
         """Embed specific resources to match typical AP expectations."""
         if not isinstance(resource, dict):
             return resource
-        resource_types = get_types(resource)
-        if (
-            "OrderedCollection" in resource_types
-            or "OrderedCollectionPage" in resource_types
-            or "Collection" in resource_types
-            or "CollectionPage" in resource_types
-        ):
-            # Keep it simple for now
-            items_key = "items" if "items" in resource else "orderedItems"
-            items = [
-                await self.serialize(
-                    store,
-                    await self._safe_dereference_or_uri(store, i) if isinstance(i, str) else i,
-                )
-                for i in cast(list, resource.get(items_key, []))
-            ]
-            # Embed activity objects
-            for item in items:
-                if (
-                    isinstance(item, Mapping)
-                    and "actor" in item
-                    and isinstance(item.get("object"), str)
-                ):
-                    item["object"] = await self._dereference(store, cast(str, item["object"]))
-            # TODO Add more general support for empty array serialization
-            if not items:
-                if items_key in resource:
-                    del resource[items_key]
-            else:
-                resource[items_key] = items
-        if "Create" in resource_types or "Update" in resource_types:
+
+        if is_collection(resource):
+            return cast(
+                JSONObject, await self._dereference_collection_items(store, resource, inplace=True)
+            )
+
+        # if is_collection(resource):
+        #     # Keep it simple for now
+        #     items_key = "items" if "items" in resource else "orderedItems"
+        #     items = [
+        #         await self.serialize(
+        #             store,
+        #             await self._safe_dereference_or_uri(store, i) if isinstance(i, str) else i,
+        #         )
+        #         for i in cast(list, resource.get(items_key, []))
+        #     ]
+        #     # Embed activity objects
+        #     for item in items:
+        #         if (
+        #             isinstance(item, Mapping)
+        #             and "actor" in item
+        #             and isinstance(item.get("object"), str)
+        #         ):
+        #             item["object"] = await self._dereference(store, cast(str, item["object"]))
+        #     # TODO Add more general support for empty array serialization
+        #     if not items:
+        #         if items_key in resource:
+        #             del resource[items_key]
+        #     else:
+        #         resource[items_key] = items
+
+        if is_type(resource, "Create") or is_type(resource, "Update"):
             if isinstance(resource.get("object"), str):
                 obj = await self._safe_dereference(store, cast(str, resource["object"]))
                 resource["object"] = obj
@@ -160,7 +187,12 @@ class ActivityPubTenant:
         return values[0]
 
     async def _get_shared_inbox(
-        self, tenants: Mapping[str, Tenant], tenant: Tenant, resource_uri: Url
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        resource_uri: Url,
+        options: Mapping[str, Any] | None,
     ) -> JSONObject:
         """Handle requests to the shared inbox."""
         # if request.auth is None:
@@ -185,37 +217,31 @@ class ActivityPubTenant:
                 "first": f"{box_id}?offset=0",
             }
         else:
+            filter = (
+                jsonpath.compile(options.get("filter")) if options and "filter" in options else None
+            )
             offset = int(offset_param)
             all_public_activities: list[JSONObject] = []
             if federated:
                 # This is obviously not scalable, but for demonstration purposes
                 for tenant in tenants.values():
+                    tenant_store = tenant.public_store
                     all_public_activities.extend(
-                        a
-                        for a in await store.query(
-                            {},
-                        )
-                        if is_public(a)
+                        cast(list, await self._get_activities(principal, tenant_store, filter))
                     )
             else:
                 all_public_activities.extend(
-                    a
-                    for a in await store.query(
-                        {
-                            # "actor": {"$exists": True},
-                        },
-                    )
-                    if "actor" in a
+                    cast(list, await self._get_activities(principal, store, filter))
                 )
 
             items = all_public_activities[offset:limit]
 
             page: JSONObject = {
                 "@context": "https://www.w3.org/ns/activitystreams",
-                "id": box_id,
-                "type": "OrderedCollectionPage",
+                "id": f"{box_id}?offset={offset_param}",
+                "type": "CollectionPage",
                 "totalItems": len(items),
-                "orderedItems": items,
+                "items": items,
             }
 
             if offset > 0:
@@ -227,19 +253,36 @@ class ActivityPubTenant:
 
             return await self.serialize(store, page)
 
+    async def _get_activities(self, principal, store, filter: jsonpath.JSONPathQuery | None = None):
+        activities = [
+            activity
+            for activity in await store.query({})
+            if is_activity(activity)
+            and is_accessible(principal.uri if principal else None, activity)
+        ]
+        if filter:
+            activities = [node.value for node in filter.find(activities)]
+        return activities
+
     async def _process_get(
         self,
         tenants: Mapping[str, Tenant],
         tenant: Tenant,
         principal: Identity | None,
         resource_uri: Url,
+        options: Mapping[str, Any] | None = None,
     ) -> JSONObject:
         if tenant.shared_inbox_uri and str(resource_uri).startswith(tenant.shared_inbox_uri):
-            return await self._get_shared_inbox(tenants, tenant, resource_uri)
+            return await self._get_shared_inbox(tenants, tenant, principal, resource_uri, options)
         store = tenant.public_store
         if resource := await self._dereference(store, resource_uri):
             decision = await self._authorizer.is_get_authorized(tenant, principal, resource)
             if decision.authorized:
+                if is_collection(resource) and options and "filter" in options:
+                    filter = jsonpath.compile(options["filter"])
+                    items = await self._dereference_collection_items(store, resource)
+                    filtered_nodes = filter.find(items)
+                    set_collection_items(resource, [node.value for node in filtered_nodes])
                 return await self.serialize(store, resource)
             else:
                 raise NotAuthorizedException(decision.reason or "Not authorized")
@@ -818,13 +861,9 @@ class ActivityPubService:
         tenant: Tenant,
         principal: Identity | None,
         resource_uri: Url,
+        options: Mapping[str, Any] | None = None,
     ) -> JSONObject:
-        return await self._handler._process_get(
-            tenants,
-            tenant,
-            principal,
-            resource_uri,
-        )
+        return await self._handler._process_get(tenants, tenant, principal, resource_uri, options)
 
     async def process_post(
         self,
