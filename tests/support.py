@@ -2,6 +2,8 @@ import json
 from typing import Any, AsyncIterable, Mapping, MutableMapping, cast
 from urllib.parse import urlparse
 
+from anyio import Path
+
 from firm.core.interfaces import (
     APActor,
     AuthorizationDecision,
@@ -177,7 +179,7 @@ class StubState(HttpApplicationState):
     @property
     def config(self) -> ServerConfig:
         """Application configuration settings."""
-        return ServerConfig([], store=MemoryStoreConfig())
+        return ServerConfig([], store=MemoryStoreConfig(files=Path("/tmp")))
 
 
 class StubApplication(HttpApplication):
