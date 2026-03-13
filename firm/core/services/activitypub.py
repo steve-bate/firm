@@ -374,8 +374,10 @@ class ActivityPubTenant:
         await self._put_collection_item(store, box_owner["inbox"], resource_id(activity))
         if has_value(activity, "type", "Follow"):
             return await self._process_inbox_follow(tenants, tenant, principal, box_owner, activity)
-        if has_value(activity, "type", "Accept"):
+        elif has_value(activity, "type", "Accept"):
             return await self._process_inbox_accept(tenants, tenant, principal, box_owner, activity)
+        elif has_value(activity, "type", "Reject"):
+            return await self._process_inbox_reject(tenants, tenant, principal, box_owner, activity)
         elif has_value(activity, "type", "Like"):
             return await self._process_inbox_like(tenants, tenant, principal, box_owner, activity)
         elif has_value(activity, "type", "Create"):
@@ -492,6 +494,32 @@ class ActivityPubTenant:
                 raise NotImplementedError("Following not supported")
             await self._put_collection_item(
                 store, following_uri, resource_id(accepted_activity["object"])
+            )
+        else:
+            raise InvalidResourceException("Unknown accepted object")
+
+    async def _process_inbox_reject(
+        self,
+        tenants: Mapping[str, Tenant],
+        tenant: Tenant,
+        principal: Identity | None,
+        box_owner: APActor,
+        activity: JSONObject,
+    ) -> None:
+        """A remote actor has rejected our follow request."""
+        actor_uri = resource_id(activity.get("actor"))
+        # TODO Does the authorization framework handle this already?
+        self._assert_authorized_actor(principal, actor_uri)
+        rejected_activity_uri = resource_id(activity.get("object"))
+        store = tenant.public_store
+        if rejected_activity := await self._dereference(store, rejected_activity_uri):
+            if not is_type(rejected_activity, "Follow"):
+                raise InvalidRequestException("Accepting non-Follow object")
+            following_uri = box_owner.get("following")
+            if not following_uri:
+                raise NotImplementedError("Following not supported")
+            await self._remove_collection_item(
+                store, following_uri, resource_id(rejected_activity["object"])
             )
         else:
             raise InvalidResourceException("Unknown accepted object")
@@ -678,17 +706,19 @@ class ActivityPubTenant:
         if not outbox_uri:
             raise InvalidResourceException("Box owner has no outbox")
         store = tenant.public_store
+        activity_id = (
+            f"{activity['actor']}/{"_".join(map(str, get_list(activity, "type")))}/{uuid.uuid4()}"
+        )
+        activity["id"] = activity_id
         if has_value(activity, "type", "Create"):
+            self._merge_audiences(activity)
             object_ = activity["object"]
             if isinstance(object_, Mapping):
-                self._merge_audiences(activity)
                 # Always assign an URI to the object for now.
                 # TODO: check the object for an "attributedTo" the posting actor.
                 # This allows "announcing" an external create.
                 if "@context" not in object_:
                     object_["@context"] = "https://www.w3.org/ns/activitystreams"
-                activity_id = f"{activity['actor']}/create/{uuid.uuid4()}"
-                activity["id"] = activity_id
                 object_uri = f"{activity['actor']}/{get_types(object_)[0].lower()}/{uuid.uuid4()}"
                 object_["id"] = object_uri
                 if "attributedTo" not in object_:
@@ -697,7 +727,6 @@ class ActivityPubTenant:
                 activity["object"] = resource_id(object_)
                 await store.put(activity)
                 await self._put_collection_item(store, outbox_uri, activity_id)
-                return activity_id
         else:
             try:
                 if has_value(activity, "type", "Delete"):
@@ -857,7 +886,7 @@ class ActivityPubTenant:
         await self._put_collection_item(store, outbox_uri, resource_id(activity))
         # TODO Process activity
         await self._delivery_service.deliver(tenant, all_tenants, activity)
-        return None
+        return activity_id
 
     async def _process_outbox(
         self,
