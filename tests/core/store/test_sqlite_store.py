@@ -7,11 +7,11 @@ from firm.core.store.sqlite import SqliteResourceStore
 
 
 @pytest.fixture
-def partition(tmp_path):
+async def partition(tmp_path):
     db_filepath = str(tmp_path / "objects.sqlite")
     partition = SqliteResourceStore("default", db_filepath)
     yield partition
-    partition.close()
+    await partition.close()
 
 
 async def test_put_get_remove(partition):

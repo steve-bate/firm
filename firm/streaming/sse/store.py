@@ -1,6 +1,6 @@
 import logging
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict
 
 from pydantic import BaseModel
@@ -27,7 +27,7 @@ class TicketStore:
         ticket = secrets.token_urlsafe(32)
         td = TicketData(
             user_id=user_id,
-            expires_at=datetime.utcnow() + self._ttl,
+            expires_at=datetime.now(timezone.utc) + self._ttl,
         )
         self._tickets[ticket] = td
         logger.info(
@@ -45,7 +45,7 @@ class TicketStore:
         if not td:
             logger.warning("get_ticket: unknown ticket")
             return None
-        if td.expires_at < datetime.utcnow():
+        if td.expires_at < datetime.now(timezone.utc):
             logger.warning("get_ticket: expired ticket for user_id=%s", td.user_id)
             self._tickets.pop(ticket, None)
             return None

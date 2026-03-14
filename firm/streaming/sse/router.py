@@ -92,7 +92,7 @@ def create_sse_router(
     # --------- Models ---------
 
     class SubscriptionRequest(BaseModel):
-        topic: str
+        topics: list[str]
 
     # --------- Control endpoints ---------
 
@@ -104,24 +104,23 @@ def create_sse_router(
 
     @router.post("/control/subscriptions")
     async def subscribe(req: SubscriptionRequest, user_id: str = Depends(_require_ticket)) -> dict:
-        logger.info("POST /sse/control/subscriptions user_id=%s topic=%s", user_id, req.topic)
-        await notifier.add_subscription(user_id, req.topic)
+        logger.info("POST /sse/control/subscriptions user_id=%s topics=%s", user_id, req.topics)
+        for topic in req.topics:
+            await notifier.add_subscription(user_id, topic)
         topics = await notifier.get_subscriptions(user_id)
-        return {"status": "ok", "topics": topics}
+        return {"topics": topics}
 
-    @router.delete("/control/subscriptions")
-    async def unsubscribe(topic: str, user_id: str = Depends(_require_ticket)) -> dict:
+    @router.delete("/control/subscriptions", status_code=204)
+    async def unsubscribe(topic: str, user_id: str = Depends(_require_ticket)) -> None:
         logger.info("DELETE /sse/control/subscriptions user_id=%s topic=%s", user_id, topic)
         await notifier.remove_subscription(user_id, topic)
-        topics = await notifier.get_subscriptions(user_id)
-        return {"status": "ok", "topics": topics}
 
-    @router.delete("/control")
+    @router.delete("/control", status_code=204)
     async def revoke_session(
         response: Response,
         sse_ticket: str | None = Cookie(default=None, alias=cfg.cookie_name),
         user_id: str = Depends(_get_user_id),
-    ) -> dict:
+    ) -> None:
         logger.info("DELETE /sse/control user_id=%s", user_id)
         if sse_ticket:
             store.invalidate_ticket(sse_ticket)
@@ -129,9 +128,8 @@ def create_sse_router(
             key=cfg.cookie_name,
             path=cfg.cookie_path,
         )
-        return {"status": "ok"}
 
-    @router.post("/control")
+    @router.post("/control", status_code=201)
     async def create_session(response: Response, user_id: str = Depends(_get_user_id)) -> dict:
         logger.info("POST /sse/control user_id=%s", user_id)
 
@@ -149,15 +147,32 @@ def create_sse_router(
 
         prefix = router.prefix
         return {
-            "status": "ok",
-            "ticket": ticket,
-            "expires_at": td.expires_at.isoformat(),
-            "ttl_seconds": cfg.ticket_ttl_seconds,
             "subscriptions_url": f"{prefix}/control/subscriptions",
             "stream_url": f"{prefix}/stream",
+            "expires_at": td.expires_at.isoformat(),
+            "wildcard_support": True,
         }
 
     # --------- Stream endpoint ---------
+
+    # TODO CORS considerations:
+    #
+    # If your SPA and SSE API are same-origin, CORS is mostly irrelevant.
+    #
+    # The browser already enforces same-origin reads, so you mainly rely on
+    # cookie settings (Secure, HttpOnly, SameSite) and normal auth checks.
+    #
+    # If your SPA is on a different first-party origin (example: app.example -> api.example),
+    # then CORS is required and must be strict:
+    #     Access-Control-Allow-Origin must be the exact SPA origin, not *.
+    #     Access-Control-Allow-Credentials: true is required if cookies are used.
+    #     Vary: Origin should be set.
+    #
+    # Server should validate Origin against an allowlist and reject others.
+    #
+    # For EventSource specifically, cross-origin requests can be made, and
+    # credentials can be included (withCredentials: true), so a loose
+    # CORS policy could expose private stream data.
 
     @router.get("/stream", response_class=EventSourceResponse)
     async def sse_stream(

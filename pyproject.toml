@@ -57,6 +57,12 @@ asyncio_default_fixture_loop_scope = 'function'
 markers = [
   "skip_unless: mark test to run only if condition is met",
 ]
+filterwarnings = [
+    "ignore:'asyncio.get_event_loop_policy' is deprecated",
+    "ignore:'asyncio.set_event_loop_policy' is deprecated",
+    "ignore:Dataset.default_context is deprecated",
+    "ignore:Dataset.contexts is deprecated",
+]
 
 [tool.ruff]
 line-length = 100

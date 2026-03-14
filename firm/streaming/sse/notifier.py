@@ -47,6 +47,9 @@ class StreamNotifier(ABC):
         ...
 
     @abstractmethod
+    async def has_events(self, user_id: str) -> bool: ...
+
+    @abstractmethod
     def notification_stream(self, user_id: str) -> AsyncIterator[ServerSentEvent]:
         """
         Return an async iterator that yields ServerSentEvent for this user.
@@ -64,6 +67,48 @@ class StreamNotifier(ABC):
 # -------------------------------------------------------------------
 
 
+class Subscription:
+    def __init__(self, topic: str):
+        self.topic = topic
+        self._pattern = self._parse(topic)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Subscription):
+            return self.topic == other.topic
+        if isinstance(other, str):
+            return self.topic == other
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self.topic)
+
+    @staticmethod
+    def _parse(t: str) -> re.Pattern | None:
+        # TODO May not need full regex here
+        if "+" in t or "#" in t:
+            pattern_segments: list[str] = []
+            subscription_segments = t.split("/")
+            for n, segment in enumerate(subscription_segments):
+                if segment == "+":
+                    pattern_segments.append(r".*?")
+                elif segment == "#":
+                    if n != len(subscription_segments) - 1:
+                        raise ValueError("Invalid topic pattern: '#' wildcard must be at the end")
+                    pattern_segments.append(r".*")
+                else:
+                    if "+" in segment or "#" in segment:
+                        raise ValueError("Invalid topic pattern: wildcards must be full segments")
+                    else:
+                        pattern_segments.append(re.escape(segment))
+            pattern = re.compile(f'^{"/".join(pattern_segments)}$')
+        else:
+            pattern = None
+        return pattern
+
+    def is_match(self, topic: str) -> bool:
+        return re.match(self._pattern, topic) is not None if self._pattern else self.topic == topic
+
+
 class InMemoryStreamNotifier(StreamNotifier):
     """
     In-memory notifier backed by per-user asyncio queues.
@@ -75,16 +120,16 @@ class InMemoryStreamNotifier(StreamNotifier):
     """
 
     def __init__(self) -> None:
-        self._subscriptions: dict[str, set[str]] = {}
+        self._subscriptions: dict[str, dict[str, Subscription]] = {}
         # One queue per user; created lazily and torn down after streaming ends.
         self._queues: dict[str, asyncio.Queue[tuple[str, Mapping[str, Any]]]] = {}
 
     async def add_subscription(self, user_id: str, topic: str) -> None:
-        self._subscriptions.setdefault(user_id, set()).add(topic)
+        self._subscriptions.setdefault(user_id, {})[topic] = Subscription(topic)
         logger.info("Subscribed user %s to topic %s", user_id, topic)
 
     async def remove_subscription(self, user_id: str, topic: str) -> None:
-        self._subscriptions.setdefault(user_id, set()).discard(topic)
+        self._subscriptions.setdefault(user_id, {}).pop(topic, None)
         logger.info("Unsubscribed user %s from topic %s", user_id, topic)
 
     async def has_subscriptions(self, user_id: str) -> bool:
@@ -92,8 +137,15 @@ class InMemoryStreamNotifier(StreamNotifier):
         logger.info("has_subscriptions: user_id=%s result=%s", user_id, result)
         return result
 
+    # For testing
+    async def has_events(self, user_id: str) -> bool:
+        q = self._queues.get(user_id)
+        result = q is not None and not q.empty()
+        logger.info("has_events: user_id=%s result=%s", user_id, result)
+        return result
+
     async def get_subscriptions(self, user_id: str) -> list[str]:
-        return sorted(self._subscriptions.get(user_id, set()))
+        return sorted(list(self._subscriptions.get(user_id, {}).keys()))
 
     async def notify(self, topic: str, data: Mapping[str, Any] | object) -> None:
         """Publish *data* to every user subscribed to *topic*."""
@@ -101,16 +153,18 @@ class InMemoryStreamNotifier(StreamNotifier):
             payload: Mapping[str, Any] = dataclasses.asdict(data)  # type: ignore
         else:
             payload = cast(Mapping[str, Any], data)
-        for user_id, topics in self._subscriptions.items():
-            if topic in topics or any(re.match(t, topic) for t in topics):
+        for user_id, subscribed_topics in self._subscriptions.items():
+            matched = [
+                subscribed_topic.is_match(topic) for subscribed_topic in subscribed_topics.values()
+            ]
+            if any(matched):
                 q = self._queues.setdefault(user_id, asyncio.Queue())
                 await q.put((topic, payload))
                 logger.info("send_event: queued event for user_id=%s topic=%s", user_id, topic)
 
     async def notification_stream(self, user_id: str) -> AsyncIterator[ServerSentEvent]:
         logger.info("stream_events: starting stream for user_id=%s", user_id)
-        q: asyncio.Queue[tuple[str, Mapping[str, Any]]] = asyncio.Queue()
-        self._queues[user_id] = q
+        q = self._queues.setdefault(user_id, asyncio.Queue())
         try:
             while True:
                 topic, data = await q.get()

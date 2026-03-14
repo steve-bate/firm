@@ -285,6 +285,14 @@ class ActivityPubTenant:
         resource_uri: Url,
         options: Mapping[str, Any] | None = None,
     ) -> JSONObject:
+        # FastAPI starlette always adds a trailing slash
+        if tenant.prefix + "/" == str(resource_uri):
+            doc = await tenant.public_store.get(str(tenant.prefix))
+            if not doc:
+                raise NotFoundException(resource_uri)
+            if tenant.endpoints:
+                doc["endpoints"] = tenant.endpoints
+            return doc
         if tenant.shared_inbox_uri and str(resource_uri).startswith(tenant.shared_inbox_uri):
             return await self._get_shared_inbox(tenants, tenant, principal, resource_uri, options)
         store = tenant.public_store

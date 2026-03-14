@@ -1,5 +1,3 @@
-import json
-
 import jsonpath_rfc9535 as jsonpath
 
 data = {
@@ -177,27 +175,33 @@ data = {
 }
 
 
-# {'name': 'Sue', 'score': 100}
-# {'name': 'John', 'score': 86, 'admin': True}
+def test_get_crud():
+    nodes = jsonpath.find(
+        "$.orderedItems[?@.type == 'Create' || @.type == 'Update' || @.type == 'Delete']", data
+    )
+    for node in nodes:
+        assert node.value["type"] in ["Create", "Update", "Delete"]
 
 
-def test_parsing():
-    nodes = jsonpath.find("$.orderedItems[?@.type == 'Create' || @.type == 'Announce']", data)
-    nodes = jsonpath.find("$[*]['id', 'type']", [n.value for n in nodes])
-    print()
-    print(json.dumps([n.value for n in nodes], indent=2))
+def test_get_non_crud():
+    nodes = jsonpath.find(
+        "$.orderedItems[?!(@.type == 'Create' || @.type == 'Update' || @.type == 'Delete')]",
+        data,
+    )
+    for node in nodes:
+        assert node.value["type"] not in ["Create", "Update", "Delete"]
 
 
-def test_get_actor_objects():
+def test_get_actors_objects():
     nodes = jsonpath.find("$.orderedItems[?@.actor=='https://example.social/users/alice']", data)
-    print()
-    print(json.dumps([n.value for n in nodes], indent=2))
+    for node in nodes:
+        assert node.value["actor"] == "https://example.social/users/alice"
 
 
 def test_date_query():
     nodes = jsonpath.find("$.orderedItems[?@.published<='2026-02-20T10:30:00Z']", data)
-    print()
-    print(json.dumps([n.value for n in nodes], indent=2))
+    for node in nodes:
+        assert node.value["published"] <= "2026-02-20T10:30:00Z"
 
 
 def test_get_objects_with_video_attachment():
@@ -210,17 +214,19 @@ def test_get_objects_with_video_attachment():
     assert [node.value for node in object_ids] == ["https://example.social/objects/note-44"]
 
 
-def get_ast():
-    p = jsonpath.Parser().parse("$.orderedItems[?@.type == 'Create' || @.type == 'Announce']")
-    print(p)
-
-
-# https://example.social/users/alice
-
-
-def test_boolean_expression():
-    results = jsonpath.find(
-        "$.orderedItems[?@.object[*].attachment[?@.type == 'Video']].id",
+def test_get_activities_related_to_an_object():
+    related_activities = jsonpath.find(
+        "$.orderedItems[?@.object == 'https://example.social/objects/note-1' || @..object[?@ == 'https://example.social/objects/note-1']]",
         data,
     )
-    assert [node.value for node in results] == ["https://example.social/activities/11"]
+    activity_ids = jsonpath.find("$[*].id", [node.value for node in related_activities])
+
+    results = set(node.value for node in activity_ids)
+
+    assert results == {
+        "https://example.social/activities/1",
+        "https://example.social/activities/2",
+        "https://example.social/activities/5",
+        "https://example.social/activities/8",
+        "https://example.social/activities/10",
+    }

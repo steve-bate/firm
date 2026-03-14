@@ -167,7 +167,7 @@ async def test_dereference_collection_filtered(service: ActivityPubService, tena
 
 
 async def test_dereference_sharedinbox_filtered(service: ActivityPubService, tenant: Tenant):
-    tenant.shared_inbox_uri = "http://tenant1.test/shared"
+    tenant.endpoints["sharedInbox"] = "http://tenant1.test/shared"
 
     resources: list[JSONObject] = [
         {

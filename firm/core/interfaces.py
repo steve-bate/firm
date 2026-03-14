@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from http import HTTPStatus
 from pathlib import Path
@@ -58,7 +58,11 @@ class Tenant:
     public_store: ResourceStore
     private_store: ResourceStore
     files: Path
-    shared_inbox_uri: str | None = None
+    endpoints: JSONObject = field(default_factory=dict)
+
+    @property
+    def shared_inbox_uri(self) -> str | None:
+        return str(self.endpoints.get("sharedInbox")) if "sharedInbox" in self.endpoints else None
 
 
 @runtime_checkable

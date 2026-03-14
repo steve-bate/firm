@@ -9,7 +9,7 @@ from click import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from firm.core.interfaces import FIRM_NS, ResourceStore, Tenant
+from firm.core.interfaces import FIRM_NS, JSONObject, ResourceStore, Tenant
 from firm.server.config import (
     FileStoreConfig,
     MemoryStoreConfig,
@@ -61,7 +61,10 @@ def init_tenant_stores(
 def init_tenant(config: ServerConfig, tenant_uri: str) -> Tenant:
     public_store, private_store, files = init_tenant_stores(config, tenant_uri)
     shared_inbox_uri = f"{tenant_uri}/{config.shared_inbox_path}"
-    return Tenant(tenant_uri, public_store, private_store, files, shared_inbox_uri)
+    endpoints: JSONObject = {
+        "sharedInbox": shared_inbox_uri,
+    }
+    return Tenant(tenant_uri, public_store, private_store, files, endpoints)
 
 
 def init_remote_cache(config: ServerConfig) -> ResourceStore:
