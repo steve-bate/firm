@@ -57,8 +57,8 @@ def _node_to_sql(node: Dict[str, Any], text_facet_names: List[str]) -> Tuple[str
         inner_sql, inner_params = _node_to_sql(node["expr"], text_facet_names)
         return f"NOT ({inner_sql})", inner_params
 
-    if ntype == "field":
-        return _field_to_sql(node)
+    if ntype == "facet":
+        return _facet_to_sql(node)
 
     if ntype == "range":
         raise ValueError("Range expressions must be fielded, e.g. field:[a TO b]")
@@ -122,46 +122,46 @@ def _bool_to_sql(node: Dict[str, Any], text_facet_names: List[str]) -> Tuple[str
 
 
 # TODO Example only. This needs to be generalized.
-def _field_to_sql(node: Dict[str, Any]) -> Tuple[str, List[Any]]:
-    field = node["field"]
+def _facet_to_sql(node: Dict[str, Any]) -> Tuple[str, List[Any]]:
+    facet = node["facet"]
     expr = node["expr"]
 
-    # Map known fields explicitly; others fall back to generic JSON path
-    if field == "type":
+    # Map known facets explicitly; others fall back to generic JSON path
+    if facet == "type":
         if expr["type"] != "term":
             raise ValueError("type: only supports simple term in this example")
         sql = "type = ?"
         return sql, [expr["value"]]
 
-    if field == "actor":
+    if facet == "actor":
         # actor:@alice@example.com
         inner_sql, params = _simple_json_field(expr, "$.actor")
         return inner_sql, params
 
-    if field == "preferredUsername":
+    if facet == "preferredUsername":
         # preferredUsername:ev* → json_extract(..., '$.preferredUsername') LIKE 'ev%'
         inner_sql, params = _simple_json_field(expr, "$.preferredUsername")
         return inner_sql, params
 
-    if field == "tag":
+    if facet == "tag":
         return _tag_field_to_sql(expr)
 
-    if field == "language":
+    if facet == "language":
         # language:en → json_extract(document, '$.language') = 'en'
         if expr["type"] != "term":
             raise ValueError("language: only supports simple term in this example")
         sql = "json_extract(document, '$.language') = ?"
         return sql, [expr["value"]]
 
-    if field == "visibility":
+    if facet == "visibility":
         # visibility:public etc.
         if expr["type"] != "term":
             raise ValueError("visibility: only supports simple term in this example")
         sql = "json_extract(document, '$.visibility') = ?"
         return sql, [expr["value"]]
 
-    # Fallback: generic JSON path: $.<field>
-    path = f"$.{field}"
+    # Fallback: generic JSON path: $.<facet>
+    path = f"$.{facet}"
     return _simple_json_field(expr, path)
 
 

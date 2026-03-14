@@ -42,11 +42,11 @@ class JsonMatcher:
         if node_type == "not":
             return not self._matches(ast["expr"], document)
 
-        if node_type == "field":
-            return self._match_field_expr(ast["field"], ast["expr"], document)
+        if node_type == "facet":
+            return self._match_field_expr(ast["facet"], ast["expr"], document)
 
         if node_type == "range":
-            raise ValueError("Range expressions must be fielded, e.g. field:[a TO b]")
+            raise ValueError("Range expressions must be faceted, e.g. facet:[a TO b]")
 
         raise ValueError(f"Unknown AST node type: {node_type}")
 

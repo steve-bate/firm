@@ -83,6 +83,13 @@ class InvalidResourceException(InvalidRequestException):
         super().__init__(*args, **kwargs)
 
 
+def item_filter(expr: str) -> str:
+    expr = (
+        expr if expr.startswith("$") else f"$[?{expr}]" if not expr.startswith("[") else f"${expr}"
+    )
+    return expr
+
+
 class ActivityPubTenant:
     def __init__(
         self,
@@ -230,8 +237,8 @@ class ActivityPubTenant:
                 "first": f"{box_id}?offset=0",
             }
         else:
-            filter = (
-                jsonpath.compile(options.get("filter")) if options and "filter" in options else None
+            filter = jsonpath.compile(
+                item_filter(str(options.get("filter"))) if options and "filter" in options else None
             )
             offset = int(offset_param)
             all_public_activities: list[JSONObject] = []
@@ -300,7 +307,7 @@ class ActivityPubTenant:
             decision = await self._authorizer.is_get_authorized(tenant, principal, resource)
             if decision.authorized:
                 if is_collection(resource) and options and "filter" in options:
-                    filter = jsonpath.compile(options["filter"])
+                    filter = jsonpath.compile(item_filter(options["filter"]))
                     items = await self._dereference_collection_items(store, resource)
                     filtered_nodes = filter.find(items)
                     set_collection_items(resource, [node.value for node in filtered_nodes])

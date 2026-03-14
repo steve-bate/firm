@@ -19,7 +19,7 @@ TOKEN_SPEC = [
     ("TO", r"TO\b"),
     ("REGEX", r"/(?:[^/\\]|\\.)*/"),  # /foo.*/
     ("PHRASE", r'"([^"]*)"'),  # "foo bar"
-    ("WORD", r'[^ \t\r\n()\[\]{}":/]+'),  # terms, fields, wildcards
+    ("WORD", r'[^ \t\r\n()\[\]{}":/]+'),  # terms, facets, wildcards
 ]
 
 TOK_REGEX = re.compile("|".join(f"(?P<{name}>{pattern})" for name, pattern in TOKEN_SPEC))
@@ -69,16 +69,16 @@ def tokenize(q: str) -> List[Token]:
 # ---------- AST node helpers ----------
 
 
-def term_node(value: str, field: Optional[str] = None):
-    return {"type": "term", "field": field, "value": value}
+def term_node(value: str, facet: Optional[str] = None):
+    return {"type": "term", "facet": facet, "value": value}
 
 
-def phrase_node(value: str, field: Optional[str] = None):
-    return {"type": "phrase", "field": field, "value": value}
+def phrase_node(value: str, facet: Optional[str] = None):
+    return {"type": "phrase", "facet": facet, "value": value}
 
 
-def regex_node(value: str, field: Optional[str] = None):
-    return {"type": "regex", "field": field, "value": value}
+def regex_node(value: str, facet: Optional[str] = None):
+    return {"type": "regex", "facet": facet, "value": value}
 
 
 def bool_node(op: str, left, right):
@@ -89,9 +89,9 @@ def not_node(expr):
     return {"type": "not", "expr": expr}
 
 
-def field_node(field: str, expr):
-    # field:term or field:(subexpr)
-    return {"type": "field", "field": field, "expr": expr}
+def facet_node(facet: str, expr):
+    # facet:term or facet:(subexpr)
+    return {"type": "facet", "facet": facet, "expr": expr}
 
 
 def range_node(
@@ -121,10 +121,10 @@ def range_node(
 #   primary := term
 #            | phrase
 #            | range
-#            | field_expr
+#            | facet_expr
 #            | LPAREN query RPAREN
 #
-#   field_expr := WORD ':' (primary | LPAREN query RPAREN)
+#   facet_expr := WORD ':' (primary | LPAREN query RPAREN)
 #
 # Default operator between adjacent primaries is AND.
 # ----------
@@ -224,42 +224,42 @@ class Parser:
             return regex_node(tok.value)
 
         if tok.kind == "WORD":
-            # Could be a field: ... or a plain term
+            # Could be a facet: ... or a plain term
             # Look ahead for COLON
-            field_tok = tok
+            facet_tok = tok
             self.consume("WORD")
             if self.peek() and self.peek().kind == "COLON":
-                # fielded expression
+                # faceted expression
                 self.consume("COLON")
-                # field:LPAREN query RPAREN
+                # facet:LPAREN query RPAREN
                 if self.peek() and self.peek().kind == "LPAREN":
                     self.consume("LPAREN")
                     inner = self.parse_or()
                     if self.peek() is None or self.peek().kind != "RPAREN":
-                        raise ValueError("Missing closing parenthesis after field group")
+                        raise ValueError("Missing closing parenthesis after facet group")
                     self.consume("RPAREN")
-                    return field_node(field_tok.value, inner)
+                    return facet_node(facet_tok.value, inner)
                 else:
-                    # field:term or field:"phrase" or field:/regex/ or field:[a TO b]
+                    # facet:term or facet:"phrase" or facet:/regex/ or facet:[a TO b]
                     inner_tok = self.peek()
                     if inner_tok is None:
-                        raise ValueError("Expected term, phrase, or regex after field:")
+                        raise ValueError("Expected term, phrase, or regex after facet:")
                     if inner_tok.kind in ("LBRACK", "LBRACE"):
-                        return field_node(field_tok.value, self.parse_range())
+                        return facet_node(facet_tok.value, self.parse_range())
                     if inner_tok.kind == "PHRASE":
                         self.consume("PHRASE")
-                        return field_node(field_tok.value, phrase_node(inner_tok.value))
+                        return facet_node(facet_tok.value, phrase_node(inner_tok.value))
                     elif inner_tok.kind == "REGEX":
                         self.consume("REGEX")
-                        return field_node(field_tok.value, regex_node(inner_tok.value))
+                        return facet_node(facet_tok.value, regex_node(inner_tok.value))
                     elif inner_tok.kind == "WORD":
                         self.consume("WORD")
-                        return field_node(field_tok.value, term_node(inner_tok.value))
+                        return facet_node(facet_tok.value, term_node(inner_tok.value))
                     else:
-                        raise ValueError(f"Unexpected token after field: {inner_tok.value}")
+                        raise ValueError(f"Unexpected token after facet: {inner_tok.value}")
             else:
                 # plain term
-                return term_node(field_tok.value)
+                return term_node(facet_tok.value)
 
         raise ValueError(f"Unexpected token in primary: {tok.value}")
 

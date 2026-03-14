@@ -1,6 +1,21 @@
 import jsonpath_rfc9535 as jsonpath
 
-data = {
+from firm.core.interfaces import JSON, JSONObject
+from firm.core.services.activitypub import item_filter
+from firm.core.util import get_collection_items
+
+
+def collection_filter(
+    expr: str, resource: JSONObject, offset: int | None = None, limit: int | None = None
+) -> list[JSON]:
+    items = get_collection_items(resource)
+    if not items:
+        return []
+    expr = item_filter(expr)
+    return [node.value for node in jsonpath.find(expr, items)]
+
+
+COLLECTION = {
     "@context": "https://www.w3.org/ns/activitystreams",
     "id": "https://example.social/users/alice/outbox",
     "type": "OrderedCollection",
@@ -176,57 +191,139 @@ data = {
 
 
 def test_get_crud():
-    nodes = jsonpath.find(
-        "$.orderedItems[?@.type == 'Create' || @.type == 'Update' || @.type == 'Delete']", data
-    )
-    for node in nodes:
-        assert node.value["type"] in ["Create", "Update", "Delete"]
+    for value in collection_filter(
+        "@.type == 'Create' || @.type == 'Update' || @.type == 'Delete'", COLLECTION
+    ):
+        assert value["type"] in ["Create", "Update", "Delete"]
 
 
 def test_get_non_crud():
-    nodes = jsonpath.find(
-        "$.orderedItems[?!(@.type == 'Create' || @.type == 'Update' || @.type == 'Delete')]",
-        data,
-    )
-    for node in nodes:
-        assert node.value["type"] not in ["Create", "Update", "Delete"]
+    for value in collection_filter(
+        "!(@.type == 'Create' || @.type == 'Update' || @.type == 'Delete')", COLLECTION
+    ):
+        assert value["type"] not in ["Create", "Update", "Delete"]
 
 
 def test_get_actors_objects():
-    nodes = jsonpath.find("$.orderedItems[?@.actor=='https://example.social/users/alice']", data)
-    for node in nodes:
-        assert node.value["actor"] == "https://example.social/users/alice"
+    for value in collection_filter("@.actor == 'https://example.social/users/alice'", COLLECTION):
+        assert value["actor"] == "https://example.social/users/alice"
 
 
 def test_date_query():
-    nodes = jsonpath.find("$.orderedItems[?@.published<='2026-02-20T10:30:00Z']", data)
-    for node in nodes:
-        assert node.value["published"] <= "2026-02-20T10:30:00Z"
+    for value in collection_filter("@.published <= '2026-02-20T10:30:00Z'", COLLECTION):
+        assert value["published"] <= "2026-02-20T10:30::00Z'"
 
 
 def test_get_objects_with_video_attachment():
-    video_objects = jsonpath.find(
-        "$.orderedItems[*].object[?@.attachment[?@.type == 'Video']]",
-        data,
+    object_ids = collection_filter(
+        "[*].object[?@.attachment[?@.type == 'Video']].id",
+        COLLECTION,
     )
-    object_ids = jsonpath.find("$[*].id", [node.value for node in video_objects])
-
-    assert [node.value for node in object_ids] == ["https://example.social/objects/note-44"]
+    assert [value for value in object_ids] == ["https://example.social/objects/note-44"]
 
 
 def test_get_activities_related_to_an_object():
-    related_activities = jsonpath.find(
-        "$.orderedItems[?@.object == 'https://example.social/objects/note-1' || @..object[?@ == 'https://example.social/objects/note-1']]",
-        data,
+    activity_ids = collection_filter(
+        "[?@.object == 'https://example.social/objects/note-1' || @..object[?@ == 'https://example.social/objects/note-1']].id",
+        COLLECTION,
     )
-    activity_ids = jsonpath.find("$[*].id", [node.value for node in related_activities])
 
-    results = set(node.value for node in activity_ids)
+    values = set(activity_ids)
 
-    assert results == {
+    assert values == {
         "https://example.social/activities/1",
         "https://example.social/activities/2",
         "https://example.social/activities/5",
         "https://example.social/activities/8",
         "https://example.social/activities/10",
     }
+
+
+def test_extension_match():
+    values = set(collection_filter("[?match(@.actor, '.*bob.*')].id", COLLECTION))
+    assert values == {
+        "https://example.social/activities/2",
+        "https://example.social/activities/8",
+    }
+
+
+def test_extension_search():
+    values = set(collection_filter("[?search(@.actor, '[Bb]ob')].id", COLLECTION))
+    assert values == {
+        "https://example.social/activities/2",
+        "https://example.social/activities/8",
+    }
+
+
+#
+# https://codeberg.org/fediverse/fep/src/branch/main/fep/6606/fep-6606.md
+#
+
+
+class TestFep6606Compatibility:
+
+    # ?element=value
+    # ... ?type=Create
+    # // resources matching exactly "value"
+    def test_simple_equality(self):
+        values = collection_filter("@.type == 'Create'", COLLECTION)
+        for value in values:
+            assert value["type"] == "Create"
+
+    # ?element=1&element=2
+    # ... ?type=Create&type=Update
+    # // resources matching exactly "1" or "2"
+    def test_or(self):
+        values = collection_filter("@.type == 'Create' || @.type == 'Update'", COLLECTION)
+        for value in values:
+            assert value["type"] in ["Create", "Update"]
+
+    # ?element=!value1
+    # ... ?type=!Delete
+    # // resources inversly matching "value1"
+    def test_not_delete(self):
+        values = collection_filter("@.type != 'Delete'", COLLECTION)
+        for value in values:
+            assert value["type"] != "Delete"
+
+    # ?element=!1&element=!2
+    # ... ?type=!Create&type=!Update
+    # // resources inversly matching "1" and "2"
+    def test_not_or(self):
+        values = collection_filter("@.type != 'Create' && @.type != 'Update'", COLLECTION)
+        for value in values:
+            assert value["type"] not in ["Create", "Update"]
+
+    # ?element=~fuzzy
+    # ... ?type=~Cre
+    # // resources fuzzy matching "fuzzy"
+    def test_fuzzy_match(self):
+        values = collection_filter("search(@.type, '.*Cre.*')", COLLECTION)
+        for value in values:
+            assert "Cre" in value["type"]
+
+    # ?element=~one&element=~two
+    # ... ?type=~Cre&type=~Up
+    # // resources fuzzy matching "one" or "two"
+    def test_fuzzy_or(self):
+        values = collection_filter(
+            "search(@.type, '.*Cre.*') || search(@.type, '.*Up.*')", COLLECTION
+        )
+        for value in values:
+            assert "Cre" in value["type"] or "Up" in value["type"]
+
+    # ?element=-
+    # ... ?bogus=-
+    # // resources matching empty element values
+    def test_property_value_doesnt_exist(self):
+        values = collection_filter("[?!@.bogus]", COLLECTION)
+        for value in values:
+            assert value.get("bogus") is None
+
+    # ?element=!-
+    # ... ?content=!-
+    # // resources matching all non empty element values
+    def test_property_value_exists(self):
+        values = collection_filter("[?@.content]", COLLECTION)
+        for value in values:
+            assert value.get("content") is not None

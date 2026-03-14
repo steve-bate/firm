@@ -10,24 +10,24 @@ from firm.search.parser import parse_query
     [
         (
             "cats",
-            {"type": "term", "field": None, "value": "cats"},
+            {"type": "term", "facet": None, "value": "cats"},
         ),
         (
             "mastodon search",
             {
                 "type": "bool",
                 "op": "AND",
-                "left": {"type": "term", "field": None, "value": "mastodon"},
-                "right": {"type": "term", "field": None, "value": "search"},
+                "left": {"type": "term", "facet": None, "value": "mastodon"},
+                "right": {"type": "term", "facet": None, "value": "search"},
             },
         ),
         (
             '"activitypub client"',
-            {"type": "phrase", "field": None, "value": "activitypub client"},
+            {"type": "phrase", "facet": None, "value": "activitypub client"},
         ),
         (
             "/act.*pub/",
-            {"type": "regex", "field": None, "value": "act.*pub"},
+            {"type": "regex", "facet": None, "value": "act.*pub"},
         ),
     ],
 )
@@ -53,7 +53,7 @@ def test_boolean_not():
     ast = parse_query("NOT cats")
     assert ast == {
         "type": "not",
-        "expr": {"type": "term", "field": None, "value": "cats"},
+        "expr": {"type": "term", "facet": None, "value": "cats"},
     }
 
 
@@ -87,25 +87,25 @@ def test_grouping_with_parentheses():
 
 
 @pytest.mark.parametrize(
-    "query,field,value",
+    "query,facet,value",
     [
         ("tag:fediverse", "tag", "fediverse"),
         ("language:en", "language", "en"),
         ("type:Note", "type", "Note"),
     ],
 )
-def test_simple_field_queries(query, field, value):
+def test_simple_field_queries(query, facet, value):
     ast = parse_query(query)
-    assert ast["type"] == "field"
-    assert ast["field"] == field
+    assert ast["type"] == "facet"
+    assert ast["facet"] == facet
     assert ast["expr"]["type"] == "term"
     assert ast["expr"]["value"] == value
 
 
 def test_field_phrase():
     ast = parse_query('content:"activitypub client"')
-    assert ast["type"] == "field"
-    assert ast["field"] == "content"
+    assert ast["type"] == "facet"
+    assert ast["facet"] == "content"
     inner = ast["expr"]
     assert inner["type"] == "phrase"
     assert inner["value"] == "activitypub client"
@@ -117,22 +117,22 @@ def test_faceted_phrase_with_smart_quotes():
         "type": "bool",
         "op": "AND",
         "left": {
-            "type": "field",
-            "field": "type",
-            "expr": {"type": "term", "field": None, "value": "Create"},
+            "type": "facet",
+            "facet": "type",
+            "expr": {"type": "term", "facet": None, "value": "Create"},
         },
         "right": {
-            "type": "field",
-            "field": "summary",
-            "expr": {"type": "phrase", "field": None, "value": "activity 21"},
+            "type": "facet",
+            "facet": "summary",
+            "expr": {"type": "phrase", "facet": None, "value": "activity 21"},
         },
     }
 
 
 def test_field_regex():
     ast = parse_query("content:/activit(y|ies).*/")
-    assert ast["type"] == "field"
-    assert ast["field"] == "content"
+    assert ast["type"] == "facet"
+    assert ast["facet"] == "content"
     inner = ast["expr"]
     assert inner["type"] == "regex"
     assert inner["value"] == "activit(y|ies).*"
@@ -142,18 +142,18 @@ def test_regex_with_escaped_slash():
     ast = parse_query(r"/https:\/\/example\.com\/users\/alice/")
     assert ast == {
         "type": "regex",
-        "field": None,
+        "facet": None,
         "value": r"https:\/\/example\.com\/users\/alice",
     }
 
 
 def test_field_regex_with_escaped_slash():
     ast = parse_query(r"actor:/https:\/\/example\.com\/users\/.*/")
-    assert ast["type"] == "field"
-    assert ast["field"] == "actor"
+    assert ast["type"] == "facet"
+    assert ast["facet"] == "actor"
     assert ast["expr"] == {
         "type": "regex",
-        "field": None,
+        "facet": None,
         "value": r"https:\/\/example\.com\/users\/.*",
     }
 
@@ -164,8 +164,8 @@ def test_field_regex_with_escaped_slash():
         (
             "published:[2024-01-01 TO 2024-12-31]",
             {
-                "type": "field",
-                "field": "published",
+                "type": "facet",
+                "facet": "published",
                 "expr": {
                     "type": "range",
                     "lower": "2024-01-01",
@@ -178,8 +178,8 @@ def test_field_regex_with_escaped_slash():
         (
             "followers:{10 TO 20}",
             {
-                "type": "field",
-                "field": "followers",
+                "type": "facet",
+                "facet": "followers",
                 "expr": {
                     "type": "range",
                     "lower": "10",
@@ -192,8 +192,8 @@ def test_field_regex_with_escaped_slash():
         (
             "rank:[10 TO 20}",
             {
-                "type": "field",
-                "field": "rank",
+                "type": "facet",
+                "facet": "rank",
                 "expr": {
                     "type": "range",
                     "lower": "10",
@@ -212,8 +212,8 @@ def test_field_ranges(query, expected):
 def test_field_group():
     ast = parse_query("tag:(activitypub search)")
     # tag: (activitypub AND search)
-    assert ast["type"] == "field"
-    assert ast["field"] == "tag"
+    assert ast["type"] == "facet"
+    assert ast["facet"] == "tag"
     inner = ast["expr"]
     assert inner["type"] == "bool"
     assert inner["op"] == "AND"
@@ -229,20 +229,20 @@ def test_field_and_type_combination():
         "type": "bool",
         "op": "AND",
         "left": {
-            "type": "field",
-            "field": "preferredUsername",
+            "type": "facet",
+            "facet": "preferredUsername",
             "expr": {
                 "type": "term",
-                "field": None,
+                "facet": None,
                 "value": "ev*",
             },
         },
         "right": {
-            "type": "field",
-            "field": "type",
+            "type": "facet",
+            "facet": "type",
             "expr": {
                 "type": "term",
-                "field": None,
+                "facet": None,
                 "value": "Person",
             },
         },
@@ -253,7 +253,7 @@ def test_wildcard_term():
     ast = parse_query("fed*")
     assert ast == {
         "type": "term",
-        "field": None,
+        "facet": None,
         "value": "fed*",
     }
 
@@ -275,11 +275,11 @@ def test_complex_example_from_fep():
     # left side is (tag:fediverse AND language:en)
     assert left["type"] == "bool"
     assert left["op"] == "AND"
-    assert left["left"]["type"] == "field"
-    assert left["left"]["field"] == "tag"
+    assert left["left"]["type"] == "facet"
+    assert left["left"]["facet"] == "tag"
     assert left["left"]["expr"]["value"] == "fediverse"
-    assert left["right"]["type"] == "field"
-    assert left["right"]["field"] == "language"
+    assert left["right"]["type"] == "facet"
+    assert left["right"]["facet"] == "language"
     assert left["right"]["expr"]["value"] == "en"
 
 
