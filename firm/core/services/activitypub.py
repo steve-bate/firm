@@ -25,6 +25,7 @@ from firm.core.util import (
     ACTIVITIES_REQUIRING_OBJECT,
     ACTIVITIES_REQUIRING_TARGET,
     get_collection_items_key,
+    get_id,
     get_list,
     get_types,
     has_value,
@@ -120,7 +121,9 @@ class ActivityPubTenant:
     async def _dereference_collection_items(
         self, store: ResourceStore, collection: JSONObject, inplace=False
     ) -> list[JSONObject] | JSONObject | None:
-        items_key = get_collection_items_key(collection)
+        # all stored collections use "items" for storage,
+        # even if they serialize as "orderedItems"
+        items_key = "items"
         items = collection.get(items_key, [])
         if isinstance(items, list):
             dereferenced_items: list[JSONObject] = []
@@ -134,6 +137,7 @@ class ActivityPubTenant:
                 else:
                     dereferenced_items.append(item)
             if inplace:
+                # TODO Review the collection item dereferencing and clean it up
                 collection[items_key] = dereferenced_items
                 return collection
             else:
@@ -150,16 +154,22 @@ class ActivityPubTenant:
                 cls._remove_empty_arrays(value)
         return resource
 
-    async def serialize(self, store: ResourceStore, resource: JSONObject) -> JSONObject:
+    async def serialize(self, tenant: Tenant, resource: JSONObject) -> JSONObject:
         """Embed specific resources to match typical AP expectations."""
+
+        store = tenant.public_store
+
         if not isinstance(resource, dict):
             raise Exception("Can only serialize JSON objects")
 
         elif is_collection(resource):
-            # FIXME This is messy
             resource = cast(
                 JSONObject, await self._dereference_collection_items(store, resource, inplace=True)
             )
+            items_key = get_collection_items_key(resource)
+            if items_key != "items":
+                # This is a bit hacky, but it allows us to store collections in a consistent way
+                resource[items_key] = resource.pop("items")
 
         # if is_collection(resource):
         #     # Keep it simple for now
@@ -196,6 +206,10 @@ class ActivityPubTenant:
                         collection.pop("items")
                         collection.pop("attributedTo")
                         obj[prop] = collection
+
+        elif "endpoints" in resource:
+            # TODO This endpoint handling is a bit hacky
+            resource["endpoints"] |= tenant.endpoints
 
         return self._remove_empty_arrays(resource)
 
@@ -271,7 +285,7 @@ class ActivityPubTenant:
             if len(items) > 0 and (offset + limit < len(all_public_activities)):
                 page["next"] = f"{box_id}?offset={int(offset) + limit}"
 
-            return await self.serialize(store, page)
+            return await self.serialize(tenant, page)
 
     async def _get_activities(self, principal, store, filter: jsonpath.JSONPathQuery | None = None):
         activities = [
@@ -311,7 +325,7 @@ class ActivityPubTenant:
                     items = await self._dereference_collection_items(store, resource)
                     filtered_nodes = filter.find(items)
                     set_collection_items(resource, [node.value for node in filtered_nodes])
-                return await self.serialize(store, resource)
+                return await self.serialize(tenant, resource)
             else:
                 raise NotAuthorizedException(decision.reason or "Not authorized")
         else:
@@ -417,9 +431,9 @@ class ActivityPubTenant:
         collection = await self._dereference(store, collection_uri)
         if not collection:
             raise ValueError(f"Unknown collection: {collection_uri}")
-        items_key = (
-            "orderedItems" if has_value(collection, "type", "OrderedCollection") else "items"
-        )
+        # For storage, only 'items' is used
+        # Serialization will serialized as orderedItems if needed
+        items_key = "items"
         if items := cast(list, collection.get(items_key)):
             if isinstance(items, list):
                 if not allow_dups and item_uri in items:
@@ -440,9 +454,9 @@ class ActivityPubTenant:
         collection = await self._dereference(store, collection_uri)
         if not collection:
             raise ValueError(f"Unknown collection: {collection_uri}")
-        items_key = (
-            "orderedItems" if has_value(collection, "type", "OrderedCollection") else "items"
-        )
+        # For storage, only 'items' is used
+        # Serialization will serialized as orderedItems if needed
+        items_key = "items"
         if items := collection.get(items_key):
             if isinstance(items, list):
                 if item_uri in items:
@@ -721,10 +735,10 @@ class ActivityPubTenant:
         if not outbox_uri:
             raise InvalidResourceException("Box owner has no outbox")
         store = tenant.public_store
-        activity_id = (
-            f"{activity['actor']}/{"_".join(map(str, get_list(activity, "type")))}/{uuid.uuid4()}"
-        )
+        activity_id = f"{get_id(activity['actor'])}/{"_".join(map(str, get_list(activity, "type")))}/{uuid.uuid4()}"
         activity["id"] = activity_id
+        if "attributedTo" not in activity:
+            activity["attributedTo"] = box_owner.get("id")
         if has_value(activity, "type", "Create"):
             self._merge_audiences(activity)
             object_ = activity["object"]
@@ -734,7 +748,9 @@ class ActivityPubTenant:
                 # This allows "announcing" an external create.
                 if "@context" not in object_:
                     object_["@context"] = "https://www.w3.org/ns/activitystreams"
-                object_uri = f"{activity['actor']}/{get_types(object_)[0].lower()}/{uuid.uuid4()}"
+                object_uri = (
+                    f"{get_id(activity['actor'])}/{get_types(object_)[0].lower()}/{uuid.uuid4()}"
+                )
                 object_["id"] = object_uri
                 if "attributedTo" not in object_:
                     object_["attributedTo"] = activity["actor"]

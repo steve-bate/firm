@@ -301,13 +301,13 @@ async def test_inbox_follow(service: ActivityPubService, remote_identity: StubId
     )
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
-    assert inbox and isinstance(inbox["orderedItems"], Sequence)
-    assert isinstance(inbox["orderedItems"], list)
-    assert len(inbox["orderedItems"]) == 1
+    assert inbox and isinstance(inbox["items"], Sequence)
+    assert isinstance(inbox["items"], list)
+    assert len(inbox["items"]) == 1
     assert len(await tenant.public_store.query({"type": "Follow"})) > 0
     outbox = await tenant.public_store.get("http://tenant1.test/outbox")
-    assert outbox and isinstance(outbox["orderedItems"], Sequence)
-    assert len(outbox["orderedItems"]) == 1
+    assert outbox and isinstance(outbox["items"], Sequence)
+    assert len(outbox["items"]) == 1
     assert len(await tenant.public_store.query({"type": "Accept"})) > 0
     followers = await tenant.public_store.get("http://tenant1.test/user2/followers")
     assert followers and isinstance(followers["items"], Sequence)
@@ -370,8 +370,8 @@ async def test_inbox_undo_follow(service: ActivityPubService, remote_identity: S
     assert followers and isinstance(followers["items"], Sequence)
     assert followers["items"] == []
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
-    assert inbox and isinstance(inbox["orderedItems"], Sequence)
-    assert len(inbox["orderedItems"]) == 1
+    assert inbox and isinstance(inbox["items"], Sequence)
+    assert len(inbox["items"]) == 1
     assert len(await tenant.public_store.query({"type": "Undo"})) > 0
 
 
@@ -418,8 +418,8 @@ async def test_inbox_like(service: ActivityPubService, remote_identity: StubIden
     )
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
-    assert inbox and isinstance(inbox["orderedItems"], Sequence)
-    assert len(inbox["orderedItems"]) == 1
+    assert inbox and isinstance(inbox["items"], Sequence)
+    assert len(inbox["items"]) == 1
     assert len(await tenant.public_store.query({"type": "Like"})) > 0
     likes = await tenant.public_store.get("http://tenant1.test/user2/note/likes")
     assert likes and isinstance(likes["items"], Sequence)
@@ -472,8 +472,8 @@ async def test_inbox_undo_like(service: ActivityPubService, remote_identity: Stu
     )
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
-    assert inbox and isinstance(inbox["orderedItems"], Sequence)
-    assert len(inbox["orderedItems"]) == 1
+    assert inbox and isinstance(inbox["items"], Sequence)
+    assert len(inbox["items"]) == 1
     assert len(await tenant.public_store.query({"type": "Undo"})) > 0
     likes = await tenant.public_store.get("http://tenant1.test/user2/note/likes")
     assert likes and isinstance(likes["items"], Sequence)
@@ -515,8 +515,8 @@ async def test_inbox_create_object(service: ActivityPubService, remote_identity:
     )
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
-    assert inbox and isinstance(inbox["orderedItems"], Sequence)
-    assert len(inbox["orderedItems"]) == 1
+    assert inbox and isinstance(inbox["items"], Sequence)
+    assert len(inbox["items"]) == 1
     create_activity = (await tenant.public_store.query({"type": "Create"}))[0]
     assert create_activity["object"] == "http://tenant1.test/user2/document"
     document = (await tenant.public_store.query({"type": "Document"}))[0]
