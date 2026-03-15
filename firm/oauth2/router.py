@@ -65,6 +65,11 @@ def create_oauth2_router() -> APIRouter:
         # Initialize Jinja2 environment for templates
         templates_dir = Path(__file__).parent / "templates"
         app.state.jinja2_env = Environment(loader=FileSystemLoader(templates_dir))
+        for tenant in app.state.tenants.values():
+            tenant.endpoints |= {
+                "oauthAuthorizationEndpoint": f"{tenant.prefix}/oauth/authorize",
+                "oauthTokenEndpoint": f"{tenant.prefix}/oauth/token",
+            }
         yield
 
     router = APIRouter(lifespan=lifespan)

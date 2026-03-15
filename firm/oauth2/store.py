@@ -477,7 +477,7 @@ class FirmOAuth2DataStore(OAuth2DataStore):
             return None
         return OAuth2Client(
             client_id=str(resource["client_id"]),
-            client_secret=str(resource["client_secret"]),
+            client_secret=resource.get("client_secret"),
             redirect_uris=list(cast(list, resource.get("redirect_uris", []))),
             grant_types=list(cast(list, resource.get("grant_types", []))),
             response_types=list(cast(list, resource.get("response_types", []))),
@@ -506,7 +506,7 @@ class FirmOAuth2DataStore(OAuth2DataStore):
         self, client_id: str, client_secret: str
     ) -> Optional[OAuth2Client]:
         client = await self.get_client(client_id)
-        if client and client.client_secret == client_secret:
+        if client and (not client.client_secret or (client.client_secret == client_secret)):
             return client
         return None
 

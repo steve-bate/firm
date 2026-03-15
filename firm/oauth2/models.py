@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 class OAuth2Client(BaseModel):
     client_id: str
-    client_secret: str
+    client_secret: str | None
     redirect_uris: List[str]
     grant_types: List[str]
     response_types: List[str]
