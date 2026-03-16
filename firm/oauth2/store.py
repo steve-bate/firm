@@ -488,6 +488,11 @@ class FirmOAuth2DataStore(OAuth2DataStore):
         )
 
     async def save_client(self, client: OAuth2Client) -> None:
+        # Delete all other client records with this client_id
+        existing_clients = await self._tenant.private_store.query({"client_id": client.client_id})
+        for existing_client in existing_clients:
+            await self._tenant.private_store.remove(str(existing_client["id"]))
+
         await self._tenant.private_store.put(
             {
                 "id": self._client_resource_id(client.client_id),

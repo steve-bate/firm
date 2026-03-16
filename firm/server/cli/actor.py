@@ -1,9 +1,11 @@
 import json
+import os
 import uuid
 from typing import Any, cast
 from urllib.parse import urlparse
 
 import click
+from tabulate import tabulate, tabulate_formats
 
 from firm.core.auth.http_basic import hash_password
 from firm.core.auth.keys import create_key_pair
@@ -274,6 +276,36 @@ async def _safe_get(store: ResourceStore, uri: str) -> JSONObject:
     raise click.ClickException(f"Resource not found: {uri}")
 
 
+async def print_box(ctx, actor, output_format, box_name):
+    store = ctx.get_tenant().public_store
+    if ":" not in actor:
+        actor = f"{os.getenv('FIRM_TENANT')}/actors/{actor}"
+    actor = await _safe_get(store, actor)
+    outbox_uri = resource_id(actor[box_name])
+    box = await _safe_get(store, outbox_uri)
+    data = []
+    for activity_uri in cast(list, box.get("items", [])):
+        activity = await _safe_get(store, activity_uri)
+        data.append([activity_uri, activity.get("type"), activity.get("object")])
+    print(tabulate(data, headers=["URI", "Type", "Object"], tablefmt=output_format))
+
+
+@outbox.command("list")
+@click.argument("actor")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    help="Output format",
+    default="simple",
+    type=click.Choice(tabulate_formats),
+)
+@click.pass_obj
+@async_command
+async def actor_outbox_list(ctx: Context, actor: str, output_format: str):
+    await print_box(ctx, actor, output_format, "outbox")
+
+
 @outbox.command("clean")
 @click.argument("uri")
 @click.pass_obj
@@ -319,3 +351,43 @@ async def actor_inbox_clean(ctx: Context, uri: str):
     box = await _safe_get(store, inbox_uri)
     box.pop("orderedItems")
     await store.put(box)
+
+
+@inbox.command("list")
+@click.argument("actor")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    help="Output format",
+    default="simple",
+    type=click.Choice(tabulate_formats),
+)
+@click.pass_obj
+@async_command
+async def actor_inbox_list(ctx: Context, actor: str, output_format: str):
+    await print_box(ctx, actor, output_format, "inbox")
+
+
+@actor.command("list")
+@click.option("--type", "-t", "actor_type", help="Filter by type", default="Person")
+@click.pass_obj
+@async_command
+async def actor_list(ctx: Context, actor_type: str):
+    store = ctx.get_tenant().public_store
+    for resource in await store.query({"type": actor_type}):
+        print(resource["id"])
+
+
+@actor.command("followers")
+@click.argument("actor")
+@click.pass_obj
+@async_command
+async def actor_followers(ctx: Context, actor: str):
+    store = ctx.get_tenant().public_store
+    if ":" not in actor:
+        actor = f"{os.getenv('FIRM_TENANT')}/actors/{actor}"
+    actor_doc = await _safe_get(store, actor)
+    followers = await _safe_get(store, resource_id(actor_doc["followers"]))
+    for follower in cast(list, followers["items"]):
+        print(resource_id(follower))

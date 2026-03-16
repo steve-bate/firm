@@ -49,6 +49,7 @@ repos:
             - attrs
             - types-PyYAML
             - types-cachetools
+            - types-tabulate
         args:
         - --ignore-missing-imports
         - --namespace-packages

@@ -1,10 +1,12 @@
 # oauth_router.py
 import base64
+import logging
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, cast
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
@@ -19,7 +21,9 @@ from firm.oauth2.models import (
     OAuth2Token,
     RefreshToken,
 )
-from firm.oauth2.store import FirmOAuth2DataStore
+from firm.oauth2.store import FirmOAuth2DataStore, OAuth2DataStore
+
+log = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -116,8 +120,30 @@ def create_oauth2_router() -> APIRouter:
         if not client_id:
             raise HTTPException(status_code=400, detail="client_id is required")
 
-        store = get_store(request)
+        store = get_oauth2_store(request)
         client = await store.get_client(client_id)
+
+        if not client and re.search(r"^https?://", client_id):
+            # Try CIMD
+            # try to fetch the CIMD document from the client_id URL
+            try:
+                async with request.app.state.http_client.get(client_id) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("@context") == "https://www.w3.org/ns/solid/cimd/v1":
+                            client = OAuth2Client(
+                                client_id=client_id,
+                                client_secret=None,
+                                redirect_uris=data.get("redirect_uris", []),
+                                grant_types=data.get("grant_types", ["authorization_code"]),
+                                response_types=data.get("response_types", ["code"]),
+                                scope=data.get("scope", ""),
+                            )
+                            # Optionally save the client to the store for future use
+                            await store.save_client(client)
+            except Exception:
+                log.error("Failed to fetch CIMD document from %s", client_id, exc_info=True)
+
         if not client:
             raise HTTPException(status_code=400, detail="Unknown client_id")
 
@@ -156,8 +182,8 @@ def create_oauth2_router() -> APIRouter:
         if not client_id:
             raise HTTPException(status_code=400, detail="client_id is required")
 
-        store = get_store(request)
-        client = store.get_client(client_id)
+        store = get_oauth2_store(request)
+        client = await store.get_client(client_id)
         if not client:
             raise HTTPException(status_code=400, detail="Unknown client_id")
 
@@ -184,7 +210,7 @@ def create_oauth2_router() -> APIRouter:
             issued_at=int(time.time()),
         )
 
-        store = get_store(request)
+        store = get_oauth2_store(request)
         await store.save_code(auth_code)
 
         qs = urlencode({"code": code, **(({"state": state}) if state else {})})
@@ -226,7 +252,7 @@ def create_oauth2_router() -> APIRouter:
         if not client_id:
             raise HTTPException(status_code=401, detail="client_id is required")
 
-        store = get_store(request)
+        store = get_oauth2_store(request)
         client = await store.authenticate_client(client_id, client_secret)
         if not client:
             raise HTTPException(status_code=401, detail="Invalid client credentials")
@@ -259,7 +285,7 @@ def create_oauth2_router() -> APIRouter:
             user = await authenticate_user(request.state.tenant, username, password)
             if not user:
                 raise HTTPException(status_code=401, detail="Invalid user credentials")
-            user_id = user["user_id"]
+            user_id = cast(str, user["user_id"])
             scope = body.get("scope", client.scope)
         elif grant_type == "client_credentials":
             user_id = client_id
@@ -349,8 +375,8 @@ def create_oauth2_router() -> APIRouter:
             ),
         )
 
-        store = get_store(request)
-        await store.save_client(client)
+        oauth2_store = get_oauth2_store(request)
+        await oauth2_store.save_client(client)
 
         return JSONResponse(
             status_code=201,
@@ -365,7 +391,7 @@ def create_oauth2_router() -> APIRouter:
             },
         )
 
-    def get_store(request):
+    def get_oauth2_store(request) -> OAuth2DataStore:
         tenant = request.state.tenant
         stores = request.app.state.oauth2_stores
         store = stores.get(tenant.prefix)
@@ -409,7 +435,7 @@ def create_oauth2_router() -> APIRouter:
         if not rev_client_id:
             raise HTTPException(status_code=401, detail="client_id is required")
 
-        store = get_store(request)
+        store = get_oauth2_store(request)
         rev_client = await store.authenticate_client(rev_client_id, rev_client_secret)
         if not rev_client:
             raise HTTPException(status_code=401, detail="Invalid client credentials")
