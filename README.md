@@ -40,12 +40,12 @@ These are current features, unless tagged otherwise.
     - Methods can be used simultaneously (chained)
     - #future new [RFC 9421 HTTP Signatures](https://datatracker.ietf.org/doc/rfc9421/), etc.
 - Implements both S2S and C2S ActivityPub profiles.
-- Supports unofficial ActivityPub media upload protocol
+- Supports unofficial ActivityPub [media upload protocol](https://www.w3.org/wiki/SocialCG/ActivityPub/MediaUpload)
 - Extensible WebFinger (Resource-specific properties)
   - Interoperates with Mastodon
 - Extensible NodeInfo (Tenant-specific Metadata)
 - [JSON Schema](https://json-schema.org/)-based validation (WIP)
-- Event streaming Support (SSE)
+- Event streaming Support (SSE, [FEP-3ab2](https://codeberg.org/fediverse/fep/src/branch/main/fep/3ab2/fep-3ab2.md))
 - Collection filtering using [JSONPath](https://www.rfc-editor.org/rfc/rfc9535) (RFC 9535)
 
 ## Server
