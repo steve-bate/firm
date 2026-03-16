@@ -53,6 +53,7 @@ from firm.streaming.endpoint import sse_client_page_endpoint
 from firm.streaming.sse.notifier import StreamEvent, StreamNotifier, get_notifier
 from firm.streaming.sse.router import create_sse_router
 
+from ..core.media.endpoints import create_media_upload_router
 from .proxy import proxy
 
 log = logging.getLogger(__name__)
@@ -420,6 +421,7 @@ def create_router(config: ServerConfig) -> APIRouter:
 
     router.add_api_route("/sse/client", sse_client_page_endpoint, methods=["GET"])
     router.include_router(create_sse_router())
+    router.include_router(create_media_upload_router())
 
     @router.get("/sse/test")
     async def sse_test_endpoint(

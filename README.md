@@ -40,6 +40,7 @@ These are current features, unless tagged otherwise.
     - Methods can be used simultaneously (chained)
     - #future new [RFC 9421 HTTP Signatures](https://datatracker.ietf.org/doc/rfc9421/), etc.
 - Implements both S2S and C2S ActivityPub profiles.
+- Supports unofficial ActivityPub media upload protocol
 - Extensible WebFinger (Resource-specific properties)
   - Interoperates with Mastodon
 - Extensible NodeInfo (Tenant-specific Metadata)
