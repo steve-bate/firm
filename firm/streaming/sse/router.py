@@ -1,7 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import AsyncIterable, Callable
+from typing import AsyncIterable
 
 from fastapi import (
     APIRouter,
@@ -41,7 +41,6 @@ def create_sse_router(
     notifier: StreamNotifier = InMemoryStreamNotifier(),
     ticket_store: TicketStore | None = None,
     config: SSEConfig | None = None,
-    get_current_user_id: Callable[[], str] | None = None,
 ) -> APIRouter:
     """
     Create an APIRouter exposing:
@@ -60,6 +59,9 @@ def create_sse_router(
     @asynccontextmanager
     async def _initialize(app):
         app.state.sse_notifier = notifier
+        for tenant in app.state.tenants.values():
+            path = app.url_path_for("sse_create_session")
+            tenant.endpoints["streamingControl"] = f"{tenant.prefix}{path}"
         yield
 
     router = APIRouter(prefix="/sse", tags=["sse"], lifespan=_initialize)
@@ -104,7 +106,7 @@ def create_sse_router(
 
     @router.post("/control/subscriptions")
     async def subscribe(req: SubscriptionRequest, user_id: str = Depends(_require_ticket)) -> dict:
-        logger.info("POST /sse/control/subscriptions user_id=%s topics=%s", user_id, req.topics)
+        logger.info("POST /control/subscriptions user_id=%s topics=%s", user_id, req.topics)
         for topic in req.topics:
             await notifier.add_subscription(user_id, topic)
         topics = await notifier.get_subscriptions(user_id)
@@ -112,7 +114,7 @@ def create_sse_router(
 
     @router.delete("/control/subscriptions", status_code=204)
     async def unsubscribe(topic: str, user_id: str = Depends(_require_ticket)) -> None:
-        logger.info("DELETE /sse/control/subscriptions user_id=%s topic=%s", user_id, topic)
+        logger.info("DELETE /control/subscriptions user_id=%s topic=%s", user_id, topic)
         await notifier.remove_subscription(user_id, topic)
 
     @router.delete("/control", status_code=204)
@@ -121,7 +123,7 @@ def create_sse_router(
         sse_ticket: str | None = Cookie(default=None, alias=cfg.cookie_name),
         user_id: str = Depends(_get_user_id),
     ) -> None:
-        logger.info("DELETE /sse/control user_id=%s", user_id)
+        logger.info("DELETE /control user_id=%s", user_id)
         if sse_ticket:
             store.invalidate_ticket(sse_ticket)
         response.delete_cookie(
@@ -129,9 +131,9 @@ def create_sse_router(
             path=cfg.cookie_path,
         )
 
-    @router.post("/control", status_code=201)
+    @router.post("/control", status_code=201, name="sse_create_session")
     async def create_session(response: Response, user_id: str = Depends(_get_user_id)) -> dict:
-        logger.info("POST /sse/control user_id=%s", user_id)
+        logger.info("POST /control user_id=%s", user_id)
 
         ticket, td = store.create_ticket(user_id=user_id)
 
