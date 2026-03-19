@@ -34,6 +34,7 @@ dependencies = [
   "cachetools-async>=0.0.5",
   "jsonpath-rfc9535>=1.0.0",
   "tabulate>=0.10.0",
+  "jsonpointer>=3.0.0",
 ]
 
 [dependency-groups]

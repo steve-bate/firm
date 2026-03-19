@@ -415,6 +415,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "jinja2" },
     { name = "jsonpath-rfc9535" },
+    { name = "jsonpointer" },
     { name = "jsonschema" },
     { name = "oxrdflib" },
     { name = "pyld" },
@@ -452,6 +453,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.135" },
     { name = "jinja2", specifier = ">=3.1.4,<4.0.0" },
     { name = "jsonpath-rfc9535", specifier = ">=1.0.0" },
+    { name = "jsonpointer", specifier = ">=3.0.0" },
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "oxrdflib", specifier = ">=0.3.7,<0.4.0" },
     { name = "pyld", specifier = ">=2.0.4" },
@@ -606,6 +608,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ad/62/42b1ee140903ced74b213590235915e41c5e6f8de029fd43b54aad081b1b/jsonpath_rfc9535-1.0.0.tar.gz", hash = "sha256:5312cbccb921d39af69ef3fef299a075c872259fa897f2126999a1c3bcb73d04", size = 27235 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a9/8c/1d201eeabbc1922c74fa0ad2cdef561c393198d0610ab28ad606929d863f/jsonpath_rfc9535-1.0.0-py3-none-any.whl", hash = "sha256:713efa817d9c94e6b1372d52f00f5c9959bef2ab0fdf334de262dcf74166a2b1", size = 36493 },
+]
+
+[[package]]
+name = "jsonpointer"
+version = "3.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/6a/0a/eebeb1fa92507ea94016a2a790b93c2ae41a7e18778f85471dc54475ed25/jsonpointer-3.0.0.tar.gz", hash = "sha256:2b2d729f2091522d61c3b31f82e11870f60b68f43fbc705cb76bf4b832af59ef", size = 9114 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/92/5e77f98553e9e75130c78900d000368476aed74276eb8ae8796f65f00918/jsonpointer-3.0.0-py2.py3-none-any.whl", hash = "sha256:13e088adc14fca8b6aa8177c044e12701e6ad4b28ff10e65f2267a90109c9942", size = 7595 },
 ]
 
 [[package]]

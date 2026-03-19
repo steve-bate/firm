@@ -177,6 +177,12 @@ def app_factory(config: ServerConfig) -> FastAPI:
     return _app
 
 
+def clear_app():
+    "Test suport to clear global app state"
+    global _app
+    _app = None
+
+
 class FirmServer(uvicorn.Server):
     tasks: list[asyncio.Task] = []
 

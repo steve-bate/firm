@@ -11,7 +11,14 @@ from firm.core.interfaces import (
     ResourceStore,
     Tenant,
 )
-from firm.core.util import get_id, get_prefix_uri, get_types, is_collection, is_public
+from firm.core.util import (
+    get_id,
+    get_prefix_uri,
+    get_types,
+    is_collection,
+    is_public,
+    resource_id,
+)
 from firm.server.adapters import HttpxAuthAdapter
 from firm.server.config import ServerConfig
 
@@ -115,9 +122,9 @@ class FirmDeliveryService(DeliveryService):
         activity: JSONObject,
     ) -> None:
         # TODO Delivery - Handle failures and redelivery
-        actor = await tenant.public_store.get(cast(str, activity["actor"]))
+        actor = await tenant.public_store.get(resource_id(activity["actor"]))
         if not actor:
-            log.error("Actor not found for activity: %s", activity["actor"])
+            log.error("Actor not found for activity: %s", resource_id(activity["actor"]))
             return
         key_uri = get_id(actor.get("publicKey", {}))
         if not key_uri:

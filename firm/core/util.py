@@ -150,7 +150,8 @@ def resource_id(resource: JSON | str) -> str:
     if isinstance(resource, str):
         return resource
     if isinstance(resource, Mapping):
-        return str(resource["id"])
+        if "id" in resource:
+            return str(resource["id"])
     raise ValueError(f"Get get ID from resource: {resource}")
 
 

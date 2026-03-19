@@ -7,12 +7,14 @@ from starlette.testclient import TestClient
 from firm.core.auth.http_signature import HttpSignatureAuth
 from firm.server.adapters import HttpxTransport
 from firm.server.config import FileStoreConfig, ServerConfig
-from firm.server.server import app_factory
+from firm.server.server import app_factory, clear_app
+
+TENANT_PREFIX = "https://server.test"
 
 
 @pytest.fixture
 def client(tmp_path):
-    prefix = "https://firm.core.stevebate.dev"
+    prefix = TENANT_PREFIX
     media_dir = tmp_path / "media"
     media_dir.mkdir(parents=True, exist_ok=True)
     with TestClient(
@@ -20,6 +22,7 @@ def client(tmp_path):
         base_url=prefix,
     ) as client:
         yield client
+        clear_app()
 
 
 PRIVATE_KEY = """-----BEGIN PRIVATE KEY-----
@@ -96,16 +99,14 @@ cF38UF2egml5YnqtcLl3/ukCAwEAAQ==
 class FirmServerTestBase:
     async def test_dereference_noauth(self, client):
         tenant = list(client.app.state.tenants.values())[0]
-        await tenant.public_store.put(
-            {"id": "https://firm.core.stevebate.dev/actor/steve", "type": "Person"}
-        )
+        await tenant.public_store.put({"id": f"{TENANT_PREFIX}/actor/steve", "type": "Person"})
         response = client.get(
-            "https://firm.core.stevebate.dev/actor/steve",
+            f"{TENANT_PREFIX}/actor/steve",
             headers={"Accept": "application/activity+json"},
         )
         assert response.is_success
         data = response.json()
-        assert data["id"] == "https://firm.core.stevebate.dev/actor/steve"
+        assert data["id"] == f"{TENANT_PREFIX}/actor/steve"
 
 
 class TestServer(FirmServerTestBase): ...
@@ -133,8 +134,8 @@ async def test_http_transport_post(httpx_mock: HTTPXMock):
     httpx_mock.add_response(method="POST", status_code=403)
     transport = HttpxTransport()
     response = await transport.post(
-        "https://firm.core.stevebate.dev/actor/steve/inbox",
+        f"{TENANT_PREFIX}/actor/steve/inbox",
         data={"test": "data"},
-        auth=HttpSignatureAuth("https://remote.test/actor/bob", PRIVATE_KEY),
+        auth=HttpSignatureAuth(f"{TENANT_PREFIX}/actor/bob", PRIVATE_KEY),
     )
     assert response.status_code == 403

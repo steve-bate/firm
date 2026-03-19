@@ -8,10 +8,12 @@ from firm.server.auth import get_principal
 from firm.server.config import FileStoreConfig, ServerConfig
 from firm.streaming.sse.notifier import InMemoryStreamNotifier, Subscription
 
+TENANT_PREFIX = "https://streaming.test"
+
 
 @pytest.fixture
 def client(tmp_path):
-    prefix = "https://firm.core.stevebate.dev"
+    prefix = TENANT_PREFIX
     media_dir = tmp_path / "media"
     media_dir.mkdir(parents=True, exist_ok=True)
 
@@ -29,13 +31,13 @@ def client(tmp_path):
 def authenticated_client(client: TestClient):
     async def _principal_override(request: Request) -> Principal:
         actor = APActor(
-            id="https://firm.core.stevebate.dev/actor/test-user",
+            id=f"{TENANT_PREFIX}/actor/test-user",
             type="Person",
-            inbox="https://firm.core.stevebate.dev/actor/test-user/inbox",
-            outbox="https://firm.core.stevebate.dev/actor/test-user/outbox",
-            followers="https://firm.core.stevebate.dev/actor/test-user/followers",
-            following="https://firm.core.stevebate.dev/actor/test-user/following",
-            likes="https://firm.core.stevebate.dev/actor/test-user/likes",
+            inbox=f"{TENANT_PREFIX}/actor/test-user/inbox",
+            outbox=f"{TENANT_PREFIX}/actor/test-user/outbox",
+            followers=f"{TENANT_PREFIX}/actor/test-user/followers",
+            following=f"{TENANT_PREFIX}/actor/test-user/following",
+            likes=f"{TENANT_PREFIX}/actor/test-user/likes",
         )
         return Principal(actor, request.state.tenant)
 

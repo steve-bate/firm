@@ -5,6 +5,7 @@ from typing import Any, Mapping, cast
 from urllib.parse import parse_qs
 
 import jsonpath_rfc9535 as jsonpath  # type: ignore
+from jsonpointer import JsonPointer
 
 from firm.core.interfaces import (
     FIRM_NS,
@@ -909,6 +910,8 @@ class ActivityPubTenant:
                     # TODO Implement outbox undo announce
                     # elif resource_get(activity, "object", "type") == "Announce":
                     #     await self._process_inbox_undo_announce(request, activity)
+                elif has_value(activity, "type", "Patch"):
+                    await self._patch_resource(store, activity)
                 else:
                     ...
             finally:
@@ -918,6 +921,97 @@ class ActivityPubTenant:
         # TODO Process activity
         await self._delivery_service.deliver(tenant, all_tenants, activity)
         return activity_id
+
+    async def _patch_resource(self, store: ResourceStore, activity: JSONObject):
+        target_uri = get_id(activity.get("target"))
+        if not target_uri:
+            raise InvalidRequestException("Missing target for Patch activity")
+        patch_ops = activity.get("object")
+        if (
+            not is_type(activity, "Patch")
+            or not isinstance(patch_ops, dict)
+            or not is_type(patch_ops, "PatchOperations")
+        ):
+            raise InvalidRequestException("Invalid object for Patch activity")
+        target = await self._dereference(store, target_uri)
+        if not target:
+            raise NotFoundException("Unknown target for Patch activity")
+        operations = patch_ops.get("operations")
+        if not isinstance(operations, list):
+            raise InvalidRequestException("Invalid operations for Patch activity")
+        for operation in operations:
+            if not isinstance(operation, Mapping):
+                raise InvalidRequestException("Invalid operation in Patch activity")
+            if "op" not in operation or "path" not in operation:
+                raise InvalidRequestException("Operation missing required fields in Patch activity")
+            path = operation["path"]
+            if not path.startswith("/"):
+                raise InvalidRequestException("Invalid path in Patch activity, must start with /")
+            # Hydrate the target, if necessary
+            path_segments = path.strip("/").split("/")
+            for segment in path_segments[:-1]:
+                current = target
+                if segment in target and isinstance(target[segment], str):
+                    current[segment] = await self._safe_dereference_or_uri(store, target[segment])
+                    current = current[segment]
+            op = operation["op"]
+            ptr = JsonPointer(path)
+            if op == "add":
+                if "value" not in operation:
+                    raise InvalidRequestException("Add operation missing value in Patch activity")
+                ptr.set(target, operation["value"], inplace=True)
+                await store.put(target)
+            elif op == "remove":
+                parent, token = ptr.to_last(target)
+                del parent[token]
+                await store.put(target)
+            elif op == "replace":
+                if "value" not in operation:
+                    raise InvalidRequestException(
+                        "Replace operation missing value in Patch activity"
+                    )
+                parent, token = ptr.to_last(target)
+                if isinstance(parent, list):
+                    parent[int(token)] = operation["value"]
+                elif isinstance(parent, dict):
+                    parent[token] = operation["value"]
+                else:
+                    raise InvalidRequestException(
+                        f"Unsupported parent type for replace operation in Patch activity: {type(parent)}"
+                    )
+                await store.put(target)
+            elif op == "move":
+                if "from" not in operation:
+                    raise InvalidRequestException("Move operation missing from in Patch activity")
+                from_ptr = JsonPointer(operation["from"])
+                value = from_ptr.get(target)
+                from_parent, from_token = from_ptr.to_last(target)
+                if isinstance(from_parent, list):
+                    del from_parent[int(from_token)]
+                elif isinstance(from_parent, dict):
+                    del from_parent[from_token]
+                path_ptr = JsonPointer(operation["path"])
+                path_ptr.set(target, value, inplace=True)
+                await store.put(target)
+            elif op == "copy":
+                if "from" not in operation:
+                    raise InvalidRequestException("Move operation missing from in Patch activity")
+                from_ptr = JsonPointer(operation["from"])
+                value = from_ptr.get(target)
+                path_ptr = JsonPointer(operation["path"])
+                path_ptr.set(target, value, inplace=True)
+                await store.put(target)
+            elif op == "test":
+                if "value" not in operation:
+                    raise InvalidRequestException(
+                        "Replace operation missing value in Patch activity"
+                    )
+                ptr = JsonPointer(operation["path"])
+                target_value = ptr.get(target)
+                if target_value != operation["value"]:
+                    raise InvalidRequestException("Test operation failed in Patch activity")
+            else:
+                raise InvalidRequestException(f"Unsupported operation in Patch activity: {op}")
 
     async def _process_outbox(
         self,
