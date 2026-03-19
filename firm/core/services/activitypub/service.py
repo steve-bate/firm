@@ -21,7 +21,14 @@ from firm.core.interfaces import (
     Url,
     Validator,
 )
-from firm.core.services.exception import ServiceException
+from firm.core.services.activitypub.exceptions import (
+    InvalidRequestException,
+    InvalidResourceException,
+    InvalidResourceTypeException,
+    NotAuthorizedException,
+    NotFoundException,
+    ResourceOwnerException,
+)
 from firm.core.util import (
     ACTIVITIES_REQUIRING_OBJECT,
     ACTIVITIES_REQUIRING_TARGET,
@@ -41,55 +48,166 @@ from firm.core.util import (
 )
 
 
-class NotAuthorizedException(ServiceException):
-    def __init__(self, reason: str | None = None):
-        super().__init__(reason or "Not authorized")
-
-    @property
-    def reason(self):
-        return self.args[0]
-
-
-class NotFoundException(ServiceException):
-    def __init__(self, url: Any):
-        super().__init__(str(url))
-
-    @property
-    def url(self):
-        return self.args[0]
-
-
-class InvalidRequestException(ServiceException):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-
-class InvalidResourceTypeException(InvalidRequestException):
-    def __init__(self, actual_type: Any, expected_type: Any):
-        super().__init__(f"Invalid resource type: {actual_type}, expected: {expected_type}")
-
-    @property
-    def actual_type(self):
-        return self.args[0]
-
-    @property
-    def expected_type(self):
-        return self.args[1]
-
-
-class ResourceOwnerException(InvalidRequestException): ...
-
-
-class InvalidResourceException(InvalidRequestException):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-
 def item_filter(expr: str) -> str:
     expr = (
         expr if expr.startswith("$") else f"$[?{expr}]" if not expr.startswith("[") else f"${expr}"
     )
     return expr
+
+
+async def _dereference(store: ResourceStore, url: Url | str):
+    if isinstance(url, Url):
+        url = str(url)
+    return await store.get(url)
+
+
+async def _safe_dereference(store: ResourceStore, url: Url | str):
+    if resource := await _dereference(store, url):
+        return resource
+    raise Exception(f"Resource not found: {url}")
+
+
+async def _safe_dereference_or_uri(store: ResourceStore, url: Url | str):
+    try:
+        return await _safe_dereference(store, url)
+    except Exception:
+        return str(url)
+
+
+async def _add_collection_item(
+    store: ResourceStore,
+    collection_uri: str,
+    item_uri: str,
+    prepend=True,
+    allow_dups=False,
+):
+    collection = await _dereference(store, collection_uri)
+    if not collection:
+        raise ValueError(f"Unknown collection: {collection_uri}")
+    # For storage, only 'items' is used
+    # Serialization will serialized as orderedItems if needed
+    items_key = "items"
+    if items := cast(list, collection.get(items_key)):
+        if isinstance(items, list):
+            if not allow_dups and item_uri in items:
+                return
+            if prepend:
+                items.insert(0, item_uri)
+            else:
+                items.append(item_uri)
+    else:
+        items = [item_uri]
+        collection[items_key] = items
+    collection["totalItems"] = len(items)
+    await store.put(collection)
+
+
+async def _remove_collection_item(store: ResourceStore, collection_uri: str, item_uri: str):
+    collection = await _dereference(store, collection_uri)
+    if not collection:
+        raise ValueError(f"Unknown collection: {collection_uri}")
+    # For storage, only 'items' is used
+    # Serialization will serialized as orderedItems if needed
+    items_key = "items"
+    if items := collection.get(items_key):
+        if isinstance(items, list):
+            if item_uri in items:
+                items.remove(item_uri)
+    await store.put(collection)
+
+
+async def _dereference_collection_items(
+    store: ResourceStore, collection: JSONObject, inplace=False
+) -> list[JSONObject] | JSONObject | None:
+    # all stored collections use "items" for storage,
+    # even if they serialize as "orderedItems"
+    items_key = "items"
+    items = collection.get(items_key, [])
+    if isinstance(items, list):
+        dereferenced_items: list[JSONObject] = []
+        for item in items:
+            if isinstance(item, str):
+                dereferenced_item = await _dereference(store, item)
+                if dereferenced_item:
+                    dereferenced_items.append(dereferenced_item)
+                else:
+                    log.warning(f"Unable to dereference collection item: {item}")
+            else:
+                dereferenced_items.append(item)
+        if inplace:
+            # TODO Review the collection item dereferencing and clean it up
+            collection[items_key] = dereferenced_items
+            return collection
+        else:
+            return dereferenced_items
+    raise Exception("Collection items must be a list")
+
+
+async def _serialize(tenant: Tenant, resource: JSONObject) -> JSONObject:
+    """Embed specific resources to match typical AP expectations."""
+
+    store = tenant.public_store
+
+    if not isinstance(resource, dict):
+        raise Exception("Can only serialize JSON objects")
+
+    elif is_collection(resource):
+        resource = cast(
+            JSONObject, await _dereference_collection_items(store, resource, inplace=True)
+        )
+        items_key = get_collection_items_key(resource)
+        if items_key != "items":
+            # This is a bit hacky, but it allows us to store collections in a consistent way
+            resource[items_key] = resource.pop("items")
+
+    # if is_collection(resource):
+    #     # Keep it simple for now
+    #     items_key = "items" if "items" in resource else "orderedItems"
+    #     items = [
+    #         await self.serialize(
+    #             store,
+    #             await _safe_dereference_or_uri(store, i) if isinstance(i, str) else i,
+    #         )
+    #         for i in cast(list, resource.get(items_key, []))
+    #     ]
+    #     # Embed activity objects
+    #     for item in items:
+    #         if (
+    #             isinstance(item, Mapping)
+    #             and "actor" in item
+    #             and isinstance(item.get("object"), str)
+    #         ):
+    #             item["object"] = await _dereference(store, cast(str, item["object"]))
+    #     # TODO Add more general support for empty array serialization
+    #     if not items:
+    #         if items_key in resource:
+    #             del resource[items_key]
+    #     else:
+    #         resource[items_key] = items
+
+    elif is_type(resource, "Create") or is_type(resource, "Update"):
+        if isinstance(resource.get("object"), str):
+            obj = await _safe_dereference(store, cast(str, resource["object"]))
+            resource["object"] = obj
+            for prop in ["likes", "shares"]:
+                if prop in obj:
+                    collection = await _safe_dereference(store, cast(str, obj[prop]))
+                    collection.pop("items")
+                    collection.pop("attributedTo")
+                    obj[prop] = collection
+
+    elif "endpoints" in resource:
+        # TODO This endpoint handling is a bit hacky
+        resource["endpoints"] |= tenant.endpoints
+
+    return _remove_empty_arrays(resource)
+
+
+def _get_query_param(params: Mapping[str, list[str]], key: str, default_value: str) -> str:
+    values = params.get(key)
+    if not values or len(values) == 0:
+        return default_value
+    return values[0]
 
 
 class ActivityPubTenant:
@@ -102,124 +220,6 @@ class ActivityPubTenant:
         self._authorizer = authorizer
         self._delivery_service = delivery_service
         self._validator = validator
-
-    async def _dereference(self, store: ResourceStore, url: Url | str):
-        if isinstance(url, Url):
-            url = str(url)
-        return await store.get(url)
-
-    async def _safe_dereference(self, store: ResourceStore, url: Url | str):
-        if resource := await self._dereference(store, url):
-            return resource
-        raise Exception(f"Resource not found: {url}")
-
-    async def _safe_dereference_or_uri(self, store: ResourceStore, url: Url | str):
-        try:
-            return await self._safe_dereference(store, url)
-        except Exception:
-            return str(url)
-
-    async def _dereference_collection_items(
-        self, store: ResourceStore, collection: JSONObject, inplace=False
-    ) -> list[JSONObject] | JSONObject | None:
-        # all stored collections use "items" for storage,
-        # even if they serialize as "orderedItems"
-        items_key = "items"
-        items = collection.get(items_key, [])
-        if isinstance(items, list):
-            dereferenced_items: list[JSONObject] = []
-            for item in items:
-                if isinstance(item, str):
-                    dereferenced_item = await self._dereference(store, item)
-                    if dereferenced_item:
-                        dereferenced_items.append(dereferenced_item)
-                    else:
-                        log.warning(f"Unable to dereference collection item: {item}")
-                else:
-                    dereferenced_items.append(item)
-            if inplace:
-                # TODO Review the collection item dereferencing and clean it up
-                collection[items_key] = dereferenced_items
-                return collection
-            else:
-                return dereferenced_items
-        raise Exception("Collection items must be a list")
-
-    @classmethod
-    def _remove_empty_arrays(cls, resource: JSONObject) -> JSONObject:
-        for key in list(resource.keys()):
-            value = resource[key]
-            if isinstance(value, list) and len(value) == 0:
-                del resource[key]
-            elif isinstance(value, dict):
-                cls._remove_empty_arrays(value)
-        return resource
-
-    async def serialize(self, tenant: Tenant, resource: JSONObject) -> JSONObject:
-        """Embed specific resources to match typical AP expectations."""
-
-        store = tenant.public_store
-
-        if not isinstance(resource, dict):
-            raise Exception("Can only serialize JSON objects")
-
-        elif is_collection(resource):
-            resource = cast(
-                JSONObject, await self._dereference_collection_items(store, resource, inplace=True)
-            )
-            items_key = get_collection_items_key(resource)
-            if items_key != "items":
-                # This is a bit hacky, but it allows us to store collections in a consistent way
-                resource[items_key] = resource.pop("items")
-
-        # if is_collection(resource):
-        #     # Keep it simple for now
-        #     items_key = "items" if "items" in resource else "orderedItems"
-        #     items = [
-        #         await self.serialize(
-        #             store,
-        #             await self._safe_dereference_or_uri(store, i) if isinstance(i, str) else i,
-        #         )
-        #         for i in cast(list, resource.get(items_key, []))
-        #     ]
-        #     # Embed activity objects
-        #     for item in items:
-        #         if (
-        #             isinstance(item, Mapping)
-        #             and "actor" in item
-        #             and isinstance(item.get("object"), str)
-        #         ):
-        #             item["object"] = await self._dereference(store, cast(str, item["object"]))
-        #     # TODO Add more general support for empty array serialization
-        #     if not items:
-        #         if items_key in resource:
-        #             del resource[items_key]
-        #     else:
-        #         resource[items_key] = items
-
-        elif is_type(resource, "Create") or is_type(resource, "Update"):
-            if isinstance(resource.get("object"), str):
-                obj = await self._safe_dereference(store, cast(str, resource["object"]))
-                resource["object"] = obj
-                for prop in ["likes", "shares"]:
-                    if prop in obj:
-                        collection = await self._safe_dereference(store, cast(str, obj[prop]))
-                        collection.pop("items")
-                        collection.pop("attributedTo")
-                        obj[prop] = collection
-
-        elif "endpoints" in resource:
-            # TODO This endpoint handling is a bit hacky
-            resource["endpoints"] |= tenant.endpoints
-
-        return self._remove_empty_arrays(resource)
-
-    @staticmethod
-    def _get_query_param(params: Mapping[str, list[str]], key: str, default_value: str) -> str:
-        values = params.get(key)
-        if not values or len(values) == 0:
-            return default_value
-        return values[0]
 
     async def _get_shared_inbox(
         self,
@@ -240,8 +240,8 @@ class ActivityPubTenant:
         query_params = parse_qs(resource_uri.query)
         path_parts = resource_uri.path.split("/")
         federated = len(path_parts) == 3 and path_parts[-1] == "federated"
-        offset_param = self._get_query_param(query_params, "offset", "")
-        limit = int(self._get_query_param(query_params, "limit", str(default_page_Size)))
+        offset_param = _get_query_param(query_params, "offset", "")
+        limit = int(_get_query_param(query_params, "limit", str(default_page_Size)))
         # strip query and fragment
         box_id = f"{resource_uri.scheme}://{resource_uri.netloc}{resource_uri.path}"
         if offset_param == "":
@@ -286,7 +286,7 @@ class ActivityPubTenant:
             if len(items) > 0 and (offset + limit < len(all_public_activities)):
                 page["next"] = f"{box_id}?offset={int(offset) + limit}"
 
-            return await self.serialize(tenant, page)
+            return await _serialize(tenant, page)
 
     async def _get_activities(self, principal, store, filter: jsonpath.JSONPathQuery | None = None):
         activities = [
@@ -318,15 +318,15 @@ class ActivityPubTenant:
         if tenant.shared_inbox_uri and str(resource_uri).startswith(tenant.shared_inbox_uri):
             return await self._get_shared_inbox(tenants, tenant, principal, resource_uri, options)
         store = tenant.public_store
-        if resource := await self._dereference(store, resource_uri):
+        if resource := await _dereference(store, resource_uri):
             decision = await self._authorizer.is_get_authorized(tenant, principal, resource)
             if decision.authorized:
                 if is_collection(resource) and options and "filter" in options:
                     filter = jsonpath.compile(item_filter(options["filter"]))
-                    items = await self._dereference_collection_items(store, resource)
+                    items = await _dereference_collection_items(store, resource)
                     filtered_nodes = filter.find(items)
                     set_collection_items(resource, [node.value for node in filtered_nodes])
-                return await self.serialize(tenant, resource)
+                return await _serialize(tenant, resource)
             else:
                 raise NotAuthorizedException(decision.reason or "Not authorized")
         else:
@@ -347,7 +347,7 @@ class ActivityPubTenant:
         # All POST requests must be authenticated
         if principal is None:
             raise NotAuthorizedException("Not authenticated")
-        target = await self._dereference(store, target_uri)
+        target = await _dereference(store, target_uri)
         if not target:
             raise NotFoundException(target_uri)
         # Boxes must be collections
@@ -357,7 +357,7 @@ class ActivityPubTenant:
         box_owner_uri = target.get("attributedTo")
         if box_owner_uri is None or not isinstance(box_owner_uri, str):
             raise ResourceOwnerException("No owner for box")
-        box_owner = await self._dereference(store, box_owner_uri)
+        box_owner = await _dereference(store, box_owner_uri)
         if not box_owner:
             raise ResourceOwnerException("Unknown box owner")
         # Determine the type of box and dispatch accordingly
@@ -401,7 +401,7 @@ class ActivityPubTenant:
             log.debug(f"Inbox: activity={activity.get('type')}")
         log.info(f"Inbox: box={activity.get('id')}, activity_type={activity.get('type')}")
         await store.put(activity)
-        await self._put_collection_item(store, box_owner["inbox"], resource_id(activity))
+        await _add_collection_item(store, box_owner["inbox"], resource_id(activity))
         if has_value(activity, "type", "Follow"):
             return await self._process_inbox_follow(tenants, tenant, principal, box_owner, activity)
         elif has_value(activity, "type", "Accept"):
@@ -420,49 +420,6 @@ class ActivityPubTenant:
             )
         else:
             raise NotImplementedError(f"Unsupported activity type: {activity.get('type')}")
-
-    async def _put_collection_item(
-        self,
-        store: ResourceStore,
-        collection_uri: str,
-        item_uri: str,
-        prepend=True,
-        allow_dups=False,
-    ):
-        collection = await self._dereference(store, collection_uri)
-        if not collection:
-            raise ValueError(f"Unknown collection: {collection_uri}")
-        # For storage, only 'items' is used
-        # Serialization will serialized as orderedItems if needed
-        items_key = "items"
-        if items := cast(list, collection.get(items_key)):
-            if isinstance(items, list):
-                if not allow_dups and item_uri in items:
-                    return
-                if prepend:
-                    items.insert(0, item_uri)
-                else:
-                    items.append(item_uri)
-        else:
-            items = [item_uri]
-            collection[items_key] = items
-        collection["totalItems"] = len(items)
-        await store.put(collection)
-
-    async def _remove_collection_item(
-        self, store: ResourceStore, collection_uri: str, item_uri: str
-    ):
-        collection = await self._dereference(store, collection_uri)
-        if not collection:
-            raise ValueError(f"Unknown collection: {collection_uri}")
-        # For storage, only 'items' is used
-        # Serialization will serialized as orderedItems if needed
-        items_key = "items"
-        if items := collection.get(items_key):
-            if isinstance(items, list):
-                if item_uri in items:
-                    items.remove(item_uri)
-        await store.put(collection)
 
     async def _process_inbox_follow(
         self,
@@ -484,7 +441,7 @@ class ActivityPubTenant:
         if not collection_uri:
             raise NotImplementedError("Following not supported")
         store = tenant.public_store
-        await self._put_collection_item(store, collection_uri, resource_id(actor_uri))
+        await _add_collection_item(store, collection_uri, resource_id(actor_uri))
         # TODO Make auto-accept configurable
         # TODO need a way to identify pending follow requests in store
         log.info(f"Sending Accept to {actor_uri}")
@@ -516,13 +473,13 @@ class ActivityPubTenant:
         self._assert_authorized_actor(principal, actor_uri)
         accepted_activity_uri = resource_id(activity.get("object"))
         store = tenant.public_store
-        if accepted_activity := await self._dereference(store, accepted_activity_uri):
+        if accepted_activity := await _dereference(store, accepted_activity_uri):
             if not is_type(accepted_activity, "Follow"):
                 raise InvalidRequestException("Accepting non-Follow object")
             following_uri = box_owner.get("following")
             if not following_uri:
                 raise NotImplementedError("Following not supported")
-            await self._put_collection_item(
+            await _add_collection_item(
                 store, following_uri, resource_id(accepted_activity["object"])
             )
         else:
@@ -542,13 +499,13 @@ class ActivityPubTenant:
         self._assert_authorized_actor(principal, actor_uri)
         rejected_activity_uri = resource_id(activity.get("object"))
         store = tenant.public_store
-        if rejected_activity := await self._dereference(store, rejected_activity_uri):
+        if rejected_activity := await _dereference(store, rejected_activity_uri):
             if not is_type(rejected_activity, "Follow"):
                 raise InvalidRequestException("Accepting non-Follow object")
             following_uri = box_owner.get("following")
             if not following_uri:
                 raise NotImplementedError("Following not supported")
-            await self._remove_collection_item(
+            await _remove_collection_item(
                 store, following_uri, resource_id(rejected_activity["object"])
             )
         else:
@@ -571,9 +528,7 @@ class ActivityPubTenant:
         liked_object_uri = resource_id(activity.get("object"))
         if liked_object := await store.get(liked_object_uri):
             collection_uri = cast(URI, liked_object["likes"])
-            await self._put_collection_item(
-                store, collection_uri, resource_id(activity.get("actor"))
-            )
+            await _add_collection_item(store, collection_uri, resource_id(activity.get("actor")))
         else:
             raise InvalidResourceException("Unknown liked object")
 
@@ -614,14 +569,14 @@ class ActivityPubTenant:
         followed_uri = resource_id(resource_get(activity, "object", "object"))
         if followed_uri is None:
             raise InvalidRequestException("Request has no activity to undo")
-        followed_object = cast(APActor, await self._dereference(store, followed_uri))
+        followed_object = cast(APActor, await _dereference(store, followed_uri))
         if followed_object is None:
             raise InvalidResourceException("Unknown box owner")
         followers_uri = followed_object["followers"]
         if followers_uri is None:
             raise InvalidResourceException("No followers collection")
-        await self._remove_collection_item(store, followers_uri, resource_id(activity.get("actor")))
-        await self._remove_collection_item(store, box_owner["following"], followed_uri)
+        await _remove_collection_item(store, followers_uri, resource_id(activity.get("actor")))
+        await _remove_collection_item(store, box_owner["following"], followed_uri)
 
     async def _process_inbox_undo_like(
         self,
@@ -635,7 +590,7 @@ class ActivityPubTenant:
         store = tenant.public_store
         if liked_object := await store.get(liked_object_uri):
             if collection_uri := cast(URI, liked_object["likes"]):
-                await self._remove_collection_item(
+                await _remove_collection_item(
                     store, collection_uri, resource_id(activity.get("actor"))
                 )
                 return
@@ -653,7 +608,7 @@ class ActivityPubTenant:
         store = tenant.public_store
         if announced_object := await store.get(announced_object_uri):
             if collection_uri := cast(URI | None, announced_object.get("shares", None)):
-                await self._remove_collection_item(
+                await _remove_collection_item(
                     store, collection_uri, resource_id(activity.get("actor"))
                 )
         raise InvalidRequestException("Unable to undo announce")
@@ -669,7 +624,7 @@ class ActivityPubTenant:
         if "object" not in activity:
             raise InvalidRequestException("Missing object in announce")
         announced_object_uri = resource_id(activity["object"])
-        announced_object = await self._dereference(tenant.public_store, announced_object_uri)
+        announced_object = await _dereference(tenant.public_store, announced_object_uri)
         if announced_object is None:
             raise InvalidRequestException("Unknown announced object")
         if "shares" not in announced_object:
@@ -682,7 +637,7 @@ class ActivityPubTenant:
             }
         else:
             shares_uri = resource_id(announced_object.get("shares"))
-            shares = await self._safe_dereference(tenant.public_store, shares_uri)
+            shares = await _safe_dereference(tenant.public_store, shares_uri)
         items_key = "orderedItems" if any("Ordered" in t for t in get_types(shares)) else "items"
         shared_items = shares.get(items_key, [])
         if activity["id"] not in shared_items:
@@ -758,11 +713,11 @@ class ActivityPubTenant:
                 await store.put(object_)
                 activity["object"] = resource_id(object_)
                 await store.put(activity)
-                await self._put_collection_item(store, outbox_uri, activity_id)
+                await _add_collection_item(store, outbox_uri, activity_id)
         else:
             try:
                 if has_value(activity, "type", "Delete"):
-                    if resource := await self._dereference(
+                    if resource := await _dereference(
                         store, cast(str, resource_id(activity["object"]))
                     ):
                         await store.put(
@@ -812,7 +767,7 @@ class ActivityPubTenant:
                     # save the collection
                     target = activity.get("target")
                     if isinstance(target, str):
-                        target = await self._safe_dereference_or_uri(store, target)
+                        target = await _safe_dereference_or_uri(store, target)
                     if not target or not isinstance(target, Mapping):
                         raise InvalidResourceException("Invalid target collection")
                     if "id" not in target:
@@ -823,7 +778,7 @@ class ActivityPubTenant:
                         raise InvalidRequestException("Missing object in Add")
                     object_ = activity["object"]
                     if isinstance(object_, str):
-                        object_ = await self._safe_dereference_or_uri(store, object_)
+                        object_ = await _safe_dereference_or_uri(store, object_)
                     if not object_ or not isinstance(object_, Mapping):
                         raise InvalidRequestException("Invalid object to add")
                     # Add the object to the collection
@@ -849,7 +804,7 @@ class ActivityPubTenant:
                 elif has_value(activity, "type", "Remove"):
                     target = activity.get("target")
                     if isinstance(target, str):
-                        target = await self._safe_dereference_or_uri(store, target)
+                        target = await _safe_dereference_or_uri(store, target)
                     if not target or not isinstance(target, Mapping):
                         raise InvalidResourceException("Invalid target collection")
                     if "id" not in target:
@@ -860,7 +815,7 @@ class ActivityPubTenant:
                         raise InvalidRequestException("Missing object in Remove")
                     object_ = activity["object"]
                     if isinstance(object_, str):
-                        object_ = await self._safe_dereference_or_uri(store, object_)
+                        object_ = await _safe_dereference_or_uri(store, object_)
                     if not object_ or not isinstance(object_, Mapping):
                         raise InvalidRequestException("Invalid object to remove")
                     # Remove the object from the collection
@@ -887,7 +842,7 @@ class ActivityPubTenant:
                     if liked_object := await store.get(liked_object_uri):
                         likes_collection_uri = cast(URI, liked_object.get("likes"))
                         if likes_collection_uri:
-                            await self._put_collection_item(
+                            await _add_collection_item(
                                 store, likes_collection_uri, resource_id(activity.get("actor"))
                             )
                         # Get actor's liked collection and add the liked object to it
@@ -895,7 +850,7 @@ class ActivityPubTenant:
                         if actor and "liked" in actor:
                             liked_collection_uri = resource_id(actor.get("liked"))
                             if liked_collection_uri:
-                                await self._put_collection_item(
+                                await _add_collection_item(
                                     store, liked_collection_uri, liked_object_uri
                                 )
                     else:
@@ -917,7 +872,7 @@ class ActivityPubTenant:
             finally:
                 # TODO Implement other outbox activity types
                 await store.put(activity)
-        await self._put_collection_item(store, outbox_uri, resource_id(activity))
+        await _add_collection_item(store, outbox_uri, resource_id(activity))
         # TODO Process activity
         await self._delivery_service.deliver(tenant, all_tenants, activity)
         return activity_id
@@ -933,7 +888,7 @@ class ActivityPubTenant:
             or not is_type(patch_ops, "PatchOperations")
         ):
             raise InvalidRequestException("Invalid object for Patch activity")
-        target = await self._dereference(store, target_uri)
+        target = await _dereference(store, target_uri)
         if not target:
             raise NotFoundException("Unknown target for Patch activity")
         operations = patch_ops.get("operations")
@@ -952,7 +907,7 @@ class ActivityPubTenant:
             for segment in path_segments[:-1]:
                 current = target
                 if segment in target and isinstance(target[segment], str):
-                    current[segment] = await self._safe_dereference_or_uri(store, target[segment])
+                    current[segment] = await _safe_dereference_or_uri(store, target[segment])
                     current = current[segment]
             op = operation["op"]
             ptr = JsonPointer(path)
@@ -1047,6 +1002,16 @@ class ActivityPubTenant:
             box_owner,
             activity,
         )
+
+
+def _remove_empty_arrays(resource: JSONObject) -> JSONObject:
+    for key in list(resource.keys()):
+        value = resource[key]
+        if isinstance(value, list) and len(value) == 0:
+            del resource[key]
+        elif isinstance(value, dict):
+            _remove_empty_arrays(value)
+    return resource
 
 
 class ActivityPubService:

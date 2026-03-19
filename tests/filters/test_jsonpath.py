@@ -1,7 +1,7 @@
 import jsonpath_rfc9535 as jsonpath
 
 from firm.core.interfaces import JSON, JSONObject
-from firm.core.services.activitypub import item_filter
+from firm.core.services.activitypub.service import item_filter
 from firm.core.util import get_collection_items
 
 

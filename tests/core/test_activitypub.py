@@ -8,12 +8,14 @@ from firm.core.interfaces import (
     ResourceStore,
     Tenant,
 )
-from firm.core.services.activitypub import (
-    ActivityPubService,
+from firm.core.services.activitypub.exceptions import (
     InvalidResourceTypeException,
     NotAuthorizedException,
     NotFoundException,
     ResourceOwnerException,
+)
+from firm.core.services.activitypub.service import (
+    ActivityPubService,
 )
 from firm.core.store.memory import MemoryResourceStore
 from tests.support import (

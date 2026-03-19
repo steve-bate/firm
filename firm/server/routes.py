@@ -23,13 +23,15 @@ from firm.core.interfaces import (
     Validator,
     get_query_params,
 )
-from firm.core.services.activitypub import (
-    ActivityPubService,
+from firm.core.services.activitypub.exceptions import (
     InvalidRequestException,
     InvalidResourceTypeException,
     NotAuthorizedException,
     NotFoundException,
     ResourceOwnerException,
+)
+from firm.core.services.activitypub.service import (
+    ActivityPubService,
 )
 from firm.core.services.nodeinfo import (
     UnsupportedNodeInfoVersion,
