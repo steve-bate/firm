@@ -10,13 +10,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from firm.core.interfaces import FIRM_NS, JSONObject, ResourceStore, Tenant
+from firm.server.admin import create_admin_router
 from firm.server.config import (
     FileStoreConfig,
     MemoryStoreConfig,
     ServerConfig,
     StorageKind,
 )
-from firm.server.routes import create_router
+from firm.server.routes import create_server_router
 
 log = logging.getLogger(__name__ if __name__ != "__main__" else "firm.server.main")
 
@@ -139,7 +140,8 @@ def app_factory(config: ServerConfig) -> FastAPI:
             app.state.config = config
 
             tenants = {}
-            for tenant_uri in config.tenants:
+            for tenant_config in config.tenants:
+                tenant_uri = tenant_config.prefix
                 tenant = init_tenant(config, tenant_uri)
                 tenants[tenant_uri] = tenant
                 tenant_doc = await tenant.public_store.get(tenant_uri)
@@ -160,7 +162,8 @@ def app_factory(config: ServerConfig) -> FastAPI:
             log.info("ASGI lifespan: stopping")
 
         _app = FastAPI(lifespan=lifespan)
-        _app.include_router(create_router(config))
+        _app.include_router(create_admin_router())
+        _app.include_router(create_server_router(config))
 
         log.info("Adding CORS middleware")
 

@@ -406,7 +406,7 @@ def proxy_endpoint(request: Request, principal: Principal = Depends(get_principa
     return proxy(request)
 
 
-def create_router(config: ServerConfig) -> APIRouter:
+def create_server_router(config: ServerConfig) -> APIRouter:
     router = APIRouter()
 
     router.add_api_route("/.well-known/nodeinfo", nodeinfo_index_endpoint, methods=["GET"])
