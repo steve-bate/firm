@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from dataclasses import dataclass, field
 
 import click
@@ -36,6 +37,7 @@ class Context:
 @click.group(context_settings=dict(auto_envvar_prefix="FIRM"))
 @click.option(
     "--config",
+    "config_file",
     type=click.File("r"),
     envvar="FIRM_CONFIG",
 )
@@ -44,7 +46,7 @@ class Context:
     envvar="FIRM_TENANT",
 )
 @click.pass_context
-def cli(ctx: click.Context, config: click.File, tenant: str):
+def cli(ctx: click.Context, config_file: click.File, tenant: str):
     """FIRM - Federated Information Resource Manager
 
     To get subcommand help, use '<subcommand> --help'
@@ -54,7 +56,8 @@ def cli(ctx: click.Context, config: click.File, tenant: str):
             "Tenant URI is required. Use --tenant option " "or set FIRM_TENANT env variable."
         )
     coloredlogs.install()
-    config = load_config(config)
+    os.environ["FIRM_CONFIG"] = config_file.name
+    config = load_config(config_file)
     ctx.obj = Context(tenant_uri=tenant, config=config)
 
 

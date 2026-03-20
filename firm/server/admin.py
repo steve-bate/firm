@@ -1,11 +1,15 @@
+import os
 from http import HTTPStatus
 from typing import Mapping
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, Request, Response
+import yaml
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from firm.core.interfaces import Tenant
+from firm.core.util import is_actor_object
 
 router = APIRouter(prefix="/admin")
 
@@ -15,33 +19,31 @@ def _not_implemented(request: Request) -> JSONResponse:
 
 
 # =============================================================================
-# 2. Server Configuration & Global Management
+# Server Configuration & Global Management
 # =============================================================================
 
-# 2.1 Server configuration
+# Server configuration
 
 
 @router.get("/server/config")
 async def get_server_config(request: Request) -> JSONResponse:
-    return _not_implemented(request)
+    config_file = os.environ.get("FIRM_CONFIG")
+    if not config_file:
+        return JSONResponse(
+            {"error": "Server configuration not found"},
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+        )
+    with open(config_file, "r") as f:
+        config_data = yaml.load(f.read(), Loader=yaml.SafeLoader)
+    return JSONResponse({"config": config_data})
 
 
-@router.patch("/server/config")
-async def patch_server_config(request: Request) -> JSONResponse:
-    return _not_implemented(request)
+# @router.patch("/server/config")
+# async def patch_server_config(request: Request) -> JSONResponse:
+#     return _not_implemented(request)
 
 
-@router.get("/server/features")
-async def get_server_features(request: Request) -> JSONResponse:
-    return _not_implemented(request)
-
-
-# 2.2 Server statistics
-
-
-@router.get("/server/stats")
-async def get_server_stats(request: Request) -> JSONResponse:
-    return _not_implemented(request)
+# Server statistics
 
 
 @router.get("/server/health")
@@ -49,39 +51,20 @@ async def get_server_health(request: Request) -> JSONResponse:
     return Response("OK", status_code=HTTPStatus.OK)
 
 
-@router.get("/server/metrics")
-async def get_server_metrics(request: Request) -> JSONResponse:
-    return _not_implemented(request)
+# @router.get("/server/stats")
+# async def get_server_stats(request: Request) -> JSONResponse:
+#     return _not_implemented(request)
 
-
-# 2.3 System-level actions
-
-
-@router.post("/server/actions/reload-config")
-async def reload_config(request: Request) -> JSONResponse:
-    return _not_implemented(request)
-
-
-@router.post("/server/actions/rebuild-indexes")
-async def rebuild_indexes(request: Request) -> JSONResponse:
-    return _not_implemented(request)
-
-
-@router.post("/server/actions/rotate-keys")
-async def rotate_keys(request: Request) -> JSONResponse:
-    return _not_implemented(request)
-
-
-@router.post("/server/actions/flush-caches")
-async def flush_caches(request: Request) -> JSONResponse:
-    return _not_implemented(request)
+# @router.get("/server/metrics")
+# async def get_server_metrics(request: Request) -> JSONResponse:
+#     return _not_implemented(request)
 
 
 # =============================================================================
-# 3. Tenants
+# Tenants
 # =============================================================================
 
-# 3.1 Tenant collection
+# Tenant collection
 
 
 @router.get("/tenants")
@@ -91,9 +74,9 @@ async def list_tenants(request: Request) -> JSONResponse:
     return JSONResponse({"tenants": tenant_docs})
 
 
-@router.get("/tenants/search")
-async def search_tenants(request: Request) -> JSONResponse:
-    return _not_implemented(request)
+# @router.get("/tenants/search")
+# async def search_tenants(request: Request) -> JSONResponse:
+#     return _not_implemented(request)
 
 
 class CreateTenantRequest(BaseModel):
@@ -108,52 +91,103 @@ async def create_tenant(body: CreateTenantRequest, request: Request) -> JSONResp
     return _not_implemented(request)
 
 
-# 3.2 Individual tenant
+# Individual tenant
+
+
+def _tenant(tenant_id: str, request: Request) -> Tenant:
+    tenant = next(
+        (t for t in request.app.state.tenants.values() if urlparse(t.prefix).netloc == tenant_id),
+        None,
+    )
+    if not tenant:
+        raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+    return tenant
+
+
+async def _tenant_doc(tenant_id: str, request: Request):
+    tenant = _tenant(tenant_id, request)
+    tenant_doc = await tenant.public_store.get(tenant.prefix)
+    if not tenant_doc:
+        raise HTTPException(status_code=404, detail=f"Tenant document not found: {tenant_id}")
+    return tenant_doc
 
 
 @router.get("/tenants/{tenant_id}")
 async def get_tenant(tenant_id: str, request: Request) -> JSONResponse:
-    return _not_implemented(request)
+    tenant_doc = await _tenant_doc(tenant_id, request)
+    return JSONResponse(tenant_doc)
+
+
+class TenantPatchRequest(BaseModel):
+    name: str | None = None
+    summary: str | None = None
 
 
 @router.patch("/tenants/{tenant_id}")
-async def patch_tenant(tenant_id: str, request: Request) -> JSONResponse:
-    return _not_implemented(request)
+async def patch_tenant(tenant_id: str, body: TenantPatchRequest, request: Request) -> JSONResponse:
+    tenant_doc = await _tenant_doc(tenant_id, request)
+    tenant_doc |= body.model_dump(exclude_unset=True)
+    tenant = _tenant(tenant_id, request)
+    await tenant.public_store.put(tenant_doc)
+    return JSONResponse(tenant_doc)
 
 
-@router.delete("/tenants/{tenant_id}")
-async def delete_tenant(tenant_id: str, request: Request) -> JSONResponse:
-    return _not_implemented(request)
+# @router.delete("/tenants/{tenant_id}")
+# async def delete_tenant(tenant_id: str, request: Request) -> JSONResponse:
+#     return _not_implemented(request)
 
 
-@router.post("/tenants/{tenant_id}/actions/enable")
-async def enable_tenant(tenant_id: str, request: Request) -> JSONResponse:
-    return _not_implemented(request)
+# @router.post("/tenants/{tenant_id}/actions/enable")
+# async def enable_tenant(tenant_id: str, request: Request) -> JSONResponse:
+#     return _not_implemented(request)
 
 
-@router.post("/tenants/{tenant_id}/actions/disable")
-async def disable_tenant(tenant_id: str, request: Request) -> JSONResponse:
-    return _not_implemented(request)
+# @router.post("/tenants/{tenant_id}/actions/disable")
+# async def disable_tenant(tenant_id: str, request: Request) -> JSONResponse:
+#     return _not_implemented(request)
 
 
-# 3.3 Tenant statistics
+# Tenant statistics
+
+
+class TenantStatsResponse(BaseModel):
+    actor_count: int
+    document_count: int
 
 
 @router.get("/tenants/{tenant_id}/stats")
 async def get_tenant_stats(tenant_id: str, request: Request) -> JSONResponse:
-    return _not_implemented(request)
+    tenant = _tenant(tenant_id, request)
+    actor_count = 0
+    document_count = 0
+    for doc in await tenant.public_store.query({}):
+        document_count += 1
+        if is_actor_object(doc):
+            actor_count += 1
+
+    return JSONResponse(
+        TenantStatsResponse(
+            actor_count=actor_count,
+            document_count=document_count,
+        ).model_dump()
+    )
 
 
 # =============================================================================
-# 4. Actors (within Tenant)
+# Actors (within Tenant)
 # =============================================================================
 
-# 4.1 Actor collection
+# Actor collection
 
 
 @router.get("/tenants/{tenant_id}/actors")
 async def list_actors(tenant_id: str, request: Request) -> JSONResponse:
-    return _not_implemented(request)
+    tenant = _tenant(tenant_id, request)
+    actor_docs = []
+    for doc in await tenant.public_store.query({}):
+        if is_actor_object(doc):
+            actor_docs.append(doc)
+    return JSONResponse({"actors": actor_docs})
 
 
 @router.get("/tenants/{tenant_id}/actors/search")
@@ -166,7 +200,7 @@ async def create_actor(tenant_id: str, request: Request) -> JSONResponse:
     return _not_implemented(request)
 
 
-# 4.2 Individual actor
+# Individual actor
 
 
 @router.get("/tenants/{tenant_id}/actors/{actor_id}")
@@ -194,7 +228,7 @@ async def disable_actor(tenant_id: str, actor_id: str, request: Request) -> JSON
     return _not_implemented(request)
 
 
-# 4.3 Actor statistics
+# Actor statistics
 
 
 @router.get("/tenants/{tenant_id}/actors/{actor_id}/stats")
@@ -203,10 +237,10 @@ async def get_actor_stats(tenant_id: str, actor_id: str, request: Request) -> JS
 
 
 # =============================================================================
-# 5. Actor Outbox Management
+# Actor Outbox Management
 # =============================================================================
 
-# 5.1 List outbox items
+# List outbox items
 
 
 @router.get("/tenants/{tenant_id}/actors/{actor_id}/outbox")
@@ -214,7 +248,7 @@ async def list_outbox(tenant_id: str, actor_id: str, request: Request) -> JSONRe
     return _not_implemented(request)
 
 
-# 5.2 Manipulate outbox items
+# Manipulate outbox items
 
 
 @router.get("/tenants/{tenant_id}/actors/{actor_id}/outbox/{activity_id}")
@@ -246,10 +280,10 @@ async def redeliver_outbox_item(
 
 
 # =============================================================================
-# 6. Actor Inbox Management
+# Actor Inbox Management
 # =============================================================================
 
-# 6.1 List inbox items
+# List inbox items
 
 
 @router.get("/tenants/{tenant_id}/actors/{actor_id}/inbox")
@@ -257,7 +291,7 @@ async def list_inbox(tenant_id: str, actor_id: str, request: Request) -> JSONRes
     return _not_implemented(request)
 
 
-# 6.2 Manipulate inbox
+# Manipulate inbox
 
 
 @router.delete("/tenants/{tenant_id}/actors/{actor_id}/inbox/{activity_id}")
@@ -280,10 +314,10 @@ async def reprocess_inbox_item(
 
 
 # =============================================================================
-# 7. Actor Relationships (Follows, Blocks, Mutes)
+# Actor Relationships (Follows, Blocks, Mutes)
 # =============================================================================
 
-# 7.1 Relationship listing
+# Relationship listing
 
 
 @router.get("/tenants/{tenant_id}/actors/{actor_id}/relationships/following")
@@ -306,7 +340,7 @@ async def list_mutes(tenant_id: str, actor_id: str, request: Request) -> JSONRes
     return _not_implemented(request)
 
 
-# 7.2 Relationship management
+# Relationship management
 
 
 @router.post("/tenants/{tenant_id}/actors/{actor_id}/relationships/follow")
@@ -346,10 +380,10 @@ async def delete_mute(
 
 
 # =============================================================================
-# 8. Remote Delivery (Tenant-scoped)
+# Remote Delivery (Tenant-scoped)
 # =============================================================================
 
-# 8.1 Delivery configuration
+# Delivery configuration
 
 
 @router.get("/tenants/{tenant_id}/delivery/config")
@@ -362,7 +396,7 @@ async def patch_delivery_config(tenant_id: str, request: Request) -> JSONRespons
     return _not_implemented(request)
 
 
-# 8.2 Delivery statistics
+# Delivery statistics
 
 
 @router.get("/tenants/{tenant_id}/delivery/stats")
@@ -370,7 +404,7 @@ async def get_delivery_stats(tenant_id: str, request: Request) -> JSONResponse:
     return _not_implemented(request)
 
 
-# 8.3 Delivery queue / items
+# Delivery queue / items
 
 
 @router.get("/tenants/{tenant_id}/delivery")
@@ -399,10 +433,10 @@ async def retry_failed_deliveries(tenant_id: str, request: Request) -> JSONRespo
 
 
 # =============================================================================
-# 9. Files and Media (Tenant-scoped)
+# Files and Media (Tenant-scoped)
 # =============================================================================
 
-# 9.1 Files
+# Files
 
 
 @router.get("/tenants/{tenant_id}/files")
@@ -425,7 +459,7 @@ async def gc_files(tenant_id: str, request: Request) -> JSONResponse:
     return _not_implemented(request)
 
 
-# 9.2 Media subset
+# Media subset
 
 
 @router.get("/tenants/{tenant_id}/media")
@@ -439,10 +473,10 @@ async def delete_media(tenant_id: str, media_id: str, request: Request) -> JSONR
 
 
 # =============================================================================
-# 10. OAuth Clients, Authorizations, Tokens (Tenant-scoped)
+# OAuth Clients, Authorizations, Tokens (Tenant-scoped)
 # =============================================================================
 
-# 10.1 OAuth clients
+# OAuth clients
 
 
 @router.get("/tenants/{tenant_id}/oauth/clients")
@@ -470,7 +504,7 @@ async def delete_oauth_client(tenant_id: str, client_id: str, request: Request) 
     return _not_implemented(request)
 
 
-# 10.2 Authorizations
+# Authorizations
 
 
 @router.get("/tenants/{tenant_id}/oauth/authorizations")
@@ -485,7 +519,7 @@ async def delete_oauth_authorization(
     return _not_implemented(request)
 
 
-# 10.3 Tokens
+# Tokens
 
 
 @router.get("/tenants/{tenant_id}/oauth/tokens")
@@ -504,10 +538,10 @@ async def revoke_oauth_tokens_by_client(tenant_id: str, request: Request) -> JSO
 
 
 # =============================================================================
-# 11. Remote Cache (Global or Tenant-scoped)
+# Remote Cache (Global or Tenant-scoped)
 # =============================================================================
 
-# 11.1 Cache entries
+# Cache entries
 
 
 @router.get("/remote-cache")
@@ -520,7 +554,7 @@ async def get_remote_cache_entry(cache_id: str, request: Request) -> JSONRespons
     return _not_implemented(request)
 
 
-# 11.2 Cache control
+# Cache control
 
 
 @router.delete("/remote-cache/{cache_id}")
@@ -539,10 +573,10 @@ async def refresh_remote_cache_entry(cache_id: str, request: Request) -> JSONRes
 
 
 # =============================================================================
-# 12. Audit, Logs, and Security
+# Audit, Logs, and Security
 # =============================================================================
 
-# 12.1 Admin audit log
+# Admin audit log
 
 
 @router.get("/audit/admin-actions")
@@ -555,7 +589,7 @@ async def get_admin_audit_entry(audit_id: str, request: Request) -> JSONResponse
     return _not_implemented(request)
 
 
-# 12.2 Security / abuse controls
+# Security / abuse controls
 
 
 @router.get("/security/domains")
