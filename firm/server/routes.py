@@ -400,10 +400,12 @@ async def webfinger_endpoint(request: Request) -> Response:
         raise HTTPException(HTTPStatus.NOT_FOUND, detail=str(e))
 
 
-def proxy_endpoint(request: Request, principal: Principal = Depends(get_principal)) -> Response:
+async def proxy_endpoint(
+    request: Request, principal: Principal = Depends(get_principal)
+) -> Response:
     if not principal:
         raise HTTPException(HTTPStatus.FORBIDDEN, "Authentication required")
-    return proxy(request)
+    return await proxy(request, principal)
 
 
 def create_server_router(config: ServerConfig) -> APIRouter:

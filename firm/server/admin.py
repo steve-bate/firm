@@ -1,17 +1,55 @@
+import logging
 import os
+import secrets
 from http import HTTPStatus
 from typing import Mapping
 from urllib.parse import urlparse
 
 import yaml
-from fastapi import APIRouter, HTTPException, Request, Response
+from attr import dataclass
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
 from firm.core.interfaces import Tenant
 from firm.core.util import is_actor_object
 
-router = APIRouter(prefix="/admin")
+log = logging.getLogger(__name__)
+
+_http_basic = HTTPBasic(realm="FIRM Administration")
+
+
+@dataclass
+class AdminIdentity:
+    username: str
+
+
+async def _authenticate(
+    request: Request,
+    credentials: HTTPBasicCredentials = Depends(_http_basic),
+) -> None:
+    config = request.app.state.config
+    if config.admin:
+        for user in config.admin.users:
+            username_match = secrets.compare_digest(
+                credentials.username.encode("utf-8"), user.username.encode("utf-8")
+            )
+            password_match = secrets.compare_digest(
+                credentials.password.encode("utf-8"), user.password.encode("utf-8")
+            )
+            if username_match and password_match:
+                identity = AdminIdentity(username=credentials.username)
+                request.state.user = identity
+                return
+    raise HTTPException(
+        status_code=HTTPStatus.UNAUTHORIZED,
+        detail="Unauthorized",
+        headers={"WWW-Authenticate": 'Basic realm="FIRM Administration"'},
+    )
+
+
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(_authenticate)])
 
 
 def _not_implemented(request: Request) -> JSONResponse:
@@ -25,8 +63,14 @@ def _not_implemented(request: Request) -> JSONResponse:
 # Server configuration
 
 
+@router.get("/")
+async def admin_root(request: Request) -> JSONResponse:
+    identity = request.state.user
+    return JSONResponse({"message": f"{identity.username}: Welcome to the FIRM admin API"})
+
+
 @router.get("/server/config")
-async def get_server_config(request: Request) -> JSONResponse:
+async def get_server_config() -> JSONResponse:
     config_file = os.environ.get("FIRM_CONFIG")
     if not config_file:
         return JSONResponse(
@@ -35,6 +79,7 @@ async def get_server_config(request: Request) -> JSONResponse:
         )
     with open(config_file, "r") as f:
         config_data = yaml.load(f.read(), Loader=yaml.SafeLoader)
+        del config_data["admin"]  # Don't expose admin credentials
     return JSONResponse({"config": config_data})
 
 
@@ -44,12 +89,6 @@ async def get_server_config(request: Request) -> JSONResponse:
 
 
 # Server statistics
-
-
-@router.get("/server/health")
-async def get_server_health(request: Request) -> JSONResponse:
-    return Response("OK", status_code=HTTPStatus.OK)
-
 
 # @router.get("/server/stats")
 # async def get_server_stats(request: Request) -> JSONResponse:

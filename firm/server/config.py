@@ -47,6 +47,17 @@ class TenantConfig:
     summary: str | None = None
 
 
+@dataclass(frozen=True)
+class User:
+    username: str
+    password: str
+
+
+@dataclass(frozen=True)
+class AdminConfig:
+    users: list[User] = field(default_factory=list)
+
+
 @dataclass
 class ServerConfig:
     tenants: list[TenantConfig]
@@ -54,6 +65,8 @@ class ServerConfig:
     store: FileStoreConfig | RdfStoreConfig | MemoryStoreConfig
     validation: ValidationConfig = ValidationConfig()
     shared_inbox_path: str = "shared"
+
+    admin: AdminConfig = AdminConfig()
 
     def is_local(self, uri: str) -> bool:
         return any(uri.startswith(tenant.prefix) for tenant in self.tenants)

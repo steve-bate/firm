@@ -7,26 +7,37 @@ import httpx
 from fastapi import HTTPException, Request, Response
 
 from firm.core.auth.http_signature import HttpSignatureAuth
-from firm.core.interfaces import FIRM_NS
+from firm.core.interfaces import FIRM_NS, Principal
 from firm.server.adapters import HttpxAuthAdapter
 
 log = logging.getLogger(__name__)
 
+_HOP_BY_HOP_HEADERS = frozenset(
+    [
+        "connection",
+        "content-encoding",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+    ]
+)
 
-async def proxy(request: Request) -> Response:
+
+async def proxy(request: Request, principal: Principal) -> Response:
     """Proxy request to remote instance (HTTP Signatures)"""
-    if request.auth is None:
-        raise HTTPException(HTTPStatus.FORBIDDEN, "Authentication required")
     if log.isEnabledFor(logging.DEBUG):
         log.debug(f"Proxying request: {request.method} {request.url}")
     # get id from request form body
-    # Process form data
     form_data = await request.form()
     requested_uri = form_data.get("id")
     if not requested_uri:
         raise HTTPException(HTTPStatus.BAD_REQUEST, "Missing id")
 
-    actor = request.auth.actor
+    actor = principal.actor
     tenant = request.state.tenant
     config = request.app.state.config
 
@@ -61,15 +72,18 @@ async def proxy(request: Request) -> Response:
         auth=HttpxAuthAdapter(
             HttpSignatureAuth(actor["id"], cast(str, credentials[FIRM_NS.privateKey]))
         ),
-        headers={"Accept": "application/activity+json"},
+        headers={"Accept": "application/activity+json, application/json;q=0.9, */*;q=0.8"},
     ) as client:
         try:
             response = await client.get(requested_uri)
             proxy_response = Response(
                 status_code=response.status_code,
-                headers=response.headers,
+                headers={
+                    k: v
+                    for k, v in response.headers.items()
+                    if k.lower() not in _HOP_BY_HOP_HEADERS
+                },
                 content=response.content,
-                reason_phrase=response.reason_phrase,
             )
             return proxy_response
         except httpx.HTTPStatusError as e:
