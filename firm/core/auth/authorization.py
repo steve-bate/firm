@@ -229,8 +229,11 @@ class CoreAuthorizationService(AuthorizationService):
             obj = await tenant.public_store.get(resource_id(activity["object"]))
             if not obj:
                 return AuthorizationDecision(False, "Object not found", 404)
-            if principal and is_attributed_user(principal, obj):
-                return AuthorizationDecision(True, "Attributed delete allowed")
+            if principal:
+                if is_attributed_user(principal, obj):
+                    return AuthorizationDecision(True, "Attributed update or delete allowed")
+                if is_type(activity, "Update") and principal.uri == get_id(obj.get("id")):
+                    return AuthorizationDecision(True, "Actor self-update allowed")
         else:
             if self.next_auth:
                 return await self.next_auth.is_activity_authorized(tenant, principal, activity)

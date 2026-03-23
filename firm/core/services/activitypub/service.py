@@ -669,16 +669,27 @@ class ActivityPubTenant:
         audience = set(get_list(activity, "audience") + get_list(object_, "audience"))
         audience -= to_audience | cc_audience | bto_audience | bcc_audience
 
-        activity["to"] = list(to_audience)
-        activity["cc"] = list(cc_audience)
-        activity["bto"] = list(bto_audience)
-        activity["bcc"] = list(bcc_audience)
-        activity["audience"] = list(audience)
-        object_["to"] = list(to_audience)
-        object_["cc"] = list(cc_audience)
-        object_["bto"] = list(bto_audience)
-        object_["bcc"] = list(bcc_audience)
-        object_["audience"] = list(audience)
+        if to_audience:
+            activity["to"] = list(to_audience)
+        if cc_audience:
+            activity["cc"] = list(cc_audience)
+        if bto_audience:
+            activity["bto"] = list(bto_audience)
+        if bcc_audience:
+            activity["bcc"] = list(bcc_audience)
+        if audience:
+            activity["audience"] = list(audience)
+
+        if to_audience:
+            object_["to"] = list(to_audience)
+        if cc_audience:
+            object_["cc"] = list(cc_audience)
+        if bto_audience:
+            object_["bto"] = list(bto_audience)
+        if bcc_audience:
+            object_["bcc"] = list(bcc_audience)
+        if audience:
+            object_["audience"] = list(audience)
 
     async def _process_outbox_internal(
         self,
@@ -693,27 +704,26 @@ class ActivityPubTenant:
         store = tenant.public_store
         activity_id = f"{get_id(activity['actor'])}/{"_".join(map(str, get_list(activity, "type")))}/{uuid.uuid4()}"
         activity["id"] = activity_id
-        if "attributedTo" not in activity:
-            activity["attributedTo"] = box_owner.get("id")
         if has_value(activity, "type", "Create"):
             self._merge_audiences(activity)
-            object_ = activity["object"]
-            if isinstance(object_, Mapping):
-                # Always assign an URI to the object for now.
-                # TODO: check the object for an "attributedTo" the posting actor.
-                # This allows "announcing" an external create.
-                if "@context" not in object_:
-                    object_["@context"] = "https://www.w3.org/ns/activitystreams"
-                object_uri = (
-                    f"{get_id(activity['actor'])}/{get_types(object_)[0].lower()}/{uuid.uuid4()}"
-                )
-                object_["id"] = object_uri
-                if "attributedTo" not in object_:
-                    object_["attributedTo"] = activity["actor"]
-                await store.put(object_)
-                activity["object"] = resource_id(object_)
-                await store.put(activity)
-                await _add_collection_item(store, outbox_uri, activity_id)
+            object_ = cast(JSONObject, activity["object"])
+            if "attributedTo" not in object_:
+                object_["attributedTo"] = box_owner.get("id")
+            # Always assign an URI to the object for now.
+            # TODO: check the object for an "attributedTo" the posting actor.
+            # This allows "announcing" an external create.
+            if "@context" not in object_:
+                object_["@context"] = "https://www.w3.org/ns/activitystreams"
+            object_uri = (
+                f"{get_id(activity['actor'])}/{get_types(object_)[0].lower()}/{uuid.uuid4()}"
+            )
+            object_["id"] = object_uri
+            if "attributedTo" not in object_:
+                object_["attributedTo"] = activity["actor"]
+            await store.put(object_)
+            activity["object"] = resource_id(object_)
+            await store.put(activity)
+            await _add_collection_item(store, outbox_uri, activity_id)
         else:
             try:
                 if has_value(activity, "type", "Delete"):
@@ -735,11 +745,19 @@ class ActivityPubTenant:
                             f"Unable to dereference object for delete: {activity['object']}"
                         )
                 elif has_value(activity, "type", "Update"):
-                    if object_ := activity.get("object"):
-                        if isinstance(object_, Mapping):
-                            await store.put(object_)
-                            activity["object"] = resource_id(object_)
-                            await store.put(activity)
+                    if update_ := cast(JSONObject, activity.get("object")):
+                        if "target" in activity:
+                            target = await _safe_dereference(store, resource_id(activity["target"]))
+                        else:
+                            # Legacy AP full update
+                            # For now it's also doing partial update :-(
+                            target = await _safe_dereference(store, resource_id(update_))
+                        if not isinstance(target, dict):
+                            raise InvalidResourceException("Unknown target for update")
+                        if "id" in update_:
+                            del update_["id"]
+                        target.update(update_)
+                        await store.put(target)
                 elif has_value(activity, "type", "Block"):
                     blocks = await tenant.private_store.query_one(
                         {
@@ -772,35 +790,20 @@ class ActivityPubTenant:
                         raise InvalidResourceException("Invalid target collection")
                     if "id" not in target:
                         raise InvalidRequestException("Target collection has no ID")
-                    if "items" not in target and "orderedItems" not in target:
-                        raise InvalidResourceException("Target collection has no items property")
                     if "object" not in activity:
                         raise InvalidRequestException("Missing object in Add")
-                    object_ = activity["object"]
-                    if isinstance(object_, str):
-                        object_ = await _safe_dereference_or_uri(store, object_)
-                    if not object_ or not isinstance(object_, Mapping):
-                        raise InvalidRequestException("Invalid object to add")
-                    # Add the object to the collection
-                    if "id" not in object_:
-                        raise InvalidResourceException("Object has no ID")
-                    if "attributedTo" not in object_:
-                        object_["attributedTo"] = activity.get("actor", tenant.prefix)
-                    await store.put(object_)
-                    # Add the object to the collection
-                    # TODO find a way to make the typing cleaner
-                    if "items" in target:
-                        cast(list, target["items"]).append(resource_id(object_))
-                    elif "orderedItems" in target:
-                        cast(list, target["orderedItems"]).insert(0, resource_id(object_))
-                    target["totalItems"] = len(cast(list, target.get("items", []))) + len(
-                        cast(list, target.get("orderedItems", []))
-                    )
-                    await store.put(target)
-                    activity["target"] = resource_id(target)
-                    activity["object"] = resource_id(object_)
-                    # Save the activity
-                    await store.put(activity)
+                    added_object_uri = get_id(activity["object"])
+                    if not object_uri:
+                        raise InvalidRequestException("Object in Add activity has no ID")
+                    items_key = get_collection_items_key(target)
+                    items = cast(list, target.get(items_key, []))
+                    if added_object_uri not in items:
+                        items.insert(0, added_object_uri)
+                        target[items_key] = items
+                        target["totalItems"] = len(items)
+                        await store.put(target)
+                        activity["target"] = resource_id(target)
+                        activity["object"] = added_object_uri
                 elif has_value(activity, "type", "Remove"):
                     target = activity.get("target")
                     if isinstance(target, str):
@@ -809,34 +812,18 @@ class ActivityPubTenant:
                         raise InvalidResourceException("Invalid target collection")
                     if "id" not in target:
                         raise InvalidResourceException("Target collection has no ID")
-                    if "items" not in target and "orderedItems" not in target:
-                        raise InvalidResourceException("Target collection has no items property")
                     if "object" not in activity:
                         raise InvalidRequestException("Missing object in Remove")
-                    object_ = activity["object"]
-                    if isinstance(object_, str):
-                        object_ = await _safe_dereference_or_uri(store, object_)
-                    if not object_ or not isinstance(object_, Mapping):
-                        raise InvalidRequestException("Invalid object to remove")
-                    # Remove the object from the collection
-                    if "id" not in object_:
-                        raise InvalidResourceException("Object has no ID")
-                    if "items" in target:
-                        if resource_id(object_) in cast(list, target["items"]):
-                            cast(list, target["items"]).remove(resource_id(object_))
-                    elif "orderedItems" in target:
-                        if resource_id(object_) in cast(list, target["orderedItems"]):
-                            cast(list, target["orderedItems"]).remove(resource_id(object_))
-                    else:
-                        raise InvalidResourceException("Target collection has no items")
-                    target["totalItems"] = len(cast(list, target.get("items", []))) + len(
-                        cast(list, target.get("orderedItems", []))
-                    )
+                    removed_object_uri = get_id(activity["object"])
+                    if not removed_object_uri:
+                        raise InvalidRequestException("Object in Remove activity has no ID")
+                    items_key = get_collection_items_key(target)
+                    items = cast(list, target.get(items_key, []))
+                    items.remove(removed_object_uri)
+                    target["totalItems"] = len(items)
                     await store.put(target)
                     activity["target"] = resource_id(target)
-                    activity["object"] = resource_id(object_)
-                    # Save the activity
-                    await store.put(activity)
+                    activity["object"] = removed_object_uri
                 elif has_value(activity, "type", "Like"):
                     liked_object_uri = resource_id(activity.get("object"))
                     if liked_object := await store.get(liked_object_uri):
