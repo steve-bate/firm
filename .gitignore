@@ -55,3 +55,4 @@ htmlcov/
 .pytest_cache/
 *.code-workspace
 .report.json
+worktrees
