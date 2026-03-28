@@ -50,6 +50,7 @@ class FIRM_NS(StrEnum):
     blockedActor = "firm:blockedActor"
     blockedDomain = "firm:blockedDomain"
     blockedSubnet = "firm:blockedSubnet"
+    collections = "firm:collections"
 
 
 @dataclass

@@ -6,7 +6,7 @@ from starlette.testclient import TestClient
 
 from firm.core.auth.http_signature import HttpSignatureAuth
 from firm.server.adapters import HttpxTransport
-from firm.server.config import FileStoreConfig, ServerConfig
+from firm.server.config import FileStoreConfig, ServerConfig, TenantConfig
 from firm.server.server import app_factory, clear_app
 
 TENANT_PREFIX = "https://server.test"
@@ -18,7 +18,7 @@ def client(tmp_path):
     media_dir = tmp_path / "media"
     media_dir.mkdir(parents=True, exist_ok=True)
     with TestClient(
-        app_factory(ServerConfig([prefix], FileStoreConfig(base=tmp_path))),
+        app_factory(ServerConfig([TenantConfig(prefix=prefix)], FileStoreConfig(base=tmp_path))),
         base_url=prefix,
     ) as client:
         yield client

@@ -5,7 +5,7 @@ from starlette.testclient import TestClient
 import firm.server.server as server_module
 from firm.core.interfaces import APActor, Principal
 from firm.server.auth import get_principal
-from firm.server.config import FileStoreConfig, ServerConfig
+from firm.server.config import FileStoreConfig, ServerConfig, TenantConfig
 from firm.streaming.sse.notifier import InMemoryStreamNotifier, Subscription
 
 TENANT_PREFIX = "https://streaming.test"
@@ -19,7 +19,9 @@ def client(tmp_path):
 
     server_module._app = None
     with TestClient(
-        server_module.app_factory(ServerConfig([prefix], FileStoreConfig(base=tmp_path))),
+        server_module.app_factory(
+            ServerConfig([TenantConfig(prefix=prefix)], FileStoreConfig(base=tmp_path))
+        ),
         base_url=prefix,
         raise_server_exceptions=False,
     ) as test_client:

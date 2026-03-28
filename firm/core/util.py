@@ -146,7 +146,7 @@ def resource_get(resource: JSONObject, *keys: str, default: Any | None = None) -
     return resource_value
 
 
-def resource_id(resource: JSON | str) -> str:
+def resource_id(resource: Any) -> str:
     if isinstance(resource, str):
         return resource
     if isinstance(resource, Mapping):
@@ -157,7 +157,7 @@ def resource_id(resource: JSON | str) -> str:
 
 # TODO pending restructuring
 # Slight difference in behavior from resource_id
-def get_id(resource: JSON | str) -> str | None:
+def get_id(resource: Any) -> str | None:
     if isinstance(resource, str):
         return resource
     if isinstance(resource, Mapping) and "id" in resource:

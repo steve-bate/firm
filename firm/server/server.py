@@ -139,15 +139,15 @@ def app_factory(config: ServerConfig) -> FastAPI:
             app.state.config = config
 
             tenants = {}
-            for tenant_uri in config.tenants:
-                tenant = init_tenant(config, tenant_uri)
-                tenants[tenant_uri] = tenant
-                tenant_doc = await tenant.public_store.get(tenant_uri)
+            for tenant in config.tenants:
+                tenant = init_tenant(config, tenant.prefix)
+                tenants[tenant.prefix] = tenant
+                tenant_doc = await tenant.public_store.get(tenant.prefix)
                 if not tenant_doc:
                     await tenant.public_store.put(
                         {
                             "@context": "https://www.w3.org/ns/activitystreams",
-                            "id": tenant_uri,
+                            "id": tenant.prefix,
                             "type": ["Service", FIRM_NS.Tenant],
                         }
                     )

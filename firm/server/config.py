@@ -40,16 +40,21 @@ class ValidationConfig:
     package_names: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class TenantConfig:
+    prefix: str
+
+
 @dataclass
 class ServerConfig:
-    tenants: list[str]
+    tenants: list[TenantConfig]
     # TODO files: str  # Storage for non-data files (media, etc.)
     store: FileStoreConfig | RdfStoreConfig | MemoryStoreConfig
     validation: ValidationConfig = ValidationConfig()
     shared_inbox_path: str = "shared"
 
     def is_local(self, uri: str) -> bool:
-        return any(uri.startswith(tenant) for tenant in self.tenants)
+        return any(uri.startswith(tenant.prefix) for tenant in self.tenants)
 
 
 def load_config(config_in: typing.IO | str) -> ServerConfig:

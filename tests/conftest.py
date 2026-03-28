@@ -7,7 +7,7 @@ from starlette.testclient import TestClient
 
 from firm.core.interfaces import APActor, Principal, Tenant
 from firm.server.auth import get_principal
-from firm.server.config import MemoryStoreConfig, ServerConfig
+from firm.server.config import MemoryStoreConfig, ServerConfig, TenantConfig
 from firm.server.server import app_factory, clear_app
 
 TENANT_PREFIX = "http://patch.test"
@@ -16,7 +16,9 @@ TENANT_PREFIX = "http://patch.test"
 @pytest.fixture
 def client(tmp_path):
     with TestClient(
-        app_factory(ServerConfig([TENANT_PREFIX], MemoryStoreConfig(tmp_path))),
+        app_factory(
+            ServerConfig([TenantConfig(prefix=TENANT_PREFIX)], MemoryStoreConfig(tmp_path))
+        ),
         base_url=TENANT_PREFIX,
     ) as c:
         yield c

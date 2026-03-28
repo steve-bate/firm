@@ -41,6 +41,7 @@ from firm.core.util import (
     is_activity,
     is_collection,
     is_type,
+    is_type_any,
     log,
     resource_get,
     resource_id,
@@ -669,16 +670,21 @@ class ActivityPubTenant:
         audience = set(get_list(activity, "audience") + get_list(object_, "audience"))
         audience -= to_audience | cc_audience | bto_audience | bcc_audience
 
-        activity["to"] = list(to_audience)
-        activity["cc"] = list(cc_audience)
-        activity["bto"] = list(bto_audience)
-        activity["bcc"] = list(bcc_audience)
-        activity["audience"] = list(audience)
-        object_["to"] = list(to_audience)
-        object_["cc"] = list(cc_audience)
-        object_["bto"] = list(bto_audience)
-        object_["bcc"] = list(bcc_audience)
-        object_["audience"] = list(audience)
+        if to_audience:
+            activity["to"] = list(to_audience)
+            object_["to"] = list(to_audience)
+        if cc_audience:
+            activity["cc"] = list(cc_audience)
+            object_["cc"] = list(cc_audience)
+        if bto_audience:
+            activity["bto"] = list(bto_audience)
+            object_["bto"] = list(bto_audience)
+        if bcc_audience:
+            activity["bcc"] = list(bcc_audience)
+            object_["bcc"] = list(bcc_audience)
+        if audience:
+            activity["audience"] = list(audience)
+            object_["audience"] = list(audience)
 
     async def _process_outbox_internal(
         self,
@@ -691,10 +697,11 @@ class ActivityPubTenant:
         if not outbox_uri:
             raise InvalidResourceException("Box owner has no outbox")
         store = tenant.public_store
-        activity_id = f"{get_id(activity['actor'])}/{"_".join(map(str, get_list(activity, "type")))}/{uuid.uuid4()}"
+        actor_id = box_owner.get("id")
+        activity_id = f"{actor_id}/{"_".join(map(str, get_list(activity, "type")))}/{uuid.uuid4()}"
         activity["id"] = activity_id
         if "attributedTo" not in activity:
-            activity["attributedTo"] = box_owner.get("id")
+            activity["attributedTo"] = actor_id
         if has_value(activity, "type", "Create"):
             self._merge_audiences(activity)
             object_ = activity["object"]
@@ -704,16 +711,31 @@ class ActivityPubTenant:
                 # This allows "announcing" an external create.
                 if "@context" not in object_:
                     object_["@context"] = "https://www.w3.org/ns/activitystreams"
-                object_uri = (
-                    f"{get_id(activity['actor'])}/{get_types(object_)[0].lower()}/{uuid.uuid4()}"
-                )
+                object_uri = f"{actor_id}/{get_types(object_)[0].lower()}/{uuid.uuid4()}"
                 object_["id"] = object_uri
                 if "attributedTo" not in object_:
-                    object_["attributedTo"] = activity["actor"]
+                    object_["attributedTo"] = actor_id
                 await store.put(object_)
                 activity["object"] = resource_id(object_)
                 await store.put(activity)
                 await _add_collection_item(store, outbox_uri, activity_id)
+                if is_type_any(object_, ["Collection", "OrderedCollection"]):
+                    log.info(f"Registering created collection: {object_['id']}")
+                    collection_index_uri = get_id(box_owner.get(FIRM_NS.collections.value))
+                    if not collection_index_uri:
+                        collection_index: JSONObject = {
+                            "id": f"{actor_id}/collections",
+                            "type": FIRM_NS.collections.value,
+                            "attributedTo": actor_id,
+                        }
+                        cast(dict, box_owner)[FIRM_NS.collections.value] = collection_index["id"]
+                        await store.put(collection_index)
+                        await store.put(cast(JSONObject, box_owner))
+                    else:
+                        collection_index = await _dereference(store, collection_index_uri)
+                    await _add_collection_item(
+                        store, resource_id(collection_index), resource_id(object_)
+                    )
         else:
             try:
                 if has_value(activity, "type", "Delete"):
@@ -730,6 +752,15 @@ class ActivityPubTenant:
                                 "deleted": datetime.now().isoformat(),
                             }
                         )
+                        if is_type_any(resource, ["Collection", "OrderedCollection"]):
+                            log.info(f"Unregistering deleted collection: {resource['id']}")
+                            collection_index_uri = resource_id(
+                                box_owner.get(FIRM_NS.collections.value)
+                            )
+                            if collection_index_uri:
+                                await _remove_collection_item(
+                                    store, resource_id(collection_index_uri), resource_id(resource)
+                                )
                     else:
                         log.warning(
                             f"Unable to dereference object for delete: {activity['object']}"
