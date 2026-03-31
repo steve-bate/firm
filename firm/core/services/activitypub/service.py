@@ -804,7 +804,14 @@ class ActivityPubTenant:
                     if "id" not in target:
                         raise InvalidRequestException("Target collection has no ID")
                     if "items" not in target and "orderedItems" not in target:
-                        raise InvalidResourceException("Target collection has no items property")
+                        if is_type(target, "Collection"):
+                            target["items"] = []
+                        elif is_type(target, "OrderedCollection"):
+                            target["orderedItems"] = []
+                        else:
+                            raise InvalidResourceException(
+                                "Target collection has no items property"
+                            )
                     if "object" not in activity:
                         raise InvalidRequestException("Missing object in Add")
                     object_ = activity["object"]

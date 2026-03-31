@@ -84,6 +84,7 @@ def is_accessible(subject_uri: str | None, resource: JSONObject) -> bool:
             has_value(resource, "attributedTo", subject_uri)
             or has_value(resource, "actor", subject_uri)
             or is_audience(subject_uri, resource)
+            or is_type_any(resource, AS2_ACTOR_TYPES)
         )
     )
 
