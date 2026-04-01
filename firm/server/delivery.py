@@ -167,9 +167,11 @@ class FirmDeliveryService(DeliveryService):
                 if not inbox:
                     log.error(f"Inbox not found: {inbox_uri}")
                     continue
-                items = cast(list[JSONObject | str], inbox.get("orderedItems", []))
+                # inbox storage repr uses items
+                items = cast(list[JSONObject | str], inbox.get("items", []))
                 items.insert(0, cast(str, activity["id"]))
-                inbox["orderedItems"] = items
+                inbox["items"] = items
+                inbox["totalItems"] = len(items)
                 await store.put(inbox)
             else:
                 if message is None:
