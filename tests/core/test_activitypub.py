@@ -2,12 +2,7 @@ from typing import Sequence
 
 import pytest
 
-from firm.core.interfaces import (
-    Identity,
-    JSONObject,
-    ResourceStore,
-    Tenant,
-)
+from firm.core.interfaces import FIRM_NS, Identity, JSONObject, ResourceStore, Tenant
 from firm.core.services.activitypub.exceptions import (
     InvalidResourceTypeException,
     NotAuthorizedException,
@@ -523,3 +518,41 @@ async def test_inbox_create_object(service: ActivityPubService, remote_identity:
     assert create_activity["object"] == "http://tenant1.test/user2/document"
     document = (await tenant.public_store.query({"type": "Document"}))[0]
     assert create_activity["object"] == document["id"]
+
+
+@pytest.mark.parametrize(
+    "actor_uri, authorized",
+    [
+        ("http://tenant1.test/user1", True),
+        ("http://tenant1.test/user3", False),
+    ],
+)
+async def test_get_actor_blocks(
+    service: ActivityPubService,
+    tenant: Tenant,
+    actor_uri: str,
+    authorized: bool,
+):
+    await tenant.private_store.put(
+        {
+            "type": ["Collection", FIRM_NS.Blocks.value],
+            "id": "http://tenant1.test/user2/blocks",
+            "attributedTo": "http://tenant1.test/user1",
+            "items": ["http://tenant1.test/user3"],
+        }
+    )
+    await tenant.public_store.put({"id": actor_uri, "type": "Person"})
+
+    resource = await service.process_get(
+        dict(), tenant, StubIdentity(actor_uri, tenant), StubUrl.parse(actor_uri), {}
+    )
+
+    context = resource.get("@context", [])
+    assert isinstance(context, list)
+
+    if authorized:
+        assert "https://purl.archive.org/socialweb/blocked" in context
+        assert resource["blocks"] == ["http://tenant1.test/user3"]
+    else:
+        assert "https://purl.archive.org/socialweb/blocked" not in context
+        assert "blocks" not in resource

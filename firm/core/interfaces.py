@@ -28,12 +28,6 @@ JSONObject: TypeAlias = MutableMapping[str, "JSON"]
 
 JSON: TypeAlias = JSONObject | Sequence["JSON"] | str | int | float | bool | None
 
-ImmutableJSONObject: TypeAlias = Mapping[str, "ImmutableJSON"]
-
-ImmutableJSON: TypeAlias = (
-    ImmutableJSONObject | Sequence["ImmutableJSON"] | str | int | float | bool | None
-)
-
 
 class FIRM_NS(StrEnum):
     PREFIX = "https://firm.core.stevebate.dev/ns#"

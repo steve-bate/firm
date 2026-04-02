@@ -5,9 +5,11 @@ import tomllib
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
-from firm.core.interfaces import JSON, APActor, JSONObject
+from firm.core.interfaces import JSON, APActor, JSONObject, ResourceStore, Url
 
 log = logging.getLogger(__name__)
+
+AS2_CONTEXT = "https://www.w3.org/ns/activitystreams"
 
 AP_PUBLIC_URIS = [
     "https://www.w3.org/ns/activitystreams#Public",
@@ -242,3 +244,25 @@ def get_list(obj: JSONObject, key: str) -> list[JSON]:
         return value
     else:
         return [value]
+
+
+def remove_empty_data(resource: JSONObject) -> JSONObject:
+    for key in list(resource.keys()):
+        value = resource[key]
+        if value is None or (isinstance(value, list) and len(value) == 0):
+            del resource[key]
+        elif isinstance(value, dict):
+            remove_empty_data(value)
+    return resource
+
+
+async def dereference(store: ResourceStore, url: Url | str):
+    if isinstance(url, Url):
+        url = str(url)
+    return await store.get(url)
+
+
+async def safe_dereference(store: ResourceStore, url: Url | str):
+    if resource := await dereference(store, url):
+        return resource
+    raise Exception(f"Resource not found: {url}")

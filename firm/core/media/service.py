@@ -11,6 +11,7 @@ from pathlib import Path
 
 from firm.core.interfaces import Identity, JSONObject, Tenant
 from firm.core.services.exception import ServiceException
+from firm.core.util import AS2_CONTEXT
 
 
 class NotAuthorizedException(ServiceException):
@@ -102,7 +103,7 @@ class MediaUploadService:
         if "attributedTo" not in inner:
             inner["attributedTo"] = actor_uri
         if "@context" not in inner:
-            inner["@context"] = "https://www.w3.org/ns/activitystreams"
+            inner["@context"] = AS2_CONTEXT
 
         await tenant.public_store.put(inner)
         return inner
