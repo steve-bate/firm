@@ -22,16 +22,14 @@ class SqliteResourceStore(ResourceStore):
 
     def _initialize_table(self) -> None:
         with closing(self.connection.cursor()) as cursor:
-            cursor.execute(
-                """
+            cursor.execute("""
             CREATE TABLE IF NOT EXISTS objects (
                 partition TEXT NOT NULL,
                 uri TEXT NOT NULL,
                 object JSON NOT NULL,
                 PRIMARY KEY (partition, uri)
             )
-            """
-            )
+            """)
 
     @lru_cache
     def _hash(self, uri: str) -> str:

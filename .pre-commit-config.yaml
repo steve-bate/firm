@@ -27,6 +27,7 @@ repos:
     rev: 26.3.1
     hooks:
     -   id: black
+        args: ["--target-version", "py313"]
 
 -   repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.

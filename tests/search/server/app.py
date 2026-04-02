@@ -141,15 +141,13 @@ def create_in_memory_db() -> sqlite3.Connection:
         2,
         lambda pattern, value: 1 if re.search(pattern, value or "") else 0,
     )
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE objects (
             uri TEXT PRIMARY KEY,
             type TEXT NOT NULL,
             document TEXT NOT NULL
         )
-        """
-    )
+        """)
 
     with DATA_FILE.open("r", encoding="utf-8") as infile:
         rows = json.load(infile)

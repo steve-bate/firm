@@ -40,16 +40,13 @@ def test_graph_insert():
     }
     g = jsonld_to_graph(doc)
     print(g.serialize())
-    assert (
-        g.serialize().strip()
-        == """
+    assert g.serialize().strip() == """
 @prefix ns1: <https://www.w3.org/ns/activitystreams#> .
 
 <https://server.test/activity> a ns1:Create ;
     ns1:actor <https://server.test/actor> ;
     ns1:object [ a ns1:Note ;
             ns1:content "Hello, world!" ] .""".strip()
-    )
 
 
 def test_graph_extract():

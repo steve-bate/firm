@@ -26,15 +26,13 @@ def make_connection():
 
 
 def create_schema(conn: sqlite3.Connection):
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE objects (
             uri TEXT PRIMARY KEY,
             type TEXT NOT NULL,
             document TEXT NOT NULL
         )
-        """
-    )
+        """)
 
 
 def insert_sample_data(conn: sqlite3.Connection):

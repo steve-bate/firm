@@ -148,8 +148,7 @@ def test_from_named(dataset_1):
 
 
 def test_create_graph(dataset_1):
-    update = prepareUpdate(
-        """
+    update = prepareUpdate("""
 # CLEAR GRAPH <http://server.test/test-3>;
 DROP SILENT GRAPH <http://server.test/test-3>;
 INSERT DATA {
@@ -159,8 +158,7 @@ INSERT DATA {
             "foobar" .
     }
 }
-"""
-    )
+""")
     pprintAlgebra(update)
     dataset_1.update(update)
     print(dataset_1.get_context(URIRef("http://server.test/test-3")).serialize())

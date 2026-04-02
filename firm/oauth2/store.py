@@ -160,8 +160,7 @@ class SqliteOAuth2DataStore(OAuth2DataStore):
         if self._initialized:
             return
         async with aiosqlite.connect(self._db_path) as db:
-            await db.executescript(
-                """
+            await db.executescript("""
                 PRAGMA journal_mode=WAL;
 
                 CREATE TABLE IF NOT EXISTS clients (
@@ -202,8 +201,7 @@ class SqliteOAuth2DataStore(OAuth2DataStore):
                     issued_at     INTEGER NOT NULL,
                     expires_in    INTEGER NOT NULL
                 );
-                """
-            )
+                """)
             await db.commit()
         self._initialized = True
 
