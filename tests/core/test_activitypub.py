@@ -535,10 +535,12 @@ async def test_get_actor_blocks(
 ):
     await tenant.private_store.put(
         {
-            "type": ["Collection", FIRM_NS.Blocks.value],
-            "id": "http://tenant1.test/user2/blocks",
+            "type": FIRM_NS.Blocks.value,
+            "id": "http://tenant1.test/user1/blocks",
             "attributedTo": "http://tenant1.test/user1",
-            "items": ["http://tenant1.test/user3"],
+            FIRM_NS.blockedActor.value: ["http://tenant1.test/user3"],
+            FIRM_NS.blockedDomain.value: ["tenant1.test"],
+            FIRM_NS.blockedSubnet.value: "192.168.0.0/16",
         }
     )
     await tenant.public_store.put({"id": actor_uri, "type": "Person"})

@@ -9,8 +9,8 @@ from firm.core.interfaces import (
 )
 from firm.core.services.activitypub.collections import dereference_collection_items
 from firm.core.util import (
-    get_collection_items,
     get_collection_items_key,
+    get_list,
     is_collection,
     is_type,
     remove_empty_data,
@@ -61,6 +61,7 @@ async def serialize(tenant: Tenant, principal: Identity | None, resource: JSONOb
         # TODO This endpoint handling is a bit hacky
         resource["endpoints"] |= tenant.endpoints
 
+    # Serialize internal blocks for authorized users
     if principal:
         private = tenant.private_store
         if blocks := await private.query_one(
@@ -69,7 +70,9 @@ async def serialize(tenant: Tenant, principal: Identity | None, resource: JSONOb
                 "attributedTo": principal.uri,
             }
         ):
-            resource["blocks"] = get_collection_items(blocks)
+            resource["blocks"] = get_list(blocks, FIRM_NS.blockedActor.value)
+            resource[FIRM_NS.blockedDomain.value] = get_list(blocks, FIRM_NS.blockedDomain.value)
+            resource[FIRM_NS.blockedSubnet.value] = get_list(blocks, FIRM_NS.blockedSubnet.value)
             _add_context(resource, "https://purl.archive.org/socialweb/blocked")
 
     return remove_empty_data(resource)
