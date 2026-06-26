@@ -496,8 +496,16 @@ def create_router(config: ServerConfig) -> APIRouter:
                     target_uri=request.url,
                     resource=await request.json(),
                 )
-                headers = {"Location": create_resource_uri} if create_resource_uri else {}
-                return PlainTextResponse("OK", media_type="text/plain", headers=headers)
+                if create_resource_uri:
+                    headers = {
+                        "Access-Control-Expose-Headers": "Location",
+                        "Location": create_resource_uri,
+                    }
+                    return PlainTextResponse(
+                        "Created", status_code=HTTPStatus.CREATED, headers=headers
+                    )
+                else:
+                    return PlainTextResponse("OK", media_type="text/plain")
             except NotAuthorizedException as e:
                 raise HTTPException(HTTPStatus.FORBIDDEN, detail=str(e))
             except InvalidRequestException as e:

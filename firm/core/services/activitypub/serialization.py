@@ -22,7 +22,7 @@ from tests.test_patch import AS2_CONTEXT
 def _add_context(resource: JSONObject, context: Url | str):
     context = str(context)
     if "@context" not in resource:
-        resource["@context"] = [context, AS2_CONTEXT]
+        resource["@context"] = context
     elif isinstance(resource["@context"], list):
         if context not in resource["@context"]:
             resource["@context"].append(context)
@@ -33,6 +33,9 @@ def _add_context(resource: JSONObject, context: Url | str):
 async def serialize(tenant: Tenant, principal: Identity | None, resource: JSONObject) -> JSONObject:
     """Embed specific resources to match typical AP expectations."""
     store = tenant.public_store
+
+    if "@context" not in resource:
+        _add_context(resource, AS2_CONTEXT)
 
     if not isinstance(resource, dict):
         raise Exception("Can only serialize JSON objects")
