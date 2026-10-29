@@ -35,6 +35,8 @@ ACTIVITYPUB_ACCEPT = (
     "application/json;q=0.5"
 )
 
+GONE_STATUSES = frozenset({404, 410})
+
 
 class FetchError(Exception):
     """A target we must not fetch, or an answer that must not be cached as content."""
@@ -50,6 +52,8 @@ class FetchPolicy:
     """Timings and limits for outbound fetches. No storage knowledge."""
 
     ttl: float = 300.0
+    failure_ttl: float = 60.0
+    not_found_ttl: float = 86_400.0
     timeout: float = DEFAULT_HTTP_TIMEOUT
     accept: str = ACTIVITYPUB_ACCEPT
 
@@ -105,15 +109,21 @@ class RemoteResourceProvider:
             log.warning("Fetch failed for %s: %s", key, exc)
 
         if document is not None:
-            await self._cache.put(
-                CacheEntry(
-                    uri=key,
-                    document=document,
-                    status_code=status_code,
-                    fetched_at=now,
-                    expires_at=now + self._policy.ttl,
-                )
+            ttl = self._policy.ttl
+        elif status_code in GONE_STATUSES:
+            ttl = self._policy.not_found_ttl
+        else:
+            ttl = self._policy.failure_ttl
+
+        await self._cache.put(
+            CacheEntry(
+                uri=key,
+                document=document,
+                status_code=status_code,
+                fetched_at=now,
+                expires_at=now + ttl,
             )
+        )
         return document
 
     async def _fetch(self, uri: str) -> tuple[int, JSONObject | None]:

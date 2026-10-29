@@ -422,3 +422,16 @@ def json_response(
 ) -> HttpResponse:
     """A response carrying a JSON document, for scripting a StubTransport."""
     return HttpResponse(status_code=status_code, headers=dict(headers or {}), data=document)
+
+
+class Clock:
+    """A clock the test moves by hand, so TTL assertions do not sleep."""
+
+    def __init__(self, now: float = 1_000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
