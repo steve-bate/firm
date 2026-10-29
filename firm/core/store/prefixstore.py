@@ -1,10 +1,8 @@
 import logging
 from functools import cache
-from typing import Callable
 from urllib.parse import urlparse
 
 from firm.core.interfaces import (
-    HttpTransport,
     JSONObject,
     QueryCriteria,
     ResourceStore,
@@ -96,63 +94,3 @@ class PrefixAwareResourceStore(ResourceStore):
         for store in self.tenant_public_stores.values():
             await store.close()
         await self.remote_store.close()
-
-
-def is_http_uri(uri: str) -> bool:
-    return uri.startswith("http://") or uri.startswith("https://")
-
-
-class PrefixAwareResourceStoreWithFetch(ResourceStore):
-    def __init__(self, store: PrefixAwareResourceStore, transport: HttpTransport | None = None):
-        self._transport = transport
-        self._store = store
-
-    def with_transport(
-        self, transport: HttpTransport | Callable[[ResourceStore], HttpTransport]
-    ) -> "PrefixAwareResourceStoreWithFetch":
-        if callable(transport):
-            transport = transport(self._store)
-        self._transport = transport
-        return self
-
-    async def _fetch(self, uri: str) -> JSONObject | None:
-        if self._transport is None:
-            raise ValueError("No transport")
-        log.info(f"fetching {uri}")
-        try:
-            response = await self._transport.get(
-                uri, headers={"Accept": "application/activity+json"}
-            )
-            response.raise_for_status()
-            return response.json
-        except Exception as e:
-            log.error(f"failed to fetch {uri}: {e}")
-            return None
-
-    async def get(self, uri: str) -> JSONObject | None:
-        resource = await self._store.get(uri)
-        if not resource and not self._store._is_tenant(get_uri_prefix(uri)) and is_http_uri(uri):
-            if resource := await self._fetch(uri):
-                await self.put(resource)
-        return resource
-
-    async def is_stored(self, uri: str) -> bool:
-        return await self._store.is_stored(uri)
-
-    async def put(self, resource: JSONObject) -> None:
-        return await self._store.put(resource)
-
-    async def remove(self, uri: str) -> None:
-        return await self._store.remove(uri)
-
-    async def query(self, criteria: QueryCriteria) -> list[JSONObject]:
-        return await self._store.query(criteria)
-
-    async def query_one(self, criteria: QueryCriteria) -> JSONObject | None:
-        return await self._store.query_one(criteria)
-
-    async def update(self, uri: str, updates: JSONObject) -> None:
-        return await self._store.update(uri, updates)
-
-    async def upsert(self, criteria: QueryCriteria, updates: JSONObject) -> None:
-        return await self._store.upsert(criteria, updates)

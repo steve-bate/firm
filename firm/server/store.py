@@ -6,10 +6,7 @@
 
 # from firm.core.interfaces import ResourceStore
 # from firm.core.store.file import FileResourceStore
-# from firm.core.store.prefixstore import (
-#     PrefixAwareResourceStore,
-#     PrefixAwareResourceStoreWithFetch,
-# )
+# from firm.core.store.prefixstore import PrefixAwareResourceStore
 # from firm_ld.store import RdfDataSet, RdfResourceStore
 
 # from firm.server.adapters import HttpxTransport

@@ -10,7 +10,6 @@ from firm.core.interfaces import (
     Identity,
     JSONObject,
     NoOpValidator,
-    Tenant,
     Url,
     Validator,
 )
@@ -26,9 +25,9 @@ from firm.core.services.activitypub.exceptions import (
     ResourceOwnerException,
 )
 from firm.core.services.activitypub.inbox import process_inbox
-from firm.core.services.activitypub.outbox import outbox_send, process_outbox
+from firm.core.services.activitypub.outbox import process_outbox
 from firm.core.services.activitypub.serialization import serialize
-from firm.core.services.activitypub.support import FirmBoxContext
+from firm.core.services.activitypub.support import FirmBoxContext, FirmContext
 from firm.core.util import (
     dereference,
     has_value,
@@ -85,15 +84,15 @@ class ActivityPubService:
 
     async def _get_shared_inbox(
         self,
-        tenants: Mapping[str, Tenant],
-        tenant: Tenant,
-        principal: Identity | None,
+        context: FirmContext,
         resource_uri: Url,
         options: Mapping[str, Any] | None,
     ) -> JSONObject:
         """Handle requests to the shared inbox."""
         # if request.auth is None:
         #     raise NotAuthorizedException("Shared inbox requires authentication")
+        tenant = context.tenant
+        principal = context.principal
         store = tenant.public_store
         default_page_Size = 20
         # TODO Implement pagination
@@ -121,10 +120,10 @@ class ActivityPubService:
             all_public_activities: list[JSONObject] = []
             if federated:
                 # This is obviously not scalable, but for demonstration purposes
-                for tenant in tenants.values():
-                    tenant_store = tenant.public_store
+                for other in context.tenants.values():
+                    other_store = other.public_store
                     all_public_activities.extend(
-                        cast(list, await _activity_query(principal, tenant_store, filter))
+                        cast(list, await _activity_query(principal, other_store, filter))
                     )
             else:
                 all_public_activities.extend(
@@ -152,12 +151,12 @@ class ActivityPubService:
 
     async def process_get(
         self,
-        tenants: Mapping[str, Tenant],
-        tenant: Tenant,
-        principal: Identity | None,
+        context: FirmContext,
         resource_uri: Url,
         options: Mapping[str, Any] | None = None,
     ) -> JSONObject:
+        tenant = context.tenant
+        principal = context.principal
         # Return the tenant resource
         # FastAPI starlette always adds a trailing slash
         if tenant.prefix + "/" == str(resource_uri):
@@ -169,7 +168,7 @@ class ActivityPubService:
             return doc
         # Return a tenant's shared inbox resources
         if tenant.shared_inbox_uri and str(resource_uri).startswith(tenant.shared_inbox_uri):
-            return await self._get_shared_inbox(tenants, tenant, principal, resource_uri, options)
+            return await self._get_shared_inbox(context, resource_uri, options)
         # Return the specified resource
         store = tenant.public_store
         if resource := await dereference(store, resource_uri):
@@ -189,12 +188,12 @@ class ActivityPubService:
 
     async def process_post(
         self,
-        tenants: Mapping[str, Tenant],
-        tenant: Tenant,
-        principal: Identity | None,
+        context: FirmContext,
         target_uri: Url,
         resource: JSONObject,
     ) -> str | None:
+        tenant = context.tenant
+        principal = context.principal
         target_uri_str = str(target_uri)
         if tenant.shared_inbox_uri and str(target_uri_str).startswith(tenant.shared_inbox_uri):
             raise NotImplementedError("Shared inbox does not support POST requests yet")
@@ -216,11 +215,6 @@ class ActivityPubService:
         if not box_owner:
             raise ResourceOwnerException("Unknown box owner")
 
-        async def _send(activity: JSONObject) -> None:
-            await outbox_send(
-                tenant, tenants, activity, box_owner.get("outbox"), self._delivery_service
-            )
-
         # Determine the type of box and dispatch accordingly
         if target_uri_str == box_owner.get("inbox"):
             decision = await self._authorizer.is_post_authorized(
@@ -237,15 +231,16 @@ class ActivityPubService:
                 log.info(f"Inbox: box={target_uri}, activity_type={resource.get('type')}")
                 await store.put(resource)
                 await add_collection_item(store, box_owner["inbox"], resource_id(resource))
-                context = FirmBoxContext(
-                    _send,
-                    tenants=tenants,
-                    tenant=tenant,
-                    principal=principal,
+                box_context = FirmBoxContext(
+                    context.resolver,
+                    tenant,
+                    principal,
+                    context.authorizer,
                     box_owner=box_owner,
                     box_uri=target_uri_str,
+                    delivery_service=self._delivery_service,
                 )
-                await process_inbox(context, resource)
+                await process_inbox(box_context, resource)
                 return None
             else:
                 raise NotAuthorizedException(decision.reason)
@@ -261,14 +256,15 @@ class ActivityPubService:
             if not activity_decision.authorized:
                 raise NotAuthorizedException(activity_decision.reason)
             self._validator.validate(resource)
-            context = FirmBoxContext(
-                _send,
-                tenants=tenants,
-                tenant=tenant,
-                principal=principal,
+            box_context = FirmBoxContext(
+                context.resolver,
+                tenant,
+                principal,
+                context.authorizer,
                 box_owner=box_owner,
                 box_uri=target_uri_str,
+                delivery_service=self._delivery_service,
             )
-            return await process_outbox(context, resource, self._delivery_service)
+            return await process_outbox(box_context, resource)
         else:
             raise InvalidResourceException(target.get("type"), "Unsupported box type")

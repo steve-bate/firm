@@ -33,6 +33,7 @@ from firm.core.services.activitypub.exceptions import (
 from firm.core.services.activitypub.service import (
     ActivityPubService,
 )
+from firm.core.services.activitypub.support import FirmContext
 from firm.core.services.nodeinfo import (
     UnsupportedNodeInfoVersion,
     nodeinfo_index,
@@ -462,12 +463,14 @@ def create_router(config: ServerConfig) -> APIRouter:
     async def activitypub_endpoint(request: Request) -> Response:
         if request.method in ["GET", "HEAD"]:
             try:
-                resource = await activitypub_service.process_get(
-                    request.app.state.tenants,
+                context = FirmContext(
+                    request.app.state.resolver,
                     request.state.tenant,
                     request.scope["user"],
-                    request.url,
-                    request.query_params,
+                    request.app.state.authorizer,
+                )
+                resource = await activitypub_service.process_get(
+                    context, request.url, request.query_params
                 )
                 status_code = 200
                 if resource.get("type") == "Tombstone":
@@ -489,12 +492,14 @@ def create_router(config: ServerConfig) -> APIRouter:
                 raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
         elif request.method == "POST":
             try:
+                context = FirmContext(
+                    request.app.state.resolver,
+                    request.state.tenant,
+                    request.scope["user"],
+                    request.app.state.authorizer,
+                )
                 create_resource_uri = await activitypub_service.process_post(
-                    tenants=request.app.state.tenants,
-                    tenant=request.state.tenant,
-                    principal=request.scope["user"],
-                    target_uri=request.url,
-                    resource=await request.json(),
+                    context, request.url, await request.json()
                 )
                 if create_resource_uri:
                     headers = {

@@ -1,9 +1,11 @@
 import copy
-from typing import Sequence
+from typing import Sequence, cast
 
 import pytest
 
 from firm.core.interfaces import FIRM_NS, Identity, JSONObject, ResourceStore, Tenant
+from firm.core.remote.cache import MemoryRemoteCache
+from firm.core.remote.provider import FetchPolicy, RemoteResourceProvider
 from firm.core.services.activitypub.exceptions import (
     InvalidResourceTypeException,
     NotAuthorizedException,
@@ -16,10 +18,15 @@ from firm.core.services.activitypub.service import (
 )
 from firm.core.store.memory import MemoryResourceStore
 from tests.support import (
+    CountingStore,
+    RecordingAuthorizer,
     StubAuthorizationService,
     StubDeliveryService,
     StubIdentity,
+    StubTransport,
     StubUrl,
+    json_response,
+    make_context,
 )
 
 
@@ -27,7 +34,7 @@ from tests.support import (
 def tenant(tmp_path):
     return Tenant(
         "http://tenant1.test",
-        MemoryResourceStore(),
+        CountingStore(),
         MemoryResourceStore(),
         tmp_path,
     )
@@ -60,10 +67,57 @@ def service():
     return fedi
 
 
+@pytest.fixture
+def recording_service():
+    delivery = StubDeliveryService()
+    return ActivityPubService(StubAuthorizationService(), delivery), delivery
+
+
+async def test_outbox_post_appends_and_delivers_once(
+    recording_service: tuple[ActivityPubService, StubDeliveryService], tenant: Tenant
+):
+    service, delivery = recording_service
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/outbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    activity: JSONObject = {
+        "id": "http://tenant1.test/create1",
+        "type": "Create",
+        "actor": "http://tenant1.test/user2",
+        "object": {"type": "Note", "content": "hello"},
+    }
+
+    await service.process_post(
+        make_context(tenant, principal=StubIdentity("http://tenant1.test/user2", tenant)),
+        StubUrl.parse("http://tenant1.test/outbox"),
+        activity,
+    )
+
+    outbox = await tenant.public_store.get("http://tenant1.test/outbox")
+    assert outbox is not None
+    items = outbox["items"]
+    assert isinstance(items, list)  # the create handler assigns the activity its own id
+    assert len(items) == 1, "appended once, not twice"
+    assert delivery.delivered == [items[0]], "delivered once, and the activity that was stored"
+
+
 async def test_dereference_unknown_resource(service: ActivityPubService, tenant: Tenant):
     with pytest.raises(NotFoundException):
         await service.process_get(
-            dict(), tenant, None, StubUrl.parse("http://tenant1.test/bogus"), {}
+            make_context(tenant), StubUrl.parse("http://tenant1.test/bogus"), {}
         )
 
 
@@ -71,7 +125,7 @@ async def test_dereference(service: ActivityPubService, tenant: Tenant):
     resource: JSONObject = {"id": "http://tenant1.test/obj1", "type": "Object"}
     await tenant.public_store.put(resource)
     resource = await service.process_get(
-        dict(), tenant, None, StubUrl.parse("http://tenant1.test/obj1"), {}
+        make_context(tenant), StubUrl.parse("http://tenant1.test/obj1"), {}
     )
     assert resource == {
         "@context": "https://www.w3.org/ns/activitystreams",
@@ -104,7 +158,7 @@ async def test_dereference_collection(service: ActivityPubService, tenant: Tenan
     for r in resources:
         await tenant.public_store.put(r)
     collection = await service.process_get(
-        dict(), tenant, None, StubUrl.parse("http://tenant1.test/collection"), {}
+        make_context(tenant), StubUrl.parse("http://tenant1.test/collection"), {}
     )
     assert collection == {
         "@context": "https://www.w3.org/ns/activitystreams",
@@ -168,9 +222,7 @@ async def test_dereference_collection_filtered(service: ActivityPubService, tena
     for r in resources:
         await tenant.public_store.put(r)
     collection = await service.process_get(
-        dict(),
-        tenant,
-        None,
+        make_context(tenant),
         StubUrl.parse("http://tenant1.test/collection"),
         {
             "filter": "$[?@.type == 'Place']",
@@ -214,9 +266,7 @@ async def test_dereference_sharedinbox_filtered(service: ActivityPubService, ten
     for r in resources:
         await tenant.public_store.put(r)
     collection = await service.process_get(
-        dict(),
-        tenant,
-        None,
+        make_context(tenant),
         StubUrl.parse("http://tenant1.test/shared?offset=0"),
         {
             "filter": "$[?@.name == 'bar']",
@@ -243,14 +293,16 @@ async def test_dereference_sharedinbox_filtered(service: ActivityPubService, ten
 async def test_inbox_no_auth(service: ActivityPubService, tenant: Tenant):
     with pytest.raises(NotAuthorizedException):
         await service.process_post(
-            dict(), tenant, None, StubUrl.parse("http://tenant1.test/inbox"), {"id": "TEST"}
+            make_context(tenant), StubUrl.parse("http://tenant1.test/inbox"), {"id": "TEST"}
         )
 
 
 async def test_inbox_bad_uri(service: ActivityPubService, tenant: Tenant, identity: Identity):
     with pytest.raises(NotFoundException):
         await service.process_post(
-            dict(), tenant, identity, StubUrl.parse("http://tenant1.test/inbox"), {"id": "TEST"}
+            make_context(tenant, principal=identity),
+            StubUrl.parse("http://tenant1.test/inbox"),
+            {"id": "TEST"},
         )
 
 
@@ -258,7 +310,9 @@ async def test_inbox_bad_type(service: ActivityPubService, tenant: Tenant, ident
     await tenant.public_store.put({"id": "http://tenant1.test/inbox", "type": "Collection"})
     with pytest.raises(InvalidResourceTypeException):
         await service.process_post(
-            dict(), tenant, identity, StubUrl.parse("http://tenant1.test/inbox"), {"id": "TEST"}
+            make_context(tenant, principal=identity),
+            StubUrl.parse("http://tenant1.test/inbox"),
+            {"id": "TEST"},
         )
 
 
@@ -273,13 +327,67 @@ async def test_inbox_no_attribution(
     )
     with pytest.raises(ResourceOwnerException):
         await service.process_post(
-            dict(), tenant, identity, StubUrl.parse("http://tenant1.test/inbox"), {"id": "TEST"}
+            make_context(tenant, principal=identity),
+            StubUrl.parse("http://tenant1.test/inbox"),
+            {"id": "TEST"},
         )
 
 
 async def setup_resources(p: ResourceStore, resources: list[JSONObject]):
     for r in resources:
         await p.put(r)
+
+
+async def test_inbox_reply_publishes_once(
+    recording_service: tuple[ActivityPubService, StubDeliveryService], tenant: Tenant
+):
+    service, delivery = recording_service
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+                "followers": "http://tenant1.test/user2/followers",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+            {
+                "id": "http://tenant1.test/outbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+            {
+                "id": "http://tenant1.test/user2/followers",
+                "type": "Collection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    follow: JSONObject = {
+        "id": "http://remote.test/follow1",
+        "type": "Follow",
+        "actor": "http://remote.test/user1",
+        "object": "http://tenant1.test/user2",
+    }
+
+    await service.process_post(
+        make_context(tenant, principal=StubIdentity("http://remote.test/user1", tenant)),
+        StubUrl.parse("http://tenant1.test/inbox"),
+        follow,
+    )
+
+    outbox = await tenant.public_store.get("http://tenant1.test/outbox")
+    assert outbox is not None
+    items = outbox["items"]
+    assert isinstance(items, list)
+    assert len(items) == 1, "the reply is published once"
+    assert delivery.delivered == [items[0]], "and delivered once, from the actor's outbox"
 
 
 async def test_inbox_follow(service: ActivityPubService, remote_identity: StubIdentity):
@@ -321,7 +429,9 @@ async def test_inbox_follow(service: ActivityPubService, remote_identity: StubId
     }
 
     await service.process_post(
-        dict(), tenant, remote_identity, StubUrl.parse("http://tenant1.test/inbox"), resource
+        make_context(tenant, principal=remote_identity),
+        StubUrl.parse("http://tenant1.test/inbox"),
+        resource,
     )
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
@@ -387,7 +497,9 @@ async def test_inbox_undo_follow(service: ActivityPubService, remote_identity: S
     }
 
     await service.process_post(
-        dict(), tenant, remote_identity, StubUrl.parse("http://tenant1.test/inbox"), resource
+        make_context(tenant, principal=remote_identity),
+        StubUrl.parse("http://tenant1.test/inbox"),
+        resource,
     )
 
     followers = await tenant.public_store.get("http://tenant1.test/user2/followers")
@@ -438,7 +550,9 @@ async def test_inbox_like(service: ActivityPubService, remote_identity: StubIden
         "object": "http://tenant1.test/user2/note",
     }
     await service.process_post(
-        dict(), tenant, remote_identity, StubUrl.parse("http://tenant1.test/inbox"), resource
+        make_context(tenant, principal=remote_identity),
+        StubUrl.parse("http://tenant1.test/inbox"),
+        resource,
     )
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
@@ -492,7 +606,9 @@ async def test_inbox_undo_like(service: ActivityPubService, remote_identity: Stu
     }
 
     await service.process_post(
-        dict(), tenant, remote_identity, StubUrl.parse("http://tenant1.test/inbox"), resource
+        make_context(tenant, principal=remote_identity),
+        StubUrl.parse("http://tenant1.test/inbox"),
+        resource,
     )
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
@@ -535,7 +651,9 @@ async def test_inbox_create_object(service: ActivityPubService, remote_identity:
         },
     }
     await service.process_post(
-        dict(), tenant, remote_identity, StubUrl.parse("http://tenant1.test/inbox"), resource
+        make_context(tenant, principal=remote_identity),
+        StubUrl.parse("http://tenant1.test/inbox"),
+        resource,
     )
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
@@ -573,7 +691,9 @@ async def test_get_actor_blocks(
     await tenant.public_store.put({"id": actor_uri, "type": "Person"})
 
     resource = await service.process_get(
-        dict(), tenant, StubIdentity(actor_uri, tenant), StubUrl.parse(actor_uri), {}
+        make_context(tenant, principal=StubIdentity(actor_uri, tenant)),
+        StubUrl.parse(actor_uri),
+        {},
     )
 
     context = resource.get("@context", [])
@@ -585,3 +705,94 @@ async def test_get_actor_blocks(
     else:
         # assert "https://purl.archive.org/socialweb/blocked" not in context
         assert "blocks" not in resource
+
+
+def _provider(transport: StubTransport) -> RemoteResourceProvider:
+    return RemoteResourceProvider(
+        MemoryRemoteCache(), transport, policy=FetchPolicy(allow_private_addresses=True)
+    )
+
+
+async def test_dereference_uses_the_tenant_store_for_its_own_prefix(tenant: Tenant):
+    resource: JSONObject = {"id": "http://tenant1.test/obj1", "type": "Object"}
+    await tenant.public_store.put(resource)
+
+    context = make_context(tenant)
+
+    assert await context.dereference("http://tenant1.test/obj1") == resource
+
+
+async def test_dereference_fetches_for_an_unknown_prefix(tenant: Tenant):
+    uri = "http://remote.test/note/1"
+    transport = StubTransport({uri: json_response({"id": uri, "type": "Note"})})
+    context = make_context(tenant, remote=_provider(transport))
+
+    assert await context.dereference(uri) == {"id": uri, "type": "Note"}
+
+    assert transport.urls == [uri]
+    assert (
+        cast(CountingStore, tenant.public_store).reads == []
+    ), "a foreign URI never touches our store"
+
+
+async def test_dereference_without_a_provider_returns_none(tenant: Tenant):
+    context = make_context(tenant, remote=None)
+
+    assert await context.dereference("http://remote.test/note/1") is None
+
+
+def _two_tenants(tmp_path) -> tuple[Tenant, Tenant]:
+    a = Tenant("http://a.test", CountingStore(), MemoryResourceStore(), tmp_path)
+    b = Tenant("http://b.test", CountingStore(), MemoryResourceStore(), tmp_path)
+    return a, b
+
+
+async def test_dereference_reads_another_tenant_locally_and_authorizes(tmp_path):
+    a, b = _two_tenants(tmp_path)
+    document: JSONObject = {"id": "http://b.test/note/1", "type": "Note"}
+    await b.public_store.put(document)
+    authorizer = RecordingAuthorizer()
+    transport = StubTransport({})
+    context = make_context(
+        a,
+        tenants={"http://a.test": a, "http://b.test": b},
+        principal=StubIdentity("http://a.test/user1", a),
+        authorizer=authorizer,
+        remote=_provider(transport),
+    )
+
+    assert await context.dereference("http://b.test/note/1") == document
+
+    assert cast(CountingStore, b.public_store).reads == ["http://b.test/note/1"]
+    assert authorizer.calls == [
+        (b, context.principal, document)
+    ], "the owning tenant decides, with our principal"
+    assert transport.urls == [], "a local instance is never read over the network"
+
+
+async def test_dereference_is_denied_by_the_owning_tenant(tmp_path):
+    a, b = _two_tenants(tmp_path)
+    await b.public_store.put(
+        {"id": "http://b.test/note/1", "type": "Note", "to": ["http://b.test/followers"]}
+    )
+    context = make_context(
+        a,
+        tenants={"http://a.test": a, "http://b.test": b},
+        principal=StubIdentity("http://a.test/user1", a),
+        authorizer=RecordingAuthorizer(False, "not addressed to you"),
+    )
+
+    assert await context.dereference("http://b.test/note/1") is None
+
+
+async def test_dereference_denied_with_required_raises(tmp_path):
+    a, b = _two_tenants(tmp_path)
+    await b.public_store.put({"id": "http://b.test/note/1", "type": "Note"})
+    context = make_context(
+        a,
+        tenants={"http://a.test": a, "http://b.test": b},
+        authorizer=RecordingAuthorizer(False, "not addressed to you"),
+    )
+
+    with pytest.raises(NotFoundException):
+        await context.dereference("http://b.test/note/1", required=True)

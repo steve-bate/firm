@@ -1,16 +1,22 @@
 import asyncio
 import contextlib
 import logging
+from pathlib import Path
 from typing import cast
 from urllib.parse import urlparse
 
 import uvicorn
-from click import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.interfaces import FIRM_NS, JSONObject, ResourceStore, Tenant
+from firm.core.remote.cache import MemoryRemoteCache, RemoteCache, SqliteRemoteCache
+from firm.core.remote.provider import FetchPolicy, RemoteResourceProvider
+from firm.core.resolver import ResourceResolver
+from firm.server.adapters import HttpxTransport
 from firm.server.config import (
+    CacheKind,
     FileStoreConfig,
     MemoryStoreConfig,
     ServerConfig,
@@ -67,23 +73,40 @@ def init_tenant(config: ServerConfig, tenant_uri: str) -> Tenant:
     return Tenant(tenant_uri, public_store, private_store, files, endpoints)
 
 
-def init_remote_cache(config: ServerConfig) -> ResourceStore:
-    match config.store.kind:
-        case "filesystem":
-            from firm.core.store.file import FileResourceStore
+def _cache_dir(config: ServerConfig) -> Path:
+    base = getattr(config.store, "base", None)
+    return Path(base) / "cache" if base is not None else Path("cache")
 
-            filestore_config = cast(FileStoreConfig, config.store)
-            return FileResourceStore(filestore_config.base / "cache")
-        case "rdf":
-            # init_tenant_rdf_storage(config, tenant_uri)
-            raise NotImplementedError("RDF storage not supported yet")
-        case "memory":
-            from firm.core.store.memory import MemoryResourceStore
 
-            return MemoryResourceStore()
-    raise ValueError(
-        f"Unknown storage kind: {config.store.kind}. " "Supported kinds are 'filesystem' and 'rdf'."
+def _default_cache_kind(config: ServerConfig) -> CacheKind:
+    if config.store.kind == StorageKind.MEMORY:
+        return CacheKind.MEMORY
+    return CacheKind.SQLITE
+
+
+def init_remote_cache(config: ServerConfig) -> RemoteCache:
+    """The cache backend for fetched documents: memory follows a memory store."""
+    remote_fetch = config.remote_fetch
+    kind = remote_fetch.kind or _default_cache_kind(config)
+    if kind == CacheKind.MEMORY:
+        return MemoryRemoteCache()
+    return SqliteRemoteCache(remote_fetch.path or _cache_dir(config) / "remote.sqlite")
+
+
+def init_remote_provider(config: ServerConfig) -> RemoteResourceProvider | None:
+    """The shared fetch provider, or None when remote fetching is off."""
+    if not config.remote_fetch.enabled:
+        return None
+    remote_fetch = config.remote_fetch
+    policy = FetchPolicy(
+        ttl=remote_fetch.ttl,
+        failure_ttl=remote_fetch.failure_ttl,
+        not_found_ttl=remote_fetch.not_found_ttl,
+        timeout=remote_fetch.timeout,
+        max_bytes=remote_fetch.max_bytes,
+        allow_private_addresses=remote_fetch.allow_private_addresses,
     )
+    return RemoteResourceProvider(init_remote_cache(config), HttpxTransport(), policy=policy)
 
 
 def get_tenant_uri(scope):
@@ -153,9 +176,13 @@ def app_factory(config: ServerConfig) -> FastAPI:
                     )
 
             app.state.tenants = tenants
-            app.state.cache = init_remote_cache(config)
+            app.state.resolver = ResourceResolver(tenants, init_remote_provider(config))
+            app.state.authorizer = CoreAuthorizationService()
+            log.info("Remote cache: purged %d expired entries", await app.state.resolver.purge())
 
             yield
+
+            await app.state.resolver.close()
 
             log.info("ASGI lifespan: stopping")
 

@@ -4,7 +4,7 @@ from typing import Any, Mapping, cast
 
 from jsonpointer import JsonPointer
 
-from firm.core.interfaces import FIRM_NS, URI, DeliveryService, JSONObject, Tenant
+from firm.core.interfaces import FIRM_NS, URI, JSONObject
 from firm.core.services.activitypub.collections import (
     add_collection_item,
     remove_collection_item,
@@ -72,25 +72,7 @@ def _merge_audiences(activity: JSONObject) -> None:
         object_["audience"] = list(audience)
 
 
-async def outbox_send(
-    tenant: Tenant,
-    tenants: Mapping[str, Tenant],
-    activity: JSONObject,
-    outbox_uri: str,
-    delivery_service: DeliveryService,
-) -> None:
-    # Add to outbox collection, then deliver to recipients
-    object_ = activity.get("object")
-    if object_ and isinstance(object_, Mapping):
-        await tenant.public_store.put(object_)
-    await tenant.public_store.put(activity)
-    await add_collection_item(tenant.public_store, outbox_uri, resource_id(activity))
-    await delivery_service.deliver(tenant, tenants, activity)
-
-
-async def process_outbox(
-    context: FirmBoxContext, activity: JSONObject, delivery_service: DeliveryService
-) -> str | None:
+async def process_outbox(context: FirmBoxContext, activity: JSONObject) -> str | None:
     if "@context" not in activity:
         activity["@context"] = "https://www.w3.org/ns/activitystreams"
     for activity_type in get_types(activity):
@@ -134,8 +116,7 @@ async def process_outbox(
                 ...
         finally:
             await context.tenant.public_store.put(activity)
-    await add_collection_item(context.tenant.public_store, context.box_uri, resource_id(activity))
-    await delivery_service.deliver(context.tenant, context.tenants, activity)
+    await context.send(activity)
     return activity_id
 
 

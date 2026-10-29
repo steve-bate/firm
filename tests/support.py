@@ -26,6 +26,9 @@ from firm.core.interfaces import (
     Url,
     UrlTypes,
 )
+from firm.core.remote.provider import RemoteResourceProvider
+from firm.core.resolver import ResourceResolver
+from firm.core.services.activitypub.support import FirmContext
 from firm.core.store.memory import MemoryResourceStore
 from firm.server.config import MemoryStoreConfig, ServerConfig
 
@@ -143,13 +146,44 @@ class StubAuthorizationService(AuthorizationService):
         return AuthorizationDecision(True, None)
 
 
+class RecordingAuthorizer(AuthorizationService):
+    """A stub that records the arguments of each read decision."""
+
+    def __init__(self, authorized: bool = True, reason: str | None = None) -> None:
+        self.authorized = authorized
+        self.reason = reason
+        self.calls: list[tuple[Tenant, Identity | None, JSONObject]] = []
+
+    async def is_get_authorized(
+        self, tenant: Tenant, principal: Identity | None, resource: JSONObject
+    ) -> AuthorizationDecision:
+        self.calls.append((tenant, principal, resource))
+        return AuthorizationDecision(self.authorized, self.reason)
+
+    async def is_post_authorized(
+        self, tenant: Tenant, principal: Identity | None, box_type: str, box_uri: str
+    ) -> AuthorizationDecision:
+        return AuthorizationDecision(True, None)
+
+    async def is_activity_authorized(
+        self, tenant: Tenant, principal: Identity | None, activity: JSONObject
+    ) -> AuthorizationDecision:
+        return AuthorizationDecision(True, None)
+
+
 class StubDeliveryService(DeliveryService):
+    """A stub that records what it was asked to deliver."""
+
+    def __init__(self) -> None:
+        self.delivered: list[str] = []
+
     async def deliver(
         self,
         tenant: Tenant,
         all_tenants: Mapping[str, Tenant],
         activity: JSONObject,
-    ) -> None: ...
+    ) -> None:
+        self.delivered.append(str(activity.get("id")))
 
 
 class StubState(HttpApplicationState):
@@ -440,3 +474,33 @@ class Clock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+class CountingStore(MemoryResourceStore):
+    """A real store that records which URIs were asked for."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads: list[str] = []
+
+    async def get(self, uri: str) -> JSONObject | None:
+        self.reads.append(uri)
+        return await super().get(uri)
+
+
+def make_context(
+    tenant: Tenant,
+    *,
+    tenants: Mapping[str, Tenant] | None = None,
+    principal: Identity | None = None,
+    authorizer: AuthorizationService | None = None,
+    remote: RemoteResourceProvider | None = None,
+) -> FirmContext:
+    """A request context for one tenant, with a resolver over the given registry."""
+    registry = tenants if tenants is not None else {str(tenant.prefix): tenant}
+    return FirmContext(
+        ResourceResolver(registry, remote),
+        tenant,
+        principal,
+        authorizer if authorizer is not None else StubAuthorizationService(),
+    )
