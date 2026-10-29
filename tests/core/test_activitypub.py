@@ -1,3 +1,4 @@
+import copy
 from typing import Sequence
 
 import pytest
@@ -9,6 +10,7 @@ from firm.core.services.activitypub.exceptions import (
     NotFoundException,
     ResourceOwnerException,
 )
+from firm.core.services.activitypub.serialization import serialize
 from firm.core.services.activitypub.service import (
     ActivityPubService,
 )
@@ -121,6 +123,25 @@ async def test_dereference_collection(service: ActivityPubService, tenant: Tenan
             },
         ],
     }
+
+
+async def test_serialize_does_not_mutate_the_collection_it_is_given(
+    service: ActivityPubService, tenant: Tenant
+):
+    await tenant.public_store.put({"id": "http://tenant1.test/obj1", "type": "Object"})
+    collection: JSONObject = {
+        "id": "http://tenant1.test/collection",
+        "type": "OrderedCollection",
+        "items": ["http://tenant1.test/obj1"],
+        "totalItems": 1,
+    }
+    snapshot = copy.deepcopy(collection)
+
+    serialized = await serialize(tenant, None, collection)
+
+    assert collection == snapshot
+    assert serialized["orderedItems"] == [{"id": "http://tenant1.test/obj1", "type": "Object"}]
+    assert "items" not in serialized
 
 
 async def test_dereference_collection_filtered(service: ActivityPubService, tenant: Tenant):
