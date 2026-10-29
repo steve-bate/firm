@@ -5,9 +5,18 @@ from pytest_httpx import HTTPXMock
 from starlette.testclient import TestClient
 
 from firm.core.auth.http_signature import HttpSignatureAuth
+from firm.core.auth.keys import create_key_pair
+from firm.core.interfaces import FIRM_NS, Tenant
+from firm.core.resolver import ResourceResolver
+from firm.core.store.memory import MemoryResourceStore
 from firm.server.adapters import HttpxTransport
-from firm.server.config import FileStoreConfig, ServerConfig, TenantConfig
-from firm.server.server import app_factory, clear_app
+from firm.server.config import (
+    FileStoreConfig,
+    RemoteFetchConfig,
+    ServerConfig,
+    TenantConfig,
+)
+from firm.server.server import app_factory, clear_app, init_remote_signer
 
 TENANT_PREFIX = "https://server.test"
 
@@ -139,3 +148,51 @@ async def test_http_transport_post(httpx_mock: HTTPXMock):
         auth=HttpSignatureAuth(f"{TENANT_PREFIX}/actor/bob", PRIVATE_KEY),
     )
     assert response.status_code == 403
+
+
+async def _tenant_with_actor(tmp_path) -> tuple[Tenant, str]:
+    tenant = Tenant(TENANT_PREFIX, MemoryResourceStore(), MemoryResourceStore(), tmp_path)
+    actor_uri = f"{TENANT_PREFIX}/user1"
+    key_pair = create_key_pair()
+    await tenant.public_store.put(
+        {
+            "id": actor_uri,
+            "type": "Person",
+            "publicKey": {
+                "id": f"{actor_uri}#key",
+                "owner": actor_uri,
+                "publicKeyPem": key_pair.public,
+            },
+        }
+    )
+    await tenant.private_store.put(
+        {
+            "id": f"{actor_uri}/credentials",
+            "type": FIRM_NS.Credentials.value,
+            "attributedTo": actor_uri,
+            FIRM_NS.privateKey.value: key_pair.private,
+        }
+    )
+    return tenant, actor_uri
+
+
+async def test_signing_actor_is_resolved_from_its_tenant(tmp_path):
+    tenant, actor_uri = await _tenant_with_actor(tmp_path)
+    resolver = ResourceResolver({TENANT_PREFIX: tenant})
+    config = ServerConfig(
+        [TenantConfig(prefix=TENANT_PREFIX)],
+        FileStoreConfig(base=tmp_path),
+        remote_fetch=RemoteFetchConfig(signing_actor=actor_uri),
+    )
+
+    signer = await init_remote_signer(config, resolver)
+
+    assert isinstance(signer, HttpSignatureAuth)
+
+
+async def test_unsigned_when_no_signing_actor_is_configured(tmp_path):
+    tenant, _ = await _tenant_with_actor(tmp_path)
+    resolver = ResourceResolver({TENANT_PREFIX: tenant})
+    config = ServerConfig([TenantConfig(prefix=TENANT_PREFIX)], FileStoreConfig(base=tmp_path))
+
+    assert await init_remote_signer(config, resolver) is None

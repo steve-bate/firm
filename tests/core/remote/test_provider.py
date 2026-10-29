@@ -11,7 +11,7 @@ from firm.core.remote.provider import (
     FetchPolicy,
     RemoteResourceProvider,
 )
-from tests.support import Clock, StubTransport, json_response
+from tests.support import Clock, StubSigner, StubTransport, json_response
 
 NOTE_URI = "http://remote.test/note/1"
 PUBLIC_ADDRESS = "93.184.216.34"
@@ -324,3 +324,23 @@ async def test_purge_and_close_delegate_to_the_cache():
 
     await provider.close()
     assert await cache.get(NOTE_URI) is None
+
+
+async def test_signed_get_carries_the_signature_header():
+    transport = StubTransport({NOTE_URI: json_response(NOTE)})
+    signer = StubSigner()
+
+    signed = RemoteResourceProvider(
+        MemoryRemoteCache(),
+        transport,
+        policy=FetchPolicy(allow_private_addresses=True),
+        signer=signer,
+    )
+    await signed.get(NOTE_URI)
+
+    unsigned = RemoteResourceProvider(
+        MemoryRemoteCache(), transport, policy=FetchPolicy(allow_private_addresses=True)
+    )
+    await unsigned.get(NOTE_URI)
+
+    assert [request[2] for request in transport.requests] == [signer, None]

@@ -10,10 +10,18 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from firm.core.auth.authorization import CoreAuthorizationService
-from firm.core.interfaces import FIRM_NS, JSONObject, ResourceStore, Tenant
+from firm.core.auth.http_signature import HttpSignatureAuth
+from firm.core.interfaces import (
+    FIRM_NS,
+    HttpRequestSigner,
+    JSONObject,
+    ResourceStore,
+    Tenant,
+)
 from firm.core.remote.cache import MemoryRemoteCache, RemoteCache, SqliteRemoteCache
 from firm.core.remote.provider import FetchPolicy, RemoteResourceProvider
 from firm.core.resolver import ResourceResolver
+from firm.core.util import get_id
 from firm.server.adapters import HttpxTransport
 from firm.server.config import (
     CacheKind,
@@ -109,6 +117,29 @@ def init_remote_provider(config: ServerConfig) -> RemoteResourceProvider | None:
     return RemoteResourceProvider(init_remote_cache(config), HttpxTransport(), policy=policy)
 
 
+async def init_remote_signer(
+    config: ServerConfig, resolver: ResourceResolver
+) -> HttpRequestSigner | None:
+    """The signature for outbound GETs, or None when no signing actor is configured."""
+    actor_uri = config.remote_fetch.signing_actor
+    if not actor_uri:
+        return None
+    tenant = resolver.owner(actor_uri)
+    if tenant is None:
+        log.warning("Signing actor %s belongs to no tenant here; GETs are unsigned", actor_uri)
+        return None
+    actor = await tenant.public_store.get(actor_uri)
+    key_uri = get_id(actor.get("publicKey", {})) if actor else ""
+    credentials = await tenant.private_store.query_one(
+        {"type": FIRM_NS.Credentials.value, "attributedTo": actor_uri}
+    )
+    private_key = credentials.get(FIRM_NS.privateKey.value) if credentials else None
+    if not key_uri or not private_key:
+        log.warning("No key for signing actor %s; GETs are unsigned", actor_uri)
+        return None
+    return HttpSignatureAuth(key_uri, cast(str, private_key))
+
+
 def get_tenant_uri(scope):
     headers = {k.lower(): v for k, v in scope["headers"]}
 
@@ -176,7 +207,10 @@ def app_factory(config: ServerConfig) -> FastAPI:
                     )
 
             app.state.tenants = tenants
-            app.state.resolver = ResourceResolver(tenants, init_remote_provider(config))
+            provider = init_remote_provider(config)
+            app.state.resolver = ResourceResolver(tenants, provider)
+            if provider is not None:
+                provider.set_signer(await init_remote_signer(config, app.state.resolver))
             app.state.authorizer = CoreAuthorizationService()
             log.info("Remote cache: purged %d expired entries", await app.state.resolver.purge())
 

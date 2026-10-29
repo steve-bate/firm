@@ -24,6 +24,7 @@ from urllib.parse import urldefrag, urljoin, urlparse
 
 from firm.core.interfaces import (
     DEFAULT_HTTP_TIMEOUT,
+    HttpRequestSigner,
     HttpResponse,
     HttpTransport,
     JSONObject,
@@ -131,12 +132,18 @@ class RemoteResourceProvider:
         *,
         policy: FetchPolicy | None = None,
         clock: Callable[[], float] = time.time,
+        signer: HttpRequestSigner | None = None,
     ) -> None:
         self._cache = cache
         self._transport = transport
         self._policy = policy or FetchPolicy()
         self._clock = clock
+        self._signer = signer
         self._inflight: dict[str, asyncio.Task[JSONObject | None]] = {}
+
+    def set_signer(self, signer: HttpRequestSigner | None) -> None:
+        """Attach a signer once the tenants - and so the key it names - exist."""
+        self._signer = signer
 
     def __repr__(self) -> str:
         return f"RemoteResourceProvider({self._policy!r})"
@@ -225,6 +232,7 @@ class RemoteResourceProvider:
             response = await self._transport.get(
                 target,
                 headers={"Accept": self._policy.accept},
+                auth=self._signer,
                 follow_redirects=False,
                 timeout=self._policy.timeout,
             )

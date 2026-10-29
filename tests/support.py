@@ -410,6 +410,16 @@ class StubHttpRequest(HttpRequest):
         }
 
 
+class StubSigner(HttpRequestSigner):
+    """A signer that records the requests it was handed."""
+
+    def __init__(self) -> None:
+        self.signed: list[HttpRequest] = []
+
+    def sign(self, request: HttpRequest) -> None:
+        self.signed.append(request)
+
+
 class StubTransport(HttpTransport):
     """Replays a scripted response per URL, and records what it was asked.
 
