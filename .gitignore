@@ -26,6 +26,7 @@ wheels/
 .venv
 venv/
 ENV/
+.envrc.local
 
 # uv Package Manager
 .uv/
