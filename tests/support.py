@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from anyio import Path
 
 from firm.core.interfaces import (
+    DEFAULT_HTTP_TIMEOUT,
     APActor,
     AuthorizationDecision,
     AuthorizationService,
@@ -13,12 +14,16 @@ from firm.core.interfaces import (
     HttpApplicationState,
     HttpMethod,
     HttpRequest,
+    HttpRequestSigner,
     HttpRequestState,
+    HttpResponse,
+    HttpTransport,
     Identity,
     JSONObject,
     ResourceStore,
     Tenant,
     Url,
+    UrlTypes,
 )
 from firm.core.store.memory import MemoryResourceStore
 from firm.server.config import MemoryStoreConfig, ServerConfig
@@ -368,3 +373,52 @@ class StubHttpRequest(HttpRequest):
                 param.split("=", 1) for param in self._url.query.split("&") if "=" in param
             )
         }
+
+
+class StubTransport(HttpTransport):
+    """Replays a scripted response per URL, and records what it was asked.
+
+    A stub: every answer is canned by the test. An unscripted URL gets a 404,
+    which is what the network would eventually say, and ``post`` raises so a
+    stray federated write fails loudly instead of passing silently.
+    """
+
+    def __init__(self, responses: Mapping[str, HttpResponse] | None = None) -> None:
+        self._responses: dict[str, HttpResponse] = dict(responses or {})
+        self.requests: list[tuple[str, dict[str, str], HttpRequestSigner | None]] = []
+
+    def script(self, url: str, response: HttpResponse) -> None:
+        self._responses[url] = response
+
+    async def get(
+        self,
+        url: UrlTypes,
+        *,
+        params: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
+        cookies: Mapping[str, str] | None = None,
+        auth: HttpRequestSigner | None = None,
+        follow_redirects: bool = False,
+        verify: bool = True,
+        timeout: float = DEFAULT_HTTP_TIMEOUT,
+    ) -> HttpResponse:
+        target = str(url)
+        self.requests.append((target, dict(headers or {}), auth))
+        return self._responses.get(target, HttpResponse(status_code=404))
+
+    async def post(self, *args: Any, **kwargs: Any) -> HttpResponse:
+        raise AssertionError("StubTransport.post is not expected in these tests")
+
+    @property
+    def urls(self) -> list[str]:
+        """The URLs asked for, in order."""
+        return [url for url, _headers, _auth in self.requests]
+
+
+def json_response(
+    document: JSONObject,
+    status_code: int = 200,
+    headers: Mapping[str, str] | None = None,
+) -> HttpResponse:
+    """A response carrying a JSON document, for scripting a StubTransport."""
+    return HttpResponse(status_code=status_code, headers=dict(headers or {}), data=document)
