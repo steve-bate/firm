@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Any, AsyncIterable, Mapping, MutableMapping, cast
 from urllib.parse import urlparse
@@ -383,8 +384,11 @@ class StubTransport(HttpTransport):
     stray federated write fails loudly instead of passing silently.
     """
 
-    def __init__(self, responses: Mapping[str, HttpResponse] | None = None) -> None:
+    def __init__(
+        self, responses: Mapping[str, HttpResponse] | None = None, delay: float = 0.0
+    ) -> None:
         self._responses: dict[str, HttpResponse] = dict(responses or {})
+        self._delay = delay
         self.requests: list[tuple[str, dict[str, str], HttpRequestSigner | None]] = []
 
     def script(self, url: str, response: HttpResponse) -> None:
@@ -404,6 +408,7 @@ class StubTransport(HttpTransport):
     ) -> HttpResponse:
         target = str(url)
         self.requests.append((target, dict(headers or {}), auth))
+        await asyncio.sleep(self._delay)
         return self._responses.get(target, HttpResponse(status_code=404))
 
     async def post(self, *args: Any, **kwargs: Any) -> HttpResponse:

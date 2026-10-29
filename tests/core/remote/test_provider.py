@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -264,3 +265,62 @@ async def test_document_without_an_id_is_rejected():
     entry = await cache.get(NOTE_URI)
     assert entry is not None and entry.is_negative, "only a document that names itself is content"
     assert entry.expires_at == entry.fetched_at + FetchPolicy().failure_ttl
+
+
+async def test_concurrent_fetches_are_deduped():
+    transport = StubTransport({NOTE_URI: json_response(NOTE)}, delay=0.01)
+    provider = _provider(transport)
+
+    results = await asyncio.gather(*(provider.get(NOTE_URI) for _ in range(3)))
+
+    assert results == [NOTE, NOTE, NOTE]
+    assert transport.urls == [NOTE_URI], "three callers, one request"
+
+
+async def test_stale_copy_is_served_when_refetch_fails():
+    transport = StubTransport({NOTE_URI: json_response(NOTE)})
+    clock = Clock()
+    provider = _provider(transport, clock=clock)
+
+    assert await provider.get(NOTE_URI) == NOTE
+    transport.script(NOTE_URI, HttpResponse(status_code=500))
+    clock.advance(FetchPolicy().ttl + 1)
+
+    assert await provider.get(NOTE_URI) == NOTE, "a transient failure is not a deletion"
+    assert len(transport.urls) == 2, "the refetch was attempted"
+
+
+async def test_fragment_is_not_part_of_the_cache_key():
+    transport = StubTransport({NOTE_URI: json_response(NOTE)})
+    cache = MemoryRemoteCache()
+    provider = _provider(transport, cache)
+
+    assert await provider.get(f"{NOTE_URI}#frag") == NOTE
+
+    assert transport.urls == [NOTE_URI], "the fragment never reaches the origin"
+    assert await cache.get(NOTE_URI) is not None
+
+
+async def test_invalidate_drops_the_cached_copy():
+    transport = StubTransport({NOTE_URI: json_response(NOTE)})
+    provider = _provider(transport)
+
+    await provider.get(NOTE_URI)
+    await provider.invalidate(NOTE_URI)
+    await provider.get(NOTE_URI)
+
+    assert transport.urls == [NOTE_URI, NOTE_URI], "the copy is forgotten, the origin still has it"
+
+
+async def test_purge_and_close_delegate_to_the_cache():
+    transport = StubTransport({NOTE_URI: json_response(NOTE)})
+    cache = MemoryRemoteCache()
+    clock = Clock()
+    provider = _provider(transport, cache, clock)
+
+    await provider.get(NOTE_URI)
+    clock.advance(FetchPolicy().ttl + 1)
+    assert await provider.purge() == 1
+
+    await provider.close()
+    assert await cache.get(NOTE_URI) is None

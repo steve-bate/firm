@@ -136,6 +136,7 @@ class RemoteResourceProvider:
         self._transport = transport
         self._policy = policy or FetchPolicy()
         self._clock = clock
+        self._inflight: dict[str, asyncio.Task[JSONObject | None]] = {}
 
     def __repr__(self) -> str:
         return f"RemoteResourceProvider({self._policy!r})"
@@ -150,13 +151,42 @@ class RemoteResourceProvider:
         if not key:
             return None
 
+        now = self._clock()
+        stale: JSONObject | None = None
         entry = await self._cache.get(key)
-        if entry is not None and entry.is_fresh(self._clock()):
-            return entry.document
+        if entry is not None:
+            if entry.is_fresh(now):
+                return entry.document
+            if entry.document is not None:
+                stale = entry.document
 
-        return await self._fetch_and_cache(key)
+        if (task := self._inflight.get(key)) is not None:
+            return await asyncio.shield(task)
 
-    async def _fetch_and_cache(self, key: str) -> JSONObject | None:
+        task = asyncio.create_task(self._fetch_and_cache(key, stale))
+        self._inflight[key] = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            self._inflight.pop(key, None)
+
+    async def invalidate(self, uri: str) -> None:
+        """Forget the cached copy. The origin still has the document."""
+        await self._cache.delete(cache_key(uri))
+
+    async def purge(self) -> int:
+        """Drop expired entries. Returns how many went."""
+        return await self._cache.purge_expired(self._clock())
+
+    async def close(self) -> None:
+        for task in list(self._inflight.values()):
+            task.cancel()
+        self._inflight.clear()
+        await self._cache.close()
+
+    async def _fetch_and_cache(
+        self, key: str, stale: JSONObject | None = None
+    ) -> JSONObject | None:
         now = self._clock()
         document: JSONObject | None = None
         status_code: int | None = None
@@ -173,6 +203,7 @@ class RemoteResourceProvider:
             ttl = self._policy.not_found_ttl
         else:
             ttl = self._policy.failure_ttl
+            document = stale
 
         await self._cache.put(
             CacheEntry(
