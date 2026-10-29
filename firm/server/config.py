@@ -15,6 +15,11 @@ class StorageKind(StrEnum):
     MEMORY = "memory"  # for testing
 
 
+class CacheKind(StrEnum):
+    MEMORY = "memory"
+    SQLITE = "sqlite"
+
+
 @dataclass(frozen=True)
 class FileStoreConfig:
     base: Path
@@ -41,6 +46,20 @@ class ValidationConfig:
 
 
 @dataclass(frozen=True)
+class RemoteFetchConfig:
+    enabled: bool = True
+    kind: CacheKind | None = None
+    path: Path | None = None
+    ttl: float = 300.0
+    failure_ttl: float = 60.0
+    not_found_ttl: float = 86_400.0
+    max_bytes: int = 1_048_576
+    timeout: float = 5.0
+    allow_private_addresses: bool = False
+    signing_actor: str | None = None
+
+
+@dataclass(frozen=True)
 class TenantConfig:
     prefix: str
 
@@ -52,6 +71,7 @@ class ServerConfig:
     store: FileStoreConfig | RdfStoreConfig | MemoryStoreConfig
     validation: ValidationConfig = ValidationConfig()
     shared_inbox_path: str = "shared"
+    remote_fetch: RemoteFetchConfig = field(default_factory=RemoteFetchConfig)
 
     def is_local(self, uri: str) -> bool:
         return any(uri.startswith(tenant.prefix) for tenant in self.tenants)
@@ -65,7 +85,8 @@ def load_config(config_in: typing.IO | str) -> ServerConfig:
                 type_hooks={
                     Path: Path,
                     StorageKind: StorageKind,
-                }  # This tells dacite to convert strings to Path
+                    CacheKind: CacheKind,
+                }  # This tells dacite to convert strings to Path and enums
             )
             return dacite.from_dict(data_class=ServerConfig, data=config_data, config=dacite_config)
         except dacite.exceptions.DaciteError as e:

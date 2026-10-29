@@ -5,7 +5,7 @@ import tomllib
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
-from firm.core.interfaces import JSON, APActor, JSONObject, ResourceStore, Url
+from firm.core.interfaces import JSON, APActor, JSONObject, ResourceStore, Tenant, Url
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +59,16 @@ ACTIVITIES_REQUIRING_TARGET = {
 def is_activity(resource: JSONObject) -> bool:
     # duck typing
     return "actor" in resource and "object" in resource
+
+
+def is_urn(uri: str) -> bool:
+    """True for a URN: a resource with no host, which is never fetched."""
+    return uri.startswith("urn:")
+
+
+def is_local_uri(tenant: Tenant, uri: str) -> bool:
+    """True when the URI is this tenant's own, so only its store can answer."""
+    return uri.startswith(tenant.prefix) or is_urn(uri)
 
 
 def is_public(resource: JSONObject | str) -> bool:
