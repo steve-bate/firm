@@ -1,4 +1,9 @@
+import json
+
+import pytest
+
 from firm.core.interfaces import HttpResponse
+from firm.core.remote import provider as provider_module
 from firm.core.remote.cache import MemoryRemoteCache
 from firm.core.remote.provider import (
     ACTIVITYPUB_ACCEPT,
@@ -8,6 +13,7 @@ from firm.core.remote.provider import (
 from tests.support import Clock, StubTransport, json_response
 
 NOTE_URI = "http://remote.test/note/1"
+PUBLIC_ADDRESS = "93.184.216.34"
 NOTE = {
     "@context": "https://www.w3.org/ns/activitystreams",
     "id": NOTE_URI,
@@ -16,15 +22,24 @@ NOTE = {
 }
 
 
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    """Every hostname resolves to a public address unless a test says otherwise."""
+    monkeypatch.setattr(
+        provider_module, "_resolve_host", lambda host, port: [PUBLIC_ADDRESS], raising=False
+    )
+
+
 def _provider(
     transport: StubTransport,
     cache: MemoryRemoteCache | None = None,
     clock: Clock | None = None,
+    policy: FetchPolicy | None = None,
 ) -> RemoteResourceProvider:
     return RemoteResourceProvider(
         cache or MemoryRemoteCache(),
         transport,
-        policy=FetchPolicy(),
+        policy=policy or FetchPolicy(),
         clock=clock or Clock(),
     )
 
@@ -98,3 +113,154 @@ async def test_not_found_stays_cached_for_the_long_ttl():
     clock.advance(FetchPolicy().failure_ttl * 2)
     assert await provider.get(NOTE_URI) is None
     assert transport.urls == [NOTE_URI], "well past failure_ttl, the 404 is still trusted"
+
+
+async def test_document_id_mismatch_is_rejected():
+    impostor = {**NOTE, "id": "http://remote.test/note/2"}
+    transport = StubTransport({NOTE_URI: json_response(impostor)})
+    cache = MemoryRemoteCache()
+    provider = _provider(transport, cache)
+
+    assert await provider.get(NOTE_URI) is None
+
+    entry = await cache.get(NOTE_URI)
+    assert entry is not None and entry.is_negative, "a document naming another URI is not content"
+    assert entry.expires_at == entry.fetched_at + FetchPolicy().failure_ttl
+
+
+async def test_non_object_body_is_rejected():
+    transport = StubTransport(
+        {NOTE_URI: HttpResponse(status_code=200, body=json.dumps([NOTE]).encode())}
+    )
+    cache = MemoryRemoteCache()
+    provider = _provider(transport, cache)
+
+    assert await provider.get(NOTE_URI) is None
+
+    entry = await cache.get(NOTE_URI)
+    assert entry is not None and entry.is_negative, "a JSON array is not an ActivityPub document"
+
+
+async def test_oversized_body_is_rejected():
+    policy = FetchPolicy(max_bytes=1024)
+    body = json.dumps({**NOTE, "content": "x" * 2048}).encode()
+    assert len(body) > policy.max_bytes, "the fixture must exceed the limit"
+
+    transport = StubTransport({NOTE_URI: HttpResponse(status_code=200, body=body)})
+    cache = MemoryRemoteCache()
+    provider = _provider(transport, cache, policy=policy)
+
+    assert await provider.get(NOTE_URI) is None
+
+    entry = await cache.get(NOTE_URI)
+    assert entry is not None and entry.is_negative, "an oversize body is refused, not truncated"
+    assert entry.expires_at == entry.fetched_at + policy.failure_ttl
+
+
+async def test_redirect_is_followed():
+    canonical = "http://remote.test/note/1-canonical"
+    transport = StubTransport(
+        {
+            NOTE_URI: HttpResponse(status_code=302, headers={"Location": canonical}),
+            canonical: json_response({**NOTE, "id": canonical}),
+        }
+    )
+    cache = MemoryRemoteCache()
+    provider = _provider(transport, cache)
+
+    document = await provider.get(NOTE_URI)
+
+    assert document is not None and document["id"] == canonical
+    assert transport.urls == [NOTE_URI, canonical], "one hop, in order"
+    entry = await cache.get(NOTE_URI)
+    assert (
+        entry is not None and entry.document == document
+    ), "cached under the URI that was asked for"
+
+
+async def test_too_many_redirects_fail():
+    hop = [NOTE_URI, *(f"http://remote.test/hop/{n}" for n in range(2, 6))]
+    transport = StubTransport(
+        {
+            source: HttpResponse(status_code=302, headers={"Location": target})
+            for source, target in zip(hop, hop[1:])
+        }
+    )
+    cache = MemoryRemoteCache()
+    provider = _provider(transport, cache)
+
+    assert await provider.get(NOTE_URI) is None
+
+    assert transport.urls == hop[:4], "the chain stops, it does not run forever"
+    entry = await cache.get(NOTE_URI)
+    assert entry is not None and entry.is_negative
+
+
+async def test_non_http_scheme_is_refused():
+    transport = StubTransport({})
+
+    assert await _provider(transport).get("file:///etc/passwd") is None
+
+    assert transport.urls == [], "refused before any connection"
+
+
+async def test_credentials_in_uri_are_refused():
+    transport = StubTransport({})
+
+    assert await _provider(transport).get("http://user:pass@remote.test/note/1") is None
+
+    assert transport.urls == []
+
+
+async def test_loopback_hostname_is_refused(monkeypatch):
+    def explode(host: str, port: int) -> list[str]:
+        raise AssertionError("a loopback name must not even be resolved")
+
+    monkeypatch.setattr(provider_module, "_resolve_host", explode)
+    transport = StubTransport({})
+
+    assert await _provider(transport).get("http://localhost/note/1") is None
+
+    assert transport.urls == []
+
+
+async def test_private_address_is_refused(monkeypatch):
+    monkeypatch.setattr(provider_module, "_resolve_host", lambda host, port: ["10.0.0.7"])
+    transport = StubTransport({NOTE_URI: json_response(NOTE)})
+    cache = MemoryRemoteCache()
+
+    assert await _provider(transport, cache).get(NOTE_URI) is None
+
+    assert transport.urls == [], "a host that resolves inward is never contacted"
+    entry = await cache.get(NOTE_URI)
+    assert entry is not None and entry.is_negative
+
+
+async def test_redirect_to_private_address_is_refused(monkeypatch):
+    def resolve(host: str, port: int) -> list[str]:
+        return ["192.168.1.5"] if host == "internal.test" else [PUBLIC_ADDRESS]
+
+    monkeypatch.setattr(provider_module, "_resolve_host", resolve)
+    internal = "http://internal.test/secret"
+    transport = StubTransport(
+        {
+            NOTE_URI: HttpResponse(status_code=302, headers={"Location": internal}),
+            internal: json_response({"id": internal, "type": "Note"}),
+        }
+    )
+
+    assert await _provider(transport).get(NOTE_URI) is None
+
+    assert transport.urls == [NOTE_URI], "the public hop is fetched, the private one is not"
+
+
+async def test_document_without_an_id_is_rejected():
+    anonymous = {key: value for key, value in NOTE.items() if key != "id"}
+    transport = StubTransport({NOTE_URI: json_response(anonymous)})
+    cache = MemoryRemoteCache()
+
+    assert await _provider(transport, cache).get(NOTE_URI) is None
+
+    entry = await cache.get(NOTE_URI)
+    assert entry is not None and entry.is_negative, "only a document that names itself is content"
+    assert entry.expires_at == entry.fetched_at + FetchPolicy().failure_ttl

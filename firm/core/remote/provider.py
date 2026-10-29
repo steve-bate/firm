@@ -12,12 +12,15 @@ finished entries verbatim.
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import logging
+import socket
 import time
 from dataclasses import dataclass
 from typing import Callable, cast
-from urllib.parse import urldefrag
+from urllib.parse import urldefrag, urljoin, urlparse
 
 from firm.core.interfaces import (
     DEFAULT_HTTP_TIMEOUT,
@@ -36,6 +39,10 @@ ACTIVITYPUB_ACCEPT = (
 )
 
 GONE_STATUSES = frozenset({404, 410})
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+MAX_REDIRECTS = 3
+
+BLOCKED_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".home.arpa")
 
 
 class FetchError(Exception):
@@ -47,6 +54,56 @@ def cache_key(uri: str) -> str:
     return urldefrag(uri)[0]
 
 
+def _resolve_host(host: str, port: int) -> list[str]:
+    """Every address a host names. Patched in tests."""
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return sorted({str(info[4][0]) for info in infos})
+
+
+def _address_is_public(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
+async def assert_fetchable(uri: str, *, allow_private_addresses: bool = False) -> str:
+    """Validate a target before any connection; return it without its fragment.
+
+    Every resolved address must be globally routable. One private answer is enough
+    to refuse the name outright, rather than filtering to the public addresses:
+    a name that points inward is not a name this server should be using.
+    """
+    base, _fragment = urldefrag(uri)
+    parts = urlparse(base)
+    if parts.scheme not in ("http", "https"):
+        raise FetchError(f"Unsupported scheme: {parts.scheme!r}")
+    if not parts.hostname:
+        raise FetchError(f"No host in URI: {uri}")
+    if parts.username or parts.password:
+        raise FetchError(f"Credentials in URI are not allowed: {uri}")
+    if allow_private_addresses:
+        return base
+
+    host = parts.hostname.lower()
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(BLOCKED_HOST_SUFFIXES):
+        raise FetchError(f"Refusing non-public host: {host}")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        addresses = await asyncio.to_thread(_resolve_host, host, port)
+    except (socket.gaierror, OSError) as exc:
+        raise FetchError(f"Cannot resolve {host}: {exc}") from exc
+    if not addresses:
+        raise FetchError(f"Cannot resolve {host}")
+    blocked = [address for address in addresses if not _address_is_public(address)]
+    if blocked:
+        raise FetchError(f"Refusing non-public address for {host}: {blocked[0]}")
+    return base
+
+
 @dataclass(frozen=True)
 class FetchPolicy:
     """Timings and limits for outbound fetches. No storage knowledge."""
@@ -54,6 +111,8 @@ class FetchPolicy:
     ttl: float = 300.0
     failure_ttl: float = 60.0
     not_found_ttl: float = 86_400.0
+    max_bytes: int = 1_048_576
+    allow_private_addresses: bool = False
     timeout: float = DEFAULT_HTTP_TIMEOUT
     accept: str = ACTIVITYPUB_ACCEPT
 
@@ -127,22 +186,43 @@ class RemoteResourceProvider:
         return document
 
     async def _fetch(self, uri: str) -> tuple[int, JSONObject | None]:
-        response = await self._transport.get(
-            uri,
-            headers={"Accept": self._policy.accept},
-            follow_redirects=False,
-            timeout=self._policy.timeout,
-        )
-        if response.status_code != 200:
-            return response.status_code, None
-        return 200, self._parse(uri, response)
+        target = uri
+        for _ in range(MAX_REDIRECTS + 1):
+            target = await assert_fetchable(
+                target, allow_private_addresses=self._policy.allow_private_addresses
+            )
+            response = await self._transport.get(
+                target,
+                headers={"Accept": self._policy.accept},
+                follow_redirects=False,
+                timeout=self._policy.timeout,
+            )
+            if response.status_code in REDIRECT_STATUSES:
+                location = response.headers.get("Location") or response.headers.get("location")
+                if not location:
+                    raise FetchError(f"Redirect without Location from {target}")
+                target = urljoin(target, location)
+                continue
+            if response.status_code != 200:
+                return response.status_code, None
+            return 200, self._parse(target, response)
+        raise FetchError(f"Too many redirects for {uri}")
 
     def _parse(self, uri: str, response: HttpResponse) -> JSONObject:
         body = response.body or b""
+        if len(body) > self._policy.max_bytes:
+            raise FetchError(
+                f"Response from {uri} is {len(body)} bytes, limit is {self._policy.max_bytes}"
+            )
         try:
             document = json.loads(body)
         except (TypeError, ValueError) as exc:
             raise FetchError(f"Invalid JSON from {uri}: {exc}") from exc
         if not isinstance(document, dict):
             raise FetchError(f"Expected a JSON object from {uri}")
+        document_id = document.get("id")
+        if not document_id:
+            raise FetchError(f"Document from {uri} does not name itself")
+        if cache_key(str(document_id)) != uri:
+            raise FetchError(f"Document id {document_id} does not match {uri}")
         return cast(JSONObject, document)
