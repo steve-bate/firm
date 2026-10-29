@@ -1,14 +1,9 @@
 import copy
 from typing import cast
 
-from firm.core.interfaces import (
-    FIRM_NS,
-    Identity,
-    JSONObject,
-    Tenant,
-    Url,
-)
+from firm.core.interfaces import FIRM_NS, JSONObject, Url
 from firm.core.services.activitypub.collections import dereference_collection_items
+from firm.core.services.activitypub.support import FirmContext
 from firm.core.util import (
     AS2_CONTEXT,
     get_collection_items_key,
@@ -31,7 +26,7 @@ def _add_context(resource: JSONObject, context: Url | str):
         resource["@context"] = [resource["@context"], context]
 
 
-async def serialize(tenant: Tenant, principal: Identity | None, resource: JSONObject) -> JSONObject:
+async def serialize(context: FirmContext, resource: JSONObject) -> JSONObject:
     """Embed specific resources to match typical AP expectations.
 
     The document is copied before anything is rewritten, so the caller's
@@ -42,14 +37,16 @@ async def serialize(tenant: Tenant, principal: Identity | None, resource: JSONOb
     if not isinstance(resource, dict):
         raise Exception("Can only serialize JSON objects")
 
+    tenant = context.tenant
     store = tenant.public_store
+    principal = context.principal
 
     if "@context" not in resource:
         _add_context(resource, AS2_CONTEXT)
 
     if is_collection(resource):
         resource = cast(
-            JSONObject, await dereference_collection_items(store, resource, inplace=True)
+            JSONObject, await dereference_collection_items(context, resource, inplace=True)
         )
         items_key = get_collection_items_key(resource)
         if items_key != "items":

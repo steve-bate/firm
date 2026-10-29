@@ -94,7 +94,7 @@ class StubUrl:
     def __str__(self) -> str:
         """Return a string representation of the StubUrl."""
         return f"{self._scheme}://{self._netloc}{self._path}" + (
-            "?{self._query}" if self._query else ""
+            f"?{self._query}" if self._query else ""
         )
 
 

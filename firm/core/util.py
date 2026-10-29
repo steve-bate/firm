@@ -61,6 +61,11 @@ def is_activity(resource: JSONObject) -> bool:
     return "actor" in resource and "object" in resource
 
 
+def strip_query(uri: str) -> str:
+    """The identity of a resource URI: no query string, no fragment."""
+    return uri.split("?", 1)[0].split("#", 1)[0]
+
+
 def is_urn(uri: str) -> bool:
     """True for a URN: a resource with no host, which is never fetched."""
     return uri.startswith("urn:")

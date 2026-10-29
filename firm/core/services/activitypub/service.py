@@ -36,6 +36,7 @@ from firm.core.util import (
     is_collection,
     resource_id,
     set_collection_items,
+    strip_query,
 )
 
 log = logging.getLogger(__name__)
@@ -147,7 +148,7 @@ class ActivityPubService:
             if len(items) > 0 and (offset + limit < len(all_public_activities)):
                 page["next"] = f"{box_id}?offset={int(offset) + limit}"
 
-            return await serialize(tenant, principal, page)
+            return await serialize(context, page)
 
     async def process_get(
         self,
@@ -157,9 +158,11 @@ class ActivityPubService:
     ) -> JSONObject:
         tenant = context.tenant
         principal = context.principal
+        # The query string belongs to the request, not to the resource being asked for.
+        target = strip_query(str(resource_uri))
         # Return the tenant resource
         # FastAPI starlette always adds a trailing slash
-        if tenant.prefix + "/" == str(resource_uri):
+        if tenant.prefix + "/" == target:
             doc = await tenant.public_store.get(str(tenant.prefix))
             if not doc:
                 raise NotFoundException(resource_uri)
@@ -167,20 +170,20 @@ class ActivityPubService:
                 doc["endpoints"] = tenant.endpoints
             return doc
         # Return a tenant's shared inbox resources
-        if tenant.shared_inbox_uri and str(resource_uri).startswith(tenant.shared_inbox_uri):
+        if tenant.shared_inbox_uri and target.startswith(tenant.shared_inbox_uri):
             return await self._get_shared_inbox(context, resource_uri, options)
         # Return the specified resource
         store = tenant.public_store
-        if resource := await dereference(store, resource_uri):
+        if resource := await dereference(store, target):
             decision = await self._authorizer.is_get_authorized(tenant, principal, resource)
             if decision.authorized:
                 # Filter a collection, if requested.
                 if is_collection(resource) and options and "filter" in options:
                     filter = jsonpath.compile(item_filter(options["filter"]))
-                    items = await dereference_collection_items(store, resource)
+                    items = await dereference_collection_items(context, resource)
                     filtered_nodes = filter.find(items)
                     set_collection_items(resource, [node.value for node in filtered_nodes])
-                return await serialize(tenant, principal, resource)
+                return await serialize(context, resource)
             else:
                 raise NotAuthorizedException(decision.reason or "Not authorized")
         else:
@@ -194,14 +197,15 @@ class ActivityPubService:
     ) -> str | None:
         tenant = context.tenant
         principal = context.principal
-        target_uri_str = str(target_uri)
-        if tenant.shared_inbox_uri and str(target_uri_str).startswith(tenant.shared_inbox_uri):
+        # As in process_get: the query string is the request's, not the resource's.
+        target_uri_str = strip_query(str(target_uri))
+        if tenant.shared_inbox_uri and target_uri_str.startswith(tenant.shared_inbox_uri):
             raise NotImplementedError("Shared inbox does not support POST requests yet")
         store = tenant.public_store
         # All POST requests must be authenticated
         if principal is None:
             raise NotAuthorizedException("Not authenticated")
-        target = await dereference(store, target_uri)
+        target = await dereference(store, target_uri_str)
         if not target:
             raise NotFoundException(target_uri)
         # Boxes must be collections

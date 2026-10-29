@@ -134,6 +134,71 @@ async def test_dereference(service: ActivityPubService, tenant: Tenant):
     }
 
 
+async def test_resource_resolves_when_the_request_has_a_query_string(
+    service: ActivityPubService, tenant: Tenant
+):
+    await tenant.public_store.put({"id": "http://tenant1.test/obj1", "type": "Object"})
+
+    resource = await service.process_get(
+        make_context(tenant), StubUrl.parse("http://tenant1.test/obj1?page=2"), {}
+    )
+
+    assert resource["id"] == "http://tenant1.test/obj1"
+
+
+async def test_tenant_root_resolves_when_the_request_has_a_query_string(
+    service: ActivityPubService, tenant: Tenant
+):
+    await tenant.public_store.put({"id": "http://tenant1.test", "type": "Service"})
+
+    resource = await service.process_get(
+        make_context(tenant), StubUrl.parse("http://tenant1.test/?page=2"), {}
+    )
+
+    assert resource["id"] == "http://tenant1.test"
+
+
+async def test_box_post_resolves_when_the_request_has_a_query_string(
+    recording_service: tuple[ActivityPubService, StubDeliveryService], tenant: Tenant
+):
+    service, delivery = recording_service
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/outbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    activity: JSONObject = {
+        "id": "http://tenant1.test/create-q",
+        "type": "Create",
+        "actor": "http://tenant1.test/user2",
+        "object": {"type": "Note", "content": "hello"},
+    }
+
+    await service.process_post(
+        make_context(tenant, principal=StubIdentity("http://tenant1.test/user2", tenant)),
+        StubUrl.parse("http://tenant1.test/outbox?page=2"),
+        activity,
+    )
+
+    outbox = await tenant.public_store.get("http://tenant1.test/outbox")
+    assert outbox is not None
+    items = outbox["items"]
+    assert isinstance(items, list)
+    assert len(items) == 1
+    assert delivery.delivered == items
+
+
 async def test_dereference_collection(service: ActivityPubService, tenant: Tenant):
     resources: list[JSONObject] = [
         {
@@ -191,7 +256,7 @@ async def test_serialize_does_not_mutate_the_collection_it_is_given(
     }
     snapshot = copy.deepcopy(collection)
 
-    serialized = await serialize(tenant, None, collection)
+    serialized = await serialize(make_context(tenant), collection)
 
     assert collection == snapshot
     assert serialized["orderedItems"] == [{"id": "http://tenant1.test/obj1", "type": "Object"}]
@@ -796,3 +861,77 @@ async def test_dereference_denied_with_required_raises(tmp_path):
 
     with pytest.raises(NotFoundException):
         await context.dereference("http://b.test/note/1", required=True)
+
+
+COLLECTION_URI = "http://tenant1.test/collection"
+REMOTE_MEMBER = "http://remote.test/note/1"
+
+
+async def _collection_with_member(tenant: Tenant, member: str) -> JSONObject:
+    collection: JSONObject = {
+        "id": COLLECTION_URI,
+        "type": "Collection",
+        "totalItems": 1,
+        "items": [member],
+    }
+    await tenant.public_store.put(collection)
+    return collection
+
+
+def _public_note(uri: str) -> JSONObject:
+    return {"id": uri, "type": "Note", "to": ["as:Public"], "content": "hello"}
+
+
+async def test_collection_member_without_a_copy_is_dropped(tenant: Tenant):
+    collection = await _collection_with_member(tenant, REMOTE_MEMBER)
+
+    served = await serialize(make_context(tenant), collection)
+
+    assert "items" not in served and "orderedItems" not in served
+    assert served["totalItems"] == 1, "stored membership is untouched"
+
+
+async def test_collection_member_is_fetched_and_cached(tenant: Tenant):
+    collection = await _collection_with_member(tenant, REMOTE_MEMBER)
+    transport = StubTransport({REMOTE_MEMBER: json_response(_public_note(REMOTE_MEMBER))})
+    context = make_context(tenant, remote=_provider(transport))
+
+    served = await serialize(context, collection)
+    served_again = await serialize(context, collection)
+
+    for document in (served, served_again):
+        items = document.get("orderedItems") or document.get("items")
+        assert items == [_public_note(REMOTE_MEMBER)]
+    assert transport.urls == [REMOTE_MEMBER], "the second read is a cache hit"
+    assert (
+        await tenant.public_store.get(REMOTE_MEMBER) is None
+    ), "a fetched copy stays out of our store"
+
+
+async def test_failed_member_fetch_is_dropped_and_not_retried(tenant: Tenant):
+    collection = await _collection_with_member(tenant, REMOTE_MEMBER)
+    transport = StubTransport({REMOTE_MEMBER: json_response({"error": "gone"}, status_code=404)})
+    context = make_context(tenant, remote=_provider(transport))
+
+    served = await serialize(context, collection)
+    await serialize(context, collection)
+
+    assert "orderedItems" not in served and "items" not in served
+    assert transport.urls == [REMOTE_MEMBER], "a 404 is remembered, not retried"
+
+
+async def test_non_public_remote_member_is_dropped(tenant: Tenant):
+    collection = await _collection_with_member(tenant, REMOTE_MEMBER)
+    private_note: JSONObject = {
+        "id": REMOTE_MEMBER,
+        "type": "Note",
+        "to": ["http://remote.test/someone-else"],
+        "content": "not for you",
+    }
+    transport = StubTransport({REMOTE_MEMBER: json_response(private_note)})
+    context = make_context(tenant, remote=_provider(transport))
+
+    served = await serialize(context, collection)
+
+    assert "orderedItems" not in served and "items" not in served
+    assert transport.urls == [REMOTE_MEMBER], "the fetch happens, serving does not"
