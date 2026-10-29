@@ -48,10 +48,11 @@ async def remove_collection_item(store: ResourceStore, collection_uri: str, item
     # For storage, only 'items' is used
     # Serialization will serialized as orderedItems if needed
     items_key = "items"
-    if items := collection.get(items_key):
-        if isinstance(items, list):
-            if item_uri in items:
-                items.remove(item_uri)
+    items = collection.get(items_key)
+    if isinstance(items, list):
+        if item_uri in items:
+            items.remove(item_uri)
+        collection["totalItems"] = len(items)
     await store.put(collection)
 
 
