@@ -2,6 +2,7 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from firm.core.interfaces import JSONObject, ResourceStore
+from firm.core.services.activitypub.exceptions import InvalidResourceException
 from firm.core.util import dereference, is_local_uri, is_public
 
 if TYPE_CHECKING:
@@ -80,4 +81,4 @@ async def dereference_collection_items(
             return collection
         else:
             return dereferenced_items
-    raise Exception("Collection items must be a list")
+    raise InvalidResourceException("Collection items must be a list")

@@ -6,7 +6,9 @@ import pytest
 from firm.core.interfaces import FIRM_NS, Identity, JSONObject, ResourceStore, Tenant
 from firm.core.remote.cache import MemoryRemoteCache
 from firm.core.remote.provider import FetchPolicy, RemoteResourceProvider
+from firm.core.services.activitypub.collections import dereference_collection_items
 from firm.core.services.activitypub.exceptions import (
+    InvalidRequestException,
     InvalidResourceTypeException,
     NotAuthorizedException,
     NotFoundException,
@@ -261,6 +263,45 @@ async def test_serialize_does_not_mutate_the_collection_it_is_given(
     assert collection == snapshot
     assert serialized["orderedItems"] == [{"id": "http://tenant1.test/obj1", "type": "Object"}]
     assert "items" not in serialized
+
+
+async def test_serialize_rejects_a_non_object_as_a_bad_request(tenant: Tenant):
+    with pytest.raises(InvalidRequestException):
+        await serialize(make_context(tenant), cast(JSONObject, []))
+
+
+async def test_dereference_collection_items_rejects_non_list_items_as_a_bad_request(
+    tenant: Tenant,
+):
+    collection: JSONObject = {
+        "id": "http://tenant1.test/collection",
+        "type": "Collection",
+        "items": "http://tenant1.test/obj1",
+    }
+
+    with pytest.raises(InvalidRequestException):
+        await dereference_collection_items(make_context(tenant), collection)
+
+
+async def test_serialize_serves_a_likes_collection_without_attributed_to(tenant: Tenant):
+    note_uri = "http://tenant1.test/user2/note/1"
+    likes_uri = f"{note_uri}/likes"
+    await tenant.public_store.put(
+        {"id": likes_uri, "type": "Collection", "items": ["http://tenant1.test/user1"]}
+    )
+    await tenant.public_store.put({"id": note_uri, "type": "Note", "likes": likes_uri})
+    activity: JSONObject = {
+        "id": "http://tenant1.test/user2/activity/1",
+        "type": "Create",
+        "object": note_uri,
+    }
+
+    served = await serialize(make_context(tenant), activity)
+
+    note = cast(JSONObject, served["object"])
+    likes = cast(JSONObject, note["likes"])
+    assert likes["id"] == likes_uri
+    assert "items" not in likes, "the emptied items list is dropped"
 
 
 async def test_dereference_collection_filtered(service: ActivityPubService, tenant: Tenant):

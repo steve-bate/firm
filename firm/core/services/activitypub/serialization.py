@@ -3,6 +3,7 @@ from typing import cast
 
 from firm.core.interfaces import FIRM_NS, JSONObject, Url
 from firm.core.services.activitypub.collections import dereference_collection_items
+from firm.core.services.activitypub.exceptions import InvalidResourceException
 from firm.core.services.activitypub.support import FirmContext
 from firm.core.util import (
     AS2_CONTEXT,
@@ -35,7 +36,7 @@ async def serialize(context: FirmContext, resource: JSONObject) -> JSONObject:
     resource = copy.deepcopy(resource)
 
     if not isinstance(resource, dict):
-        raise Exception("Can only serialize JSON objects")
+        raise InvalidResourceException("Can only serialize JSON objects")
 
     tenant = context.tenant
     store = tenant.public_store
@@ -60,8 +61,8 @@ async def serialize(context: FirmContext, resource: JSONObject) -> JSONObject:
             for prop in ["likes", "shares"]:
                 if prop in obj:
                     collection = await safe_dereference(store, cast(str, obj[prop]))
-                    collection.pop("items")
-                    collection.pop("attributedTo")
+                    collection.pop("items", None)
+                    collection.pop("attributedTo", None)
                     obj[prop] = collection
 
     elif "endpoints" in resource:
