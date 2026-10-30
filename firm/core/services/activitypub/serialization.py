@@ -12,7 +12,6 @@ from firm.core.util import (
     is_collection,
     is_type,
     remove_empty_data,
-    safe_dereference,
 )
 
 
@@ -39,7 +38,6 @@ async def serialize(context: FirmContext, resource: JSONObject) -> JSONObject:
         raise InvalidResourceException("Can only serialize JSON objects")
 
     tenant = context.tenant
-    store = tenant.public_store
     principal = context.principal
 
     if "@context" not in resource:
@@ -56,11 +54,11 @@ async def serialize(context: FirmContext, resource: JSONObject) -> JSONObject:
 
     elif is_type(resource, "Create") or is_type(resource, "Update"):
         if isinstance(resource.get("object"), str):
-            obj = await safe_dereference(store, cast(str, resource["object"]))
+            obj = await context.dereference(resource["object"], required=True)
             resource["object"] = obj
             for prop in ["likes", "shares"]:
                 if prop in obj:
-                    collection = await safe_dereference(store, cast(str, obj[prop]))
+                    collection = await context.dereference(cast(str, obj[prop]), required=True)
                     collection.pop("items", None)
                     collection.pop("attributedTo", None)
                     obj[prop] = collection

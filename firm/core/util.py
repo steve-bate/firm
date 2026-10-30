@@ -275,9 +275,3 @@ async def dereference(store: ResourceStore, url: Url | str):
     if isinstance(url, Url):
         url = str(url)
     return await store.get(url)
-
-
-async def safe_dereference(store: ResourceStore, url: Url | str):
-    if resource := await dereference(store, url):
-        return resource
-    raise Exception(f"Resource not found: {url}")

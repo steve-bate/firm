@@ -305,6 +305,23 @@ async def test_serialize_serves_a_likes_collection_without_attributed_to(tenant:
     assert "items" not in likes, "the emptied items list is dropped"
 
 
+async def test_create_object_is_resolved_through_the_context(tenant: Tenant):
+    object_uri = "http://remote.test/note/42"
+    activity: JSONObject = {
+        "id": "http://tenant1.test/user2/activity/2",
+        "type": "Create",
+        "object": object_uri,
+    }
+    note: JSONObject = {"id": object_uri, "type": "Note", "content": "hello"}
+    transport = StubTransport({object_uri: json_response(note)})
+    context = make_context(tenant, remote=_provider(transport))
+
+    served = await serialize(context, activity)
+
+    assert served["object"] == note, "a fetched object is embedded"
+    assert transport.urls == [object_uri], "the fetch is the context's, not the store's"
+
+
 async def test_dereference_collection_filtered(service: ActivityPubService, tenant: Tenant):
     resources: list[JSONObject] = [
         {
