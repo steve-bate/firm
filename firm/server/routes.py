@@ -3,6 +3,7 @@ import datetime
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -15,6 +16,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from jsonschema.exceptions import ValidationError
 
 from firm.core.auth.authorization import CoreAuthorizationService
+from firm.core.delivery.queue import Delivery, DeliveryState
 from firm.core.interfaces import (
     DeliveryService,
     Identity,
@@ -49,7 +51,7 @@ from firm.core.util import (
 from firm.jsonschema.validation import create_validator
 from firm.oauth2.router import create_oauth2_router
 from firm.search.transform.json import JsonMatcher
-from firm.server.auth import get_principal
+from firm.server.auth import get_principal, require_admin
 from firm.server.config import ServerConfig, StorageKind
 from firm.server.delivery import FirmDeliveryService
 from firm.server.html.endpoint import html_endpoint, html_static_endpoint
@@ -408,6 +410,74 @@ def proxy_endpoint(request: Request, principal: Principal = Depends(get_principa
     return proxy(request)
 
 
+def _delivery_json(row: Delivery) -> JSONObject:
+    return {
+        "id": row.id,
+        "tenant": row.tenant,
+        "activity": row.activity,
+        "endpoint": row.endpoint,
+        "state": row.state.value,
+        "attempts": row.attempts,
+        "next_attempt_at": row.next_attempt_at,
+        "last_reason": row.last_reason,
+        "created_at": row.created_at,
+    }
+
+
+def create_admin_router() -> APIRouter:
+    """The delivery queue's admin surface: instance-wide, so it needs the role."""
+    router = APIRouter(prefix="/admin")
+
+    @router.get("/deliveries")
+    async def list_deliveries(
+        request: Request,
+        principal: Principal = Depends(require_admin),
+        state: DeliveryState | None = None,
+        limit: int = 50,
+    ) -> JSONResponse:
+        queue = request.app.state.delivery_queue
+        rows = await queue.list(state=state, limit=limit)
+        return JSONResponse(
+            {
+                "counts": await queue.counts(),
+                "deliveries": [_delivery_json(row) for row in rows],
+            }
+        )
+
+    @router.post("/deliveries/{delivery_id}/retry", status_code=HTTPStatus.ACCEPTED)
+    async def retry_delivery(
+        request: Request,
+        delivery_id: str,
+        principal: Principal = Depends(require_admin),
+    ) -> JSONResponse:
+        queue = request.app.state.delivery_queue
+        row = await queue.get(delivery_id)
+        if row is None:
+            raise HTTPException(HTTPStatus.NOT_FOUND, detail=f"no delivery {delivery_id}")
+        await queue.reschedule(delivery_id, next_attempt_at=time.time(), reason="retry")
+        due = await queue.get(delivery_id)
+        if due is not None:
+            await request.app.state.delivery_service.run(due)
+        after = await queue.get(delivery_id)
+        return JSONResponse(_delivery_json(after or row), status_code=HTTPStatus.ACCEPTED)
+
+    @router.delete("/deliveries/{delivery_id}")
+    async def cancel_delivery(
+        request: Request,
+        delivery_id: str,
+        principal: Principal = Depends(require_admin),
+    ) -> JSONResponse:
+        queue = request.app.state.delivery_queue
+        row = await queue.get(delivery_id)
+        if row is None:
+            raise HTTPException(HTTPStatus.NOT_FOUND, detail=f"no delivery {delivery_id}")
+        await queue.abandon(delivery_id, reason="cancelled")
+        after = await queue.get(delivery_id)
+        return JSONResponse(_delivery_json(after or row))
+
+    return router
+
+
 def create_router(
     config: ServerConfig, delivery_service: DeliveryService | None = None
 ) -> APIRouter:
@@ -428,6 +498,7 @@ def create_router(
     router.add_api_route("/sse/client", sse_client_page_endpoint, methods=["GET"])
     router.include_router(create_sse_router())
     router.include_router(create_media_upload_router())
+    router.include_router(create_admin_router())
 
     @router.get("/sse/test")
     async def sse_test_endpoint(

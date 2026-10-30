@@ -486,3 +486,119 @@ def test_delivery_retry_refuses_a_remote_unit_without_a_signing_actor(tmp_path):
 
     assert result.exit_code != 0, result.output
     assert "signing_actor" in result.output
+
+
+def _seed_admin_queue(tmp_path, **overrides) -> str:
+    """Store an activity and one queue row in the app's own store and queue files."""
+    from dataclasses import replace
+
+    from firm.core.delivery.queue import Delivery
+    from firm.core.delivery.sqlite import SqliteDeliveryQueue
+    from firm.server.config import FileStoreConfig
+    from firm.server.server import init_tenant
+
+    config = ServerConfig([TenantConfig(prefix=TENANT_PREFIX)], FileStoreConfig(base=tmp_path))
+    recipient = f"{TENANT_PREFIX}/recipient"
+    inbox = f"{recipient}/inbox"
+    row = replace(
+        Delivery(
+            id="d1",
+            tenant=TENANT_PREFIX,
+            activity=f"{TENANT_PREFIX}/activities/9",
+            endpoint=inbox,
+            created_at=1_000.0,
+            next_attempt_at=1_000.0,
+        ),
+        **overrides,
+    )
+
+    async def seed() -> None:
+        tenant = init_tenant(config, TENANT_PREFIX)
+        try:
+            await tenant.public_store.put({"id": recipient, "type": "Person", "inbox": inbox})
+            await tenant.public_store.put(
+                {
+                    "id": inbox,
+                    "type": "OrderedCollection",
+                    "attributedTo": recipient,
+                    "items": [],
+                }
+            )
+            await tenant.public_store.put(
+                {
+                    "id": f"{TENANT_PREFIX}/activities/9",
+                    "type": "Create",
+                    "actor": f"{TENANT_PREFIX}/actor1",
+                    "to": [recipient],
+                    "object": {"id": f"{TENANT_PREFIX}/notes/9", "type": "Note"},
+                }
+            )
+        finally:
+            await tenant.public_store.close()
+            await tenant.private_store.close()
+        queue = SqliteDeliveryQueue(tmp_path / "delivery.sqlite")
+        try:
+            await queue.enqueue(row)
+        finally:
+            await queue.close()
+
+    asyncio.run(seed())
+    return inbox
+
+
+def _read_admin_queue(tmp_path, delivery_id: str = "d1"):
+    from firm.core.delivery.sqlite import SqliteDeliveryQueue
+
+    async def read():
+        queue = SqliteDeliveryQueue(tmp_path / "delivery.sqlite")
+        try:
+            return await queue.get(delivery_id)
+        finally:
+            await queue.close()
+
+    return asyncio.run(read())
+
+
+def test_admin_deliveries_requires_the_admin_role(client):
+    response = client.get("/admin/deliveries")
+
+    assert response.status_code == 403, response.text
+
+
+def test_admin_deliveries_lists_the_queue(client, admin_actor, tmp_path):
+    _seed_admin_queue(tmp_path)
+
+    response = client.get("/admin/deliveries")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["counts"]["pending"] == 1
+    assert [row["id"] for row in body["deliveries"]] == ["d1"]
+    assert body["deliveries"][0]["state"] == "pending"
+
+
+def test_admin_delivery_retry_runs_the_unit(client, admin_actor, tmp_path):
+    _seed_admin_queue(tmp_path)
+
+    response = client.post("/admin/deliveries/d1/retry")
+
+    assert response.status_code == 202, response.text
+    assert response.json()["state"] == "delivered"
+    row = _read_admin_queue(tmp_path)
+    assert row is not None and row.state.value == "delivered"
+
+
+def test_admin_delivery_delete_abandons_the_unit(client, admin_actor, tmp_path):
+    _seed_admin_queue(tmp_path)
+
+    response = client.delete("/admin/deliveries/d1")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "abandoned"
+    assert _read_admin_queue(tmp_path).last_reason == "cancelled"
+
+
+def test_admin_delivery_retry_of_an_unknown_id_is_404(client, admin_actor):
+    response = client.post("/admin/deliveries/nope/retry")
+
+    assert response.status_code == 404

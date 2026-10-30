@@ -5,7 +5,7 @@ import pytest
 from fastapi import Request
 from starlette.testclient import TestClient
 
-from firm.core.interfaces import APActor, Principal, Tenant
+from firm.core.interfaces import FIRM_NS, APActor, Principal, Tenant
 from firm.server.auth import get_principal
 from firm.server.config import MemoryStoreConfig, ServerConfig, TenantConfig
 from firm.server.server import app_factory, clear_app
@@ -77,3 +77,18 @@ async def actor(client: TestClient):
     await tenant.public_store.put(actor_doc)
     yield actor_doc
     client.app.dependency_overrides.pop(get_principal, None)
+
+
+@pytest.fixture
+async def admin_actor(client: TestClient, actor):
+    """The `actor` identity, with credentials that carry the admin role."""
+    tenant = next(iter(client.app.state.tenants.values()))
+    await tenant.private_store.put(
+        {
+            "id": f"{actor['id']}/credentials",
+            "type": FIRM_NS.Credentials.value,
+            "attributedTo": actor["id"],
+            FIRM_NS.role.value: ["admin"],
+        }
+    )
+    yield actor
