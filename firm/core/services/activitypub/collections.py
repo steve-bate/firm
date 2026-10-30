@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, cast
 
 from firm.core.interfaces import JSONObject, ResourceStore
 from firm.core.services.activitypub.exceptions import InvalidResourceException
-from firm.core.util import dereference, is_local_uri, is_public
+from firm.core.util import dereference
 
 if TYPE_CHECKING:
     from firm.core.services.activitypub.support import FirmContext
@@ -69,8 +69,15 @@ async def dereference_collection_items(
                 if resolved is None:
                     log.warning("Not serving unresolvable collection item: %s", item)
                     continue
-                if not is_local_uri(context.tenant, item) and not is_public(resolved):
-                    log.info("Not serving non-public remote document: %s", item)
+                decision = await context.authorizer.is_get_authorized(
+                    context.tenant, context.principal, resolved
+                )
+                if not decision.authorized:
+                    log.info(
+                        "Not serving unauthorized collection item: %s (%s)",
+                        item,
+                        decision.reason,
+                    )
                     continue
                 dereferenced_items.append(resolved)
             else:

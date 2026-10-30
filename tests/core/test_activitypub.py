@@ -3,6 +3,7 @@ from typing import Sequence, cast
 
 import pytest
 
+from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.interfaces import FIRM_NS, Identity, JSONObject, ResourceStore, Tenant
 from firm.core.remote.cache import MemoryRemoteCache
 from firm.core.remote.provider import FetchPolicy, RemoteResourceProvider
@@ -1081,7 +1082,7 @@ async def test_failed_item_fetch_is_dropped_and_not_retried(tenant: Tenant):
     assert transport.urls == [REMOTE_ITEM], "a 404 is remembered, not retried"
 
 
-async def test_non_public_remote_item_is_dropped(tenant: Tenant):
+async def test_non_public_remote_item_is_dropped(tenant: Tenant, identity: StubIdentity):
     collection = await _collection_with_item(tenant, REMOTE_ITEM)
     private_note: JSONObject = {
         "id": REMOTE_ITEM,
@@ -1090,12 +1091,38 @@ async def test_non_public_remote_item_is_dropped(tenant: Tenant):
         "content": "not for you",
     }
     transport = StubTransport({REMOTE_ITEM: json_response(private_note)})
-    context = make_context(tenant, remote=_provider(transport))
+    context = make_context(
+        tenant,
+        principal=identity,
+        authorizer=CoreAuthorizationService(),
+        remote=_provider(transport),
+    )
 
     served = await serialize(context, collection)
 
     assert "orderedItems" not in served and "items" not in served
     assert transport.urls == [REMOTE_ITEM], "the fetch happens, serving does not"
+
+
+async def test_collection_item_the_policy_allows_is_served(tenant: Tenant, identity: StubIdentity):
+    collection = await _collection_with_item(tenant, REMOTE_ITEM)
+    addressee: JSONObject = {
+        "id": REMOTE_ITEM,
+        "type": "Create",
+        "actor": "http://remote.test/someone",
+        "to": [identity.uri],
+        "object": {"id": "http://remote.test/note/8", "type": "Note"},
+    }
+    transport = StubTransport({REMOTE_ITEM: json_response(addressee)})
+    authorizer = RecordingAuthorizer()
+    context = make_context(
+        tenant, principal=identity, authorizer=authorizer, remote=_provider(transport)
+    )
+
+    served = await serialize(context, collection)
+
+    assert served.get("orderedItems") == [addressee] or served.get("items") == [addressee]
+    assert authorizer.calls == [(tenant, identity, addressee)], "the policy decides"
 
 
 @pytest.mark.parametrize(
