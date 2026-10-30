@@ -118,6 +118,63 @@ async def test_a_local_create_stores_its_object_like_a_post_does(tenant, service
     assert await tenant.public_store.get(f"{PREFIX}/notes/1") is not None
 
 
+async def test_serialize_survives_a_firm_prefixed_property(tenant, service):
+    document = activity(**{FIRM_NS.collections.value: f"{PREFIX}/collections"})
+
+    message = await service._serialize(tenant, document)
+
+    assert FIRM_NS.collections.value not in message
+
+
+async def test_serialize_strips_firm_properties_from_the_embedded_object(tenant, service):
+    document = activity(
+        object={
+            "id": f"{PREFIX}/notes/1",
+            "type": "Note",
+            FIRM_NS.privateKey.value: "leak",
+        }
+    )
+
+    message = await service._serialize(tenant, document)
+
+    assert message["object"] == {"id": f"{PREFIX}/notes/1", "type": "Note"}
+    assert document["object"][FIRM_NS.privateKey.value] == "leak", "the input is untouched"
+
+
+async def test_serialize_adds_the_activitystreams_context(tenant, service):
+    message = await service._serialize(tenant, activity())
+
+    assert message["@context"] == "https://www.w3.org/ns/activitystreams"
+
+
+async def test_serialize_embeds_a_local_object(tenant, service):
+    await tenant.public_store.put({"id": f"{PREFIX}/notes/1", "type": "Note", "content": "hi"})
+
+    message = await service._serialize(tenant, activity(object=f"{PREFIX}/notes/1"))
+
+    assert message["object"]["content"] == "hi"
+
+
+async def test_serialize_leaves_a_foreign_object_as_a_uri(tenant, service):
+    foreign = "https://remote.test/notes/9"
+    await tenant.public_store.put({"id": foreign, "type": "Note", "content": "not ours"})
+
+    message = await service._serialize(tenant, activity(object=foreign))
+
+    assert message["object"] == foreign
+
+
+async def test_serialize_leaves_a_follow_object_as_a_uri(tenant, service):
+    await tenant.public_store.put(
+        {"id": f"{PREFIX}/recipient2", "type": "Person", "inbox": f"{PREFIX}/recipient2/inbox"}
+    )
+    document = activity(type="Follow", object=f"{PREFIX}/recipient2")
+
+    message = await service._serialize(tenant, document)
+
+    assert message["object"] == f"{PREFIX}/recipient2"
+
+
 async def test_a_local_follow_is_answered_with_an_accept(tenant, service):
     followers = f"{RECIPIENT}/followers"
     outbox = f"{RECIPIENT}/outbox"

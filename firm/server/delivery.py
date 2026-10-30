@@ -1,3 +1,4 @@
+import copy
 import logging
 from typing import Callable, Iterable, Mapping, cast
 
@@ -7,6 +8,7 @@ from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.auth.http_signature import HttpSignatureAuth
 from firm.core.interfaces import (
     FIRM_NS,
+    JSON,
     APActor,
     AuthorizationService,
     DeliveryFailure,
@@ -30,6 +32,7 @@ from firm.core.services.activitypub.exceptions import (
 from firm.core.services.activitypub.service import post_to_inbox, resolve_box
 from firm.core.services.activitypub.support import FirmContext
 from firm.core.util import (
+    AS2_CONTEXT,
     get_id,
     get_prefix_uri,
     get_types,
@@ -50,6 +53,23 @@ def _get_uris(items: list[JSONObject | str]) -> list[str]:
         elif isinstance(item, dict) and "id" in item:
             uris.append(cast(str, item["id"]))
     return uris
+
+
+def strip_firm_properties(value: JSON, predicate: Callable[[str], bool]) -> JSON:
+    """A copy of ``value`` with every mapping key the predicate accepts removed.
+
+    Pure: the caller's document and everything it embeds stay as they were, so a
+    delivery cannot rewrite what the store holds.
+    """
+    if isinstance(value, Mapping):
+        return {
+            key: strip_firm_properties(item, predicate)
+            for key, item in value.items()
+            if not predicate(str(key))
+        }
+    if isinstance(value, list):
+        return [strip_firm_properties(item, predicate) for item in value]
+    return value
 
 
 class DeliveryError(Exception):
@@ -109,19 +129,6 @@ class FirmDeliveryService(DeliveryService):
                     inboxes.add(cast(str, inbox_uri))
         return inboxes
 
-    def _remove_keys(self, obj: JSONObject, predicate: Callable[[str], bool]) -> None:
-        for key, value in obj.items():
-            if key.startswith("firm:"):
-                obj.pop(key)
-            else:
-                if isinstance(value, list):
-                    for item in value:
-                        if isinstance(item, dict):
-                            self._remove_keys(item, predicate)
-                else:
-                    if isinstance(value, dict):
-                        self._remove_keys(value, predicate)
-
     async def _post(
         self,
         inbox: str,
@@ -145,18 +152,27 @@ class FirmDeliveryService(DeliveryService):
             )
 
     async def _serialize(self, tenant: Tenant, activity: JSONObject) -> JSONObject:
-        message = cast(dict, activity).copy()
+        message = copy.deepcopy(activity)
         message.pop("bto", None)
         message.pop("bcc", None)
-        self._remove_keys(message, lambda k: k.startswith("firm:"))
+        message = cast(
+            JSONObject,
+            strip_firm_properties(message, lambda key: key.startswith("firm:")),
+        )
         # TODO Define message/property specific serialization
-        # (selected object embedding, collection paging, etc.)
-        if isinstance(activity.get("object"), str) and "Follow" not in get_types(activity):
-            uri = get_id(activity["object"])
-            if uri:
-                obj = await tenant.public_store.get(uri)
-                if obj:
-                    message["object"] = obj
+        # (collection paging, per-recipient visibility)
+        if "@context" not in message:
+            message["@context"] = AS2_CONTEXT
+        object_uri = get_id(activity.get("object"))
+        if (
+            isinstance(activity.get("object"), str)
+            and object_uri is not None
+            and object_uri.startswith(tenant.prefix)
+            and "Follow" not in get_types(activity)
+        ):
+            embedded = await tenant.public_store.get(object_uri)
+            if embedded:
+                message["object"] = copy.deepcopy(embedded)
         return message
 
     async def _signer(self, tenant: Tenant, actor_uri: str) -> HttpSignatureAuth:
