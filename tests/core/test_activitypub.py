@@ -534,8 +534,10 @@ async def test_inbox_follow(service: ActivityPubService, remote_identity: StubId
         "object": "http://tenant1.test/user2",
     }
 
+    transport = StubTransport({})
+    provider = _provider(transport)
     await service.process_post(
-        make_context(tenant, principal=remote_identity),
+        make_context(tenant, principal=remote_identity, remote=provider),
         StubUrl.parse("http://tenant1.test/inbox"),
         resource,
     )
@@ -543,8 +545,14 @@ async def test_inbox_follow(service: ActivityPubService, remote_identity: StubId
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
     assert inbox and isinstance(inbox["items"], Sequence)
     assert isinstance(inbox["items"], list)
-    assert len(inbox["items"]) == 1
-    assert len(await tenant.public_store.query({"type": "Follow"})) > 0
+    assert inbox["items"] == ["http://remote.test/follow1"]
+    assert (
+        await tenant.public_store.get("http://remote.test/follow1") is None
+    ), "the received Follow is not a tenant document"
+    assert (
+        await provider.get("http://remote.test/follow1") is not None
+    ), "remembered in the remote cache"
+    assert transport.urls == [], "served from the cache, not refetched"
     outbox = await tenant.public_store.get("http://tenant1.test/outbox")
     assert outbox and isinstance(outbox["items"], Sequence)
     assert len(outbox["items"]) == 1
@@ -593,6 +601,7 @@ async def test_inbox_undo_follow(service: ActivityPubService, remote_identity: S
     )
 
     resource: JSONObject = {
+        "id": "http://remote.test/undo-follow1",
         "type": "Undo",
         "actor": "http://remote.test/user1",
         "object": {
@@ -612,9 +621,11 @@ async def test_inbox_undo_follow(service: ActivityPubService, remote_identity: S
     assert followers and isinstance(followers["items"], Sequence)
     assert followers["items"] == []
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
-    assert inbox and isinstance(inbox["items"], Sequence)
-    assert len(inbox["items"]) == 1
-    assert len(await tenant.public_store.query({"type": "Undo"})) > 0
+    assert inbox is not None
+    assert inbox.get("items", []) == ["http://remote.test/undo-follow1"], "listed by its id"
+    assert (
+        len(await tenant.public_store.query({"type": "Undo"})) == 0
+    ), "a received Undo is not a tenant document"
 
 
 async def test_inbox_like(service: ActivityPubService, remote_identity: StubIdentity):
@@ -655,16 +666,23 @@ async def test_inbox_like(service: ActivityPubService, remote_identity: StubIden
         # They are liking the user in this case
         "object": "http://tenant1.test/user2/note",
     }
+    transport = StubTransport({})
+    provider = _provider(transport)
     await service.process_post(
-        make_context(tenant, principal=remote_identity),
+        make_context(tenant, principal=remote_identity, remote=provider),
         StubUrl.parse("http://tenant1.test/inbox"),
         resource,
     )
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
     assert inbox and isinstance(inbox["items"], Sequence)
-    assert len(inbox["items"]) == 1
-    assert len(await tenant.public_store.query({"type": "Like"})) > 0
+    assert inbox["items"] == ["http://remote.test/follow1"]
+    assert (
+        await tenant.public_store.get("http://remote.test/follow1") is None
+    ), "the received Like is not a tenant document"
+    assert (
+        await provider.get("http://remote.test/follow1") is not None
+    ), "remembered in the remote cache"
     likes = await tenant.public_store.get("http://tenant1.test/user2/note/likes")
     assert likes and isinstance(likes["items"], Sequence)
     assert likes["items"] == ["http://remote.test/user1"]
@@ -703,6 +721,7 @@ async def test_inbox_undo_like(service: ActivityPubService, remote_identity: Stu
     )
 
     resource: JSONObject = {
+        "id": "http://remote.test/undo-like1",
         "type": "Undo",
         "actor": "http://remote.test/user1",
         "object": {
@@ -718,12 +737,60 @@ async def test_inbox_undo_like(service: ActivityPubService, remote_identity: Stu
     )
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
-    assert inbox and isinstance(inbox["items"], Sequence)
-    assert len(inbox["items"]) == 1
-    assert len(await tenant.public_store.query({"type": "Undo"})) > 0
+    assert inbox is not None
+    assert inbox.get("items", []) == ["http://remote.test/undo-like1"], "listed by its id"
+    assert (
+        len(await tenant.public_store.query({"type": "Undo"})) == 0
+    ), "a received Undo is not a tenant document"
     likes = await tenant.public_store.get("http://tenant1.test/user2/note/likes")
     assert likes and isinstance(likes["items"], Sequence)
     assert likes["items"] == []
+
+
+async def test_inbox_rejects_an_activity_without_an_id(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+                "followers": "http://tenant1.test/user2/followers",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2/followers",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+                "items": ["http://remote.test/user1"],
+            }
+        ],
+    )
+    resource: JSONObject = {
+        "type": "Undo",
+        "actor": "http://remote.test/user1",
+        "object": {"type": "Follow", "object": "http://tenant1.test/user2"},
+    }
+
+    with pytest.raises(InvalidRequestException):
+        await service.process_post(
+            make_context(tenant, principal=remote_identity),
+            StubUrl.parse("http://tenant1.test/inbox"),
+            resource,
+        )
 
 
 async def test_inbox_create_object(service: ActivityPubService, remote_identity: StubIdentity):
@@ -764,11 +831,64 @@ async def test_inbox_create_object(service: ActivityPubService, remote_identity:
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
     assert inbox and isinstance(inbox["items"], Sequence)
-    assert len(inbox["items"]) == 1
-    create_activity = (await tenant.public_store.query({"type": "Create"}))[0]
-    assert create_activity["object"] == "http://tenant1.test/user2/document"
+    assert inbox["items"] == ["http://remote.test/create1"], "the activity is still listed"
+
+    assert (
+        await tenant.public_store.get("http://remote.test/create1") is None
+    ), "the received activity belongs to another server"
     document = (await tenant.public_store.query({"type": "Document"}))[0]
-    assert create_activity["object"] == document["id"]
+    assert document["id"] == "http://tenant1.test/user2/document", "an own-prefix object is ours"
+
+
+async def test_inbox_create_is_not_written_into_the_tenant_store(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+                "followers": "http://tenant1.test/user2/followers",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    transport = StubTransport({})
+    context = make_context(tenant, principal=remote_identity, remote=_provider(transport))
+    resource: JSONObject = {
+        "id": "http://remote.test/create9",
+        "type": "Create",
+        "actor": "http://remote.test/user1",
+        "object": {
+            "id": "http://tenant1.test/user2/note/9",
+            "type": "Note",
+            "content": "hello",
+        },
+    }
+
+    await service.process_post(context, StubUrl.parse("http://tenant1.test/inbox"), resource)
+
+    assert (
+        await tenant.public_store.get("http://remote.test/create9") is None
+    ), "a remote activity is not ours to store"
+    assert (
+        await tenant.public_store.get("http://tenant1.test/user2/note/9")
+    ) is not None, "an object under our prefix is ours"
+
+    inbox = await tenant.public_store.get("http://tenant1.test/inbox")
+    assert inbox is not None and inbox["items"] == ["http://remote.test/create9"], "still listed"
+
+    remembered = await context.resolver.fetch("http://remote.test/create9")
+    assert remembered is not None and remembered["id"] == "http://remote.test/create9"
+    assert transport.urls == [], "remembered in the remote cache, not refetched"
 
 
 @pytest.mark.parametrize(

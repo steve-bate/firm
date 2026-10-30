@@ -18,6 +18,7 @@ from firm.core.services.activitypub.collections import (
     dereference_collection_items,
 )
 from firm.core.services.activitypub.exceptions import (
+    InvalidRequestException,
     InvalidResourceException,
     InvalidResourceTypeException,
     NotAuthorizedException,
@@ -30,11 +31,11 @@ from firm.core.services.activitypub.serialization import serialize
 from firm.core.services.activitypub.support import FirmBoxContext, FirmContext
 from firm.core.util import (
     dereference,
+    get_id,
     has_value,
     is_accessible,
     is_activity,
     is_collection,
-    resource_id,
     set_collection_items,
     strip_query,
 )
@@ -233,8 +234,11 @@ class ActivityPubService:
                 if not decision.authorized:
                     raise NotAuthorizedException(decision.reason)
                 log.info(f"Inbox: box={target_uri}, activity_type={resource.get('type')}")
-                await store.put(resource)
-                await add_collection_item(store, box_owner["inbox"], resource_id(resource))
+                activity_id = get_id(resource)
+                if activity_id is None:
+                    raise InvalidRequestException("Activity must have an id")
+                await context.keep(resource)
+                await add_collection_item(store, box_owner["inbox"], str(activity_id))
                 box_context = FirmBoxContext(
                     context.resolver,
                     tenant,

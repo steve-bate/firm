@@ -62,6 +62,20 @@ class ResourceResolver:
             return None
         return await self._remote.get(uri)
 
+    async def remember(self, document: JSONObject) -> None:
+        """Keep a document another server sent us, in the remote cache.
+
+        Refused for a locally owned URI: that document is a tenant's own resource and
+        the remote cache is not where a tenant's documents live.
+        """
+        uri = str(document.get("id") or "")
+        if not uri or self.owner(uri) is not None or is_urn(uri):
+            log.warning("Refusing to remember a locally owned document: %s", uri)
+            return
+        if self._remote is None:
+            return
+        await self._remote.remember(document)
+
     async def purge(self) -> int:
         """Drop expired cached documents. Returns the number removed."""
         if self._remote is None:

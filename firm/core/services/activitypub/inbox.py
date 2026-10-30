@@ -126,9 +126,8 @@ async def _process_inbox_create(
     activity_object = activity["object"]
     if isinstance(activity_object, Mapping):
         activity["object"] = resource_id(activity_object)
-        store = context.tenant.public_store
-        await store.put(activity_object)
-        await store.put(activity)
+        await context.keep(activity_object)
+        await context.keep(activity)
 
 
 async def _process_inbox_undo(

@@ -188,6 +188,26 @@ class RemoteResourceProvider:
         """Forget the cached copy. The origin still has the document."""
         await self._cache.delete(cache_key(uri))
 
+    async def remember(self, document: JSONObject) -> None:
+        """Cache a document this server was sent, so serving it needs no refetch.
+
+        Only for material another server owns: a document under a local prefix is the
+        owning tenant's to store, and never belongs here.
+        """
+        key = cache_key(str(document.get("id") or ""))
+        if not key:
+            return
+        now = self._clock()
+        await self._cache.put(
+            CacheEntry(
+                uri=key,
+                document=document,
+                status_code=200,
+                fetched_at=now,
+                expires_at=now + self._policy.ttl,
+            )
+        )
+
     async def purge(self) -> int:
         """Drop expired entries. Returns how many went."""
         return await self._cache.purge_expired(self._clock())

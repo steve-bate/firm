@@ -82,6 +82,25 @@ class FirmContext:
             return None
         return document
 
+    async def keep(self, document: JSONObject) -> None:
+        """Keep a document that arrived from another server.
+
+        A document under this tenant's prefix is ours to hold, so it goes to the
+        tenant's own store. Anything else belongs to the server that authored it and is
+        remembered in the remote cache; a tenant store never receives it.
+        """
+        uri = get_id(document) or ""
+        if not uri:
+            log.debug("Not keeping a document without an id")
+            return
+        if is_local_uri(self.tenant, uri):
+            await self.tenant.public_store.put(document)
+            return
+        if self.resolver.owner(uri) is not None:
+            log.warning("Not keeping a document owned by another tenant: %s", uri)
+            return
+        await self.resolver.remember(document)
+
 
 @dataclass(frozen=True)
 class FirmBoxContext(FirmContext):
