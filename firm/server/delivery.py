@@ -34,7 +34,6 @@ from firm.core.services.activitypub.support import FirmContext
 from firm.core.util import (
     AS2_CONTEXT,
     get_id,
-    get_prefix_uri,
     get_types,
     is_collection,
     is_public,
@@ -73,16 +72,26 @@ def strip_firm_properties(value: JSON, predicate: Callable[[str], bool]) -> JSON
 
 
 class DeliveryError(Exception):
-    """One inbox, or the activity itself, could not be delivered."""
+    """One inbox, or the activity itself, could not be delivered.
 
-    def __init__(self, reason: str, attempts: int) -> None:
+    ``status`` is the peer's HTTP answer when there was one, so the queue can tell a
+    refusal (terminal) from a fault (worth another round).
+    """
+
+    def __init__(self, reason: str, attempts: int, status: int | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
         self.attempts = attempts
+        self.status = status
 
 
 class DeliveryRefused(DeliveryError):
     """The receiving instance refused the activity; a retry will not change its mind."""
+
+
+def _is_retryable(status_code: int) -> bool:
+    """A server fault or a throttle may clear; a refusal will not."""
+    return status_code >= 500 or status_code in {408, 425, 429}
 
 
 class FirmDeliveryService(DeliveryService):
@@ -142,18 +151,32 @@ class FirmDeliveryService(DeliveryService):
         message: JSONObject,
         auth: HttpSignatureAuth,
     ) -> None:
-        try:
-            response = await self._transport.post(
-                inbox,
-                json=message,
-                headers={"Content-Type": "application/activity+json"},
-                auth=auth,
-                timeout=self._delivery.timeout,
-            )
-        except Exception as e:
-            log.error(f"Error posting to {inbox}: {e}")
-            return
-        log.info(f"FirmDeliveryService POST {inbox} {response.status_code}")
+        reason = "no attempt was made"
+        status: int | None = None
+        for attempt in range(1, self._delivery.max_attempts + 1):
+            try:
+                response = await self._transport.post(
+                    inbox,
+                    json=message,
+                    headers={"Content-Type": "application/activity+json"},
+                    auth=auth,
+                    timeout=self._delivery.timeout,
+                )
+            except Exception as exc:
+                # A transport failure is a failed delivery, not a bug in this module.
+                reason = f"{type(exc).__name__}: {exc}"
+                status = None
+            else:
+                if 200 <= response.status_code < 300:
+                    log.info(f"FirmDeliveryService POST {inbox} {response.status_code}")
+                    return
+                reason = f"HTTP {response.status_code}"
+                status = response.status_code
+                if not _is_retryable(status):
+                    raise DeliveryError(reason, attempt, status=status)
+            if attempt < self._delivery.max_attempts:
+                await self._sleep(self._delivery.retry_backoff * 2 ** (attempt - 1))
+        raise DeliveryError(reason, self._delivery.max_attempts, status=status)
 
     async def _serialize(self, tenant: Tenant, activity: JSONObject) -> JSONObject:
         message = copy.deepcopy(activity)
@@ -263,25 +286,59 @@ class FirmDeliveryService(DeliveryService):
         except DeliveryError as exc:
             return DeliveryReport(failed=(DeliveryFailure(None, exc.attempts, exc.reason),))
         inboxes = await self._resolve_inboxes(tenant.public_store, self._recipients(activity))
+        return await self._fan_out(tenant, all_tenants, activity, activity_uri, inboxes, auth)
+
+    def _owner_of(
+        self, inbox_uri: str, tenant: Tenant, all_tenants: Mapping[str, Tenant]
+    ) -> Tenant | None:
+        """The local tenant that owns an inbox URI, longest prefix first."""
+        best: Tenant | None = None
+        for prefix, candidate in all_tenants.items():
+            if inbox_uri.startswith(prefix) and (best is None or len(prefix) > len(best.prefix)):
+                best = candidate
+        return best or (tenant if self._config.is_local(inbox_uri) else None)
+
+    async def _fan_out(
+        self,
+        tenant: Tenant,
+        all_tenants: Mapping[str, Tenant],
+        activity: JSONObject,
+        activity_uri: str,
+        inboxes: set[str],
+        auth: HttpSignatureAuth,
+    ) -> DeliveryReport:
+        """Send to every inbox, bounded, and report what happened to each."""
+        message: JSONObject | None = None
+        if any(not self._config.is_local(inbox) for inbox in inboxes):
+            message = await self._serialize(tenant, activity)
+        semaphore = asyncio.Semaphore(self._delivery.concurrency)
+        serialized = message
+
+        async def deliver_one(inbox: str) -> str:
+            async with semaphore:
+                if self._config.is_local(inbox):
+                    owner = self._owner_of(inbox, tenant, all_tenants)
+                    if owner is None:
+                        raise DeliveryError(f"unknown tenant for inbox {inbox}", 1)
+                    await self._deliver_locally(owner, tenant, activity, inbox)
+                else:
+                    if serialized is None:
+                        raise DeliveryError(f"nothing to post to {inbox}", 1)
+                    await self._post(inbox, serialized, auth)
+                return inbox
+
+        ordered = sorted(inboxes)
+        results = await asyncio.gather(
+            *(deliver_one(inbox) for inbox in ordered), return_exceptions=True
+        )
         delivered: list[str] = []
         failed: list[DeliveryFailure] = []
-        message = None
-        for inbox_uri in sorted(inboxes):
-            try:
-                if self._config.is_local(inbox_uri):
-                    inbox_prefix = get_prefix_uri(inbox_uri)
-                    target_tenant = (
-                        tenant if inbox_prefix == tenant.prefix else all_tenants.get(inbox_prefix)
-                    )
-                    if not target_tenant:
-                        raise DeliveryError(f"unknown tenant for inbox {inbox_uri}", 1)
-                    await self._deliver_locally(target_tenant, tenant, activity, inbox_uri)
+        for inbox, result in zip(ordered, results):
+            if isinstance(result, BaseException):
+                if isinstance(result, DeliveryError):
+                    failed.append(DeliveryFailure(inbox, result.attempts, result.reason))
                 else:
-                    if message is None:
-                        message = await self._serialize(tenant, activity)
-                    await self._post(inbox_uri, message=message, auth=auth)
-            except DeliveryError as exc:
-                failed.append(DeliveryFailure(inbox_uri, exc.attempts, exc.reason))
+                    raise result
             else:
-                delivered.append(inbox_uri)
+                delivered.append(result)
         return DeliveryReport(delivered=tuple(delivered), failed=tuple(failed))

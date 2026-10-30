@@ -8,7 +8,7 @@ from firm.core.auth.keys import create_key_pair
 from firm.core.interfaces import FIRM_NS, Tenant
 from firm.core.store.memory import MemoryResourceStore
 from firm.server.config import FileStoreConfig, ServerConfig, TenantConfig
-from firm.server.delivery import FirmDeliveryService
+from firm.server.delivery import DeliveryError, FirmDeliveryService
 from tests.support import StubTransport, json_response
 
 PREFIX = "https://local.test"
@@ -150,6 +150,25 @@ async def test_serialize_strips_firm_properties_from_the_embedded_object(tenant,
 REMOTE_INBOX = "https://remote.test/users/bob/inbox"
 
 
+async def _no_sleep(seconds: float) -> None:
+    return None
+
+
+class Sleeps:
+    """Records the backoff delays instead of waiting them out."""
+
+    def __init__(self) -> None:
+        self.values: list[float] = []
+
+    async def record(self, seconds: float) -> None:
+        self.values.append(seconds)
+
+
+@pytest.fixture
+def sleeps() -> Sleeps:
+    return Sleeps()
+
+
 async def test_post_uses_the_transport_with_the_configured_timeout(tenant, config, transport):
     service = FirmDeliveryService(config, transport)
     auth = await service._signer(tenant, SENDER)
@@ -162,6 +181,94 @@ async def test_post_uses_the_transport_with_the_configured_timeout(tenant, confi
     assert post["json"] == {"id": f"{PREFIX}/activities/1"}
     assert post["content_type"] == "application/activity+json"
     assert post["timeout"] == config.delivery.timeout
+
+
+async def test_a_5xx_is_retried_until_it_succeeds(tenant, config, transport, sleeps):
+    transport.post_script(
+        REMOTE_INBOX, [json_response({}, status_code=503), json_response({}, status_code=202)]
+    )
+    service = FirmDeliveryService(config, transport, sleep=sleeps.record)
+    auth = await service._signer(tenant, SENDER)
+
+    await service._post(REMOTE_INBOX, {"id": "x"}, auth)
+
+    assert len(transport.posts) == 2
+    assert sleeps.values == [0.5], "one wait between the two attempts"
+
+
+async def test_backoff_doubles_between_attempts(tenant, config, transport, sleeps):
+    transport.post_script(REMOTE_INBOX, json_response({}, status_code=500))
+    service = FirmDeliveryService(config, transport, sleep=sleeps.record)
+    auth = await service._signer(tenant, SENDER)
+
+    with pytest.raises(DeliveryError) as raised:
+        await service._post(REMOTE_INBOX, {"id": "x"}, auth)
+
+    assert sleeps.values == [0.5, 1.0]
+    assert len(transport.posts) == 3
+    assert raised.value.attempts == 3
+    assert raised.value.reason == "HTTP 500"
+    assert raised.value.status == 500
+
+
+async def test_a_4xx_is_not_retried(tenant, config, transport, sleeps):
+    transport.post_script(REMOTE_INBOX, json_response({}, status_code=404))
+    service = FirmDeliveryService(config, transport, sleep=sleeps.record)
+    auth = await service._signer(tenant, SENDER)
+
+    with pytest.raises(DeliveryError) as raised:
+        await service._post(REMOTE_INBOX, {"id": "x"}, auth)
+
+    assert len(transport.posts) == 1
+    assert sleeps.values == []
+    assert raised.value.attempts == 1
+    assert raised.value.status == 404
+
+
+async def test_a_transport_error_is_retried(tenant, config):
+    transport = StubTransport()  # an unscripted POST raises
+    service = FirmDeliveryService(config, transport, sleep=_no_sleep)
+    auth = await service._signer(tenant, SENDER)
+
+    with pytest.raises(DeliveryError) as raised:
+        await service._post(REMOTE_INBOX, {"id": "x"}, auth)
+
+    assert len(transport.posts) == 3
+    assert "AssertionError" in raised.value.reason
+
+
+INBOXES = [f"https://remote.test/users/{name}/inbox" for name in "abc"]
+
+
+async def test_a_slow_inbox_does_not_delay_the_others(tenant, config):
+    transport = StubTransport(delay=0.01)
+    for inbox in INBOXES:
+        transport.post_script(inbox, json_response({}, status_code=202))
+    service = FirmDeliveryService(config, transport)
+    auth = await service._signer(tenant, SENDER)
+
+    report = await service._fan_out(
+        tenant, {PREFIX: tenant}, activity(), f"{PREFIX}/activities/1", set(INBOXES), auth
+    )
+
+    assert sorted(report.delivered) == sorted(INBOXES)
+    assert transport.max_concurrent_posts > 1, "the inboxes were in flight together"
+
+
+async def test_a_failed_inbox_is_reported_beside_a_successful_one(tenant, config):
+    transport = StubTransport()
+    transport.post_script(INBOXES[0], json_response({}, status_code=202))
+    transport.post_script(INBOXES[1], json_response({}, status_code=404))
+    transport.post_script(INBOXES[2], json_response({}, status_code=202))
+    service = FirmDeliveryService(config, transport, sleep=_no_sleep)
+    auth = await service._signer(tenant, SENDER)
+
+    report = await service._fan_out(
+        tenant, {PREFIX: tenant}, activity(), f"{PREFIX}/activities/1", set(INBOXES), auth
+    )
+
+    assert sorted(report.delivered) == sorted([INBOXES[0], INBOXES[2]])
+    assert [(failure.inbox, failure.attempts) for failure in report.failed] == [(INBOXES[1], 1)]
 
 
 async def test_serialize_adds_the_activitystreams_context(tenant, service):
