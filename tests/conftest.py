@@ -55,7 +55,7 @@ class LazyActor(dict):
 async def actor(client: TestClient):
     """Yields the actor ID and installs a get_principal override that authenticates as that actor."""
 
-    tenant = client.app.state.tenants[TENANT_PREFIX]
+    tenant = next(iter(client.app.state.tenants.values()))
     actor_id = f"{tenant.prefix}/actor1"
 
     actor_doc = LazyActor(

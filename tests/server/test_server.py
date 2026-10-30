@@ -125,6 +125,20 @@ class TestServer(FirmServerTestBase): ...
 class TestLiveServer(FirmServerTestBase): ...
 
 
+def test_post_to_an_unknown_box_returns_404(client, actor):
+    response = client.post(
+        f"{TENANT_PREFIX}/box/unknown",
+        json={
+            "type": "Create",
+            "actor": actor["id"],
+            "object": {"type": "Note", "content": "hello"},
+        },
+        headers={"Content-Type": "application/activity+json"},
+    )
+
+    assert response.status_code == 404
+
+
 async def test_http_transport_get(httpx_mock: HTTPXMock):
     httpx_mock.add_response(
         method="GET",

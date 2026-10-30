@@ -511,6 +511,8 @@ def create_router(config: ServerConfig) -> APIRouter:
                     )
                 else:
                     return PlainTextResponse("OK", media_type="text/plain")
+            except NotFoundException as e:
+                raise HTTPException(HTTPStatus.NOT_FOUND, detail=str(e))
             except NotAuthorizedException as e:
                 raise HTTPException(HTTPStatus.FORBIDDEN, detail=str(e))
             except InvalidRequestException as e:

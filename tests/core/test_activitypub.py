@@ -864,15 +864,15 @@ async def test_dereference_denied_with_required_raises(tmp_path):
 
 
 COLLECTION_URI = "http://tenant1.test/collection"
-REMOTE_MEMBER = "http://remote.test/note/1"
+REMOTE_ITEM = "http://remote.test/note/1"
 
 
-async def _collection_with_member(tenant: Tenant, member: str) -> JSONObject:
+async def _collection_with_item(tenant: Tenant, item: str) -> JSONObject:
     collection: JSONObject = {
         "id": COLLECTION_URI,
         "type": "Collection",
         "totalItems": 1,
-        "items": [member],
+        "items": [item],
     }
     await tenant.public_store.put(collection)
     return collection
@@ -882,18 +882,18 @@ def _public_note(uri: str) -> JSONObject:
     return {"id": uri, "type": "Note", "to": ["as:Public"], "content": "hello"}
 
 
-async def test_collection_member_without_a_copy_is_dropped(tenant: Tenant):
-    collection = await _collection_with_member(tenant, REMOTE_MEMBER)
+async def test_collection_item_without_a_copy_is_dropped(tenant: Tenant):
+    collection = await _collection_with_item(tenant, REMOTE_ITEM)
 
     served = await serialize(make_context(tenant), collection)
 
     assert "items" not in served and "orderedItems" not in served
-    assert served["totalItems"] == 1, "stored membership is untouched"
+    assert served["totalItems"] == 1, "the stored items are untouched"
 
 
-async def test_collection_member_is_fetched_and_cached(tenant: Tenant):
-    collection = await _collection_with_member(tenant, REMOTE_MEMBER)
-    transport = StubTransport({REMOTE_MEMBER: json_response(_public_note(REMOTE_MEMBER))})
+async def test_collection_item_is_fetched_and_cached(tenant: Tenant):
+    collection = await _collection_with_item(tenant, REMOTE_ITEM)
+    transport = StubTransport({REMOTE_ITEM: json_response(_public_note(REMOTE_ITEM))})
     context = make_context(tenant, remote=_provider(transport))
 
     served = await serialize(context, collection)
@@ -901,37 +901,37 @@ async def test_collection_member_is_fetched_and_cached(tenant: Tenant):
 
     for document in (served, served_again):
         items = document.get("orderedItems") or document.get("items")
-        assert items == [_public_note(REMOTE_MEMBER)]
-    assert transport.urls == [REMOTE_MEMBER], "the second read is a cache hit"
+        assert items == [_public_note(REMOTE_ITEM)]
+    assert transport.urls == [REMOTE_ITEM], "the second read is a cache hit"
     assert (
-        await tenant.public_store.get(REMOTE_MEMBER) is None
+        await tenant.public_store.get(REMOTE_ITEM) is None
     ), "a fetched copy stays out of our store"
 
 
-async def test_failed_member_fetch_is_dropped_and_not_retried(tenant: Tenant):
-    collection = await _collection_with_member(tenant, REMOTE_MEMBER)
-    transport = StubTransport({REMOTE_MEMBER: json_response({"error": "gone"}, status_code=404)})
+async def test_failed_item_fetch_is_dropped_and_not_retried(tenant: Tenant):
+    collection = await _collection_with_item(tenant, REMOTE_ITEM)
+    transport = StubTransport({REMOTE_ITEM: json_response({"error": "gone"}, status_code=404)})
     context = make_context(tenant, remote=_provider(transport))
 
     served = await serialize(context, collection)
     await serialize(context, collection)
 
     assert "orderedItems" not in served and "items" not in served
-    assert transport.urls == [REMOTE_MEMBER], "a 404 is remembered, not retried"
+    assert transport.urls == [REMOTE_ITEM], "a 404 is remembered, not retried"
 
 
-async def test_non_public_remote_member_is_dropped(tenant: Tenant):
-    collection = await _collection_with_member(tenant, REMOTE_MEMBER)
+async def test_non_public_remote_item_is_dropped(tenant: Tenant):
+    collection = await _collection_with_item(tenant, REMOTE_ITEM)
     private_note: JSONObject = {
-        "id": REMOTE_MEMBER,
+        "id": REMOTE_ITEM,
         "type": "Note",
         "to": ["http://remote.test/someone-else"],
         "content": "not for you",
     }
-    transport = StubTransport({REMOTE_MEMBER: json_response(private_note)})
+    transport = StubTransport({REMOTE_ITEM: json_response(private_note)})
     context = make_context(tenant, remote=_provider(transport))
 
     served = await serialize(context, collection)
 
     assert "orderedItems" not in served and "items" not in served
-    assert transport.urls == [REMOTE_MEMBER], "the fetch happens, serving does not"
+    assert transport.urls == [REMOTE_ITEM], "the fetch happens, serving does not"

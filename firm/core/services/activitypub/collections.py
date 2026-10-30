@@ -66,7 +66,7 @@ async def dereference_collection_items(
             if isinstance(item, str):
                 resolved = await context.dereference(item)
                 if resolved is None:
-                    log.warning("Not serving unresolvable collection member: %s", item)
+                    log.warning("Not serving unresolvable collection item: %s", item)
                     continue
                 if not is_local_uri(context.tenant, item) and not is_public(resolved):
                     log.info("Not serving non-public remote document: %s", item)
