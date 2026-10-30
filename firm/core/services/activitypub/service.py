@@ -1,3 +1,4 @@
+import copy
 import logging
 from typing import Any, Mapping, cast
 from urllib.parse import parse_qs
@@ -5,6 +6,7 @@ from urllib.parse import parse_qs
 import jsonpath_rfc9535 as jsonpath  # type: ignore
 
 from firm.core.interfaces import (
+    APActor,
     AuthorizationService,
     DeliveryService,
     Identity,
@@ -30,12 +32,15 @@ from firm.core.services.activitypub.outbox import process_outbox
 from firm.core.services.activitypub.serialization import serialize
 from firm.core.services.activitypub.support import FirmBoxContext, FirmContext
 from firm.core.util import (
+    RECIPIENT_FIELDS,
     dereference,
     get_id,
+    get_list,
     has_value,
     is_accessible,
     is_activity,
     is_collection,
+    is_public,
     set_collection_items,
     strip_query,
 )
@@ -71,6 +76,26 @@ async def _activity_query(principal, store, filter: jsonpath.JSONPathQuery | Non
 def _assert_authorized_actor(principal: Identity | None, actor_uri):
     if principal is None or actor_uri != principal.uri:
         raise NotAuthorizedException()
+
+
+def _addressed_to_box_owner(activity: JSONObject, box_owner: APActor) -> JSONObject:
+    """An activity delivered to a personal inbox is addressed to its owner.
+
+    The delivery is the claim: the author sent it here, so the owner is in the
+    audience even when the document names nobody. The policy reads the document
+    alone, so the claim has to be in it.
+    """
+    owner_uri = box_owner.get("id")
+    if not isinstance(owner_uri, str):
+        return activity
+    obj = activity.get("object")
+    if is_public(activity) or (isinstance(obj, dict) and is_public(obj)):
+        return activity
+    if any(owner_uri in get_list(activity, field) for field in RECIPIENT_FIELDS):
+        return activity
+    addressed = copy.deepcopy(activity)
+    addressed["to"] = get_list(activity, "to") + [owner_uri]
+    return addressed
 
 
 class ActivityPubService:
@@ -233,6 +258,9 @@ class ActivityPubService:
                 )
                 if not decision.authorized:
                     raise NotAuthorizedException(decision.reason)
+                # The delivery is what makes the owner a recipient; later steps
+                # (and the copy kept in the box) see the same document.
+                resource = _addressed_to_box_owner(resource, cast(APActor, box_owner))
                 log.info(f"Inbox: box={target_uri}, activity_type={resource.get('type')}")
                 activity_id = get_id(resource)
                 if activity_id is None:

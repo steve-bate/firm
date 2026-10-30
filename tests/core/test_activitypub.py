@@ -1192,3 +1192,82 @@ async def test_inbox_delete_invalidates_the_cached_copy(
 
     assert await provider.get(note_uri) == note
     assert transport.urls == [note_uri, note_uri], "the delete invalidated the cached copy"
+
+
+async def test_inbox_post_gives_an_unaddressed_activity_its_recipient(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    provider = _provider(StubTransport({}))
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+
+    await service.process_post(
+        context,
+        StubUrl.parse("http://tenant1.test/inbox"),
+        {
+            "id": "http://remote.test/create9",
+            "type": "Create",
+            "actor": "http://remote.test/user1",
+            "object": {"id": "http://remote.test/note/9", "type": "Note"},
+        },
+    )
+
+    stored = await context.dereference("http://remote.test/create9")
+    assert stored is not None
+    assert stored["to"] == ["http://tenant1.test/user2"], "the box owner is the recipient"
+
+
+async def test_inbox_post_leaves_a_public_activity_unaddressed(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    provider = _provider(StubTransport({}))
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+
+    await service.process_post(
+        context,
+        StubUrl.parse("http://tenant1.test/inbox"),
+        {
+            "id": "http://remote.test/create10",
+            "type": "Create",
+            "actor": "http://remote.test/user1",
+            "to": ["as:Public"],
+            "object": {"id": "http://remote.test/note/10", "type": "Note"},
+        },
+    )
+
+    stored = await context.dereference("http://remote.test/create10")
+    assert stored is not None
+    assert stored["to"] == ["as:Public"], "a public activity needs no implicit recipient"
