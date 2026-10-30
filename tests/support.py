@@ -1,10 +1,12 @@
 import asyncio
 import json
+import time
 from typing import Any, AsyncIterable, Mapping, MutableMapping, cast
 from urllib.parse import urlparse
 
 from anyio import Path
 
+from firm.core.delivery.queue import Delivery, MemoryDeliveryQueue
 from firm.core.interfaces import (
     DEFAULT_HTTP_TIMEOUT,
     APActor,
@@ -149,12 +151,23 @@ class StubAuthorizationService(AuthorizationService):
 
 
 class RecordingAuthorizer(AuthorizationService):
-    """A stub that records the arguments of each read decision."""
+    """A stub that records the arguments of each decision."""
 
-    def __init__(self, authorized: bool = True, reason: str | None = None) -> None:
+    def __init__(
+        self,
+        authorized: bool = True,
+        reason: str | None = None,
+        *,
+        post_authorized: bool = True,
+        activity_authorized: bool = True,
+    ) -> None:
         self.authorized = authorized
         self.reason = reason
+        self.post_authorized = post_authorized
+        self.activity_authorized = activity_authorized
         self.calls: list[tuple[Tenant, Identity | None, JSONObject]] = []
+        self.post_calls: list[tuple[Tenant, Identity | None, str, str]] = []
+        self.activity_calls: list[tuple[Tenant, Identity | None, JSONObject]] = []
 
     async def is_get_authorized(
         self, tenant: Tenant, principal: Identity | None, resource: JSONObject
@@ -165,12 +178,44 @@ class RecordingAuthorizer(AuthorizationService):
     async def is_post_authorized(
         self, tenant: Tenant, principal: Identity | None, box_type: str, box_uri: str
     ) -> AuthorizationDecision:
-        return AuthorizationDecision(True, None)
+        self.post_calls.append((tenant, principal, box_type, box_uri))
+        return AuthorizationDecision(
+            self.post_authorized, None if self.post_authorized else self.reason
+        )
 
     async def is_activity_authorized(
         self, tenant: Tenant, principal: Identity | None, activity: JSONObject
     ) -> AuthorizationDecision:
-        return AuthorizationDecision(True, None)
+        self.activity_calls.append((tenant, principal, activity))
+        return AuthorizationDecision(self.activity_authorized, self.reason)
+
+
+class RecordingQueue(MemoryDeliveryQueue):
+    """A memory queue that records every call, in order, with the endpoint or id."""
+
+    def __init__(self, clock: Any = None) -> None:
+        super().__init__(clock=clock or time.time)
+        self.calls: list[tuple[str, str]] = []
+
+    async def enqueue(self, delivery: Delivery) -> None:
+        self.calls.append(("enqueue", delivery.endpoint))
+        await super().enqueue(delivery)
+
+    async def claim_due(self, *, now: float, limit: int) -> list[Delivery]:
+        self.calls.append(("claim", str(limit)))
+        return await super().claim_due(now=now, limit=limit)
+
+    async def finish(self, delivery_id: str) -> None:
+        self.calls.append(("finish", delivery_id))
+        await super().finish(delivery_id)
+
+    async def reschedule(self, delivery_id: str, *, next_attempt_at: float, reason: str) -> None:
+        self.calls.append(("reschedule", delivery_id))
+        await super().reschedule(delivery_id, next_attempt_at=next_attempt_at, reason=reason)
+
+    async def abandon(self, delivery_id: str, *, reason: str, attempts: int | None = None) -> None:
+        self.calls.append(("abandon", delivery_id))
+        await super().abandon(delivery_id, reason=reason, attempts=attempts)
 
 
 class StubDeliveryService(DeliveryService):
@@ -435,10 +480,16 @@ class StubTransport(HttpTransport):
     """
 
     def __init__(
-        self, responses: Mapping[str, HttpResponse] | None = None, delay: float = 0.0
+        self,
+        responses: Mapping[str, HttpResponse] | None = None,
+        delay: float = 0.0,
+        *,
+        calls: list[tuple[str, str]] | None = None,
     ) -> None:
         self._responses: dict[str, HttpResponse] = dict(responses or {})
         self._delay = delay
+        # An optional shared log, so a test can see a POST beside the queue calls.
+        self._calls = calls
         self.requests: list[tuple[str, dict[str, str], HttpRequestSigner | None]] = []
         self.posts: list[dict[str, Any]] = []
         self.max_concurrent_posts = 0
@@ -471,6 +522,8 @@ class StubTransport(HttpTransport):
 
     async def post(self, *args: Any, **kwargs: Any) -> HttpResponse:
         target = str(args[0])
+        if self._calls is not None:
+            self._calls.append(("post", target))
         self.posts.append(
             {
                 "url": target,

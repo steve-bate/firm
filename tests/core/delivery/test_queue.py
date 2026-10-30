@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from firm.core.delivery.queue import Delivery, DeliveryState, MemoryDeliveryQueue
+from firm.core.delivery.sqlite import SqliteDeliveryQueue
 
 TENANT = "https://local.test"
 ACTIVITY = f"{TENANT}/activities/1"
@@ -25,9 +26,15 @@ def clock() -> Clock:
     return Clock()
 
 
-@pytest.fixture
-async def queue(clock) -> MemoryDeliveryQueue:
-    return MemoryDeliveryQueue(clock=clock)
+@pytest.fixture(params=["memory", "sqlite"])
+async def queue(request, clock, tmp_path):
+    """Both backends answer the same contract, unmodified."""
+    if request.param == "memory":
+        yield MemoryDeliveryQueue(clock=clock)
+        return
+    sqlite = SqliteDeliveryQueue(tmp_path / "delivery.sqlite", clock=clock)
+    yield sqlite
+    await sqlite.close()
 
 
 def a_delivery(**overrides: Any) -> Delivery:

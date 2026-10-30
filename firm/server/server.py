@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.auth.http_signature import HttpSignatureAuth
+from firm.core.delivery.queue import DeliveryQueue, MemoryDeliveryQueue
+from firm.core.delivery.sqlite import SqliteDeliveryQueue
 from firm.core.interfaces import (
     FIRM_NS,
     HttpRequestSigner,
@@ -31,6 +33,7 @@ from firm.server.config import (
     StorageKind,
 )
 from firm.server.delivery import FirmDeliveryService
+from firm.server.delivery_worker import DeliveryWorker
 from firm.server.routes import create_router
 
 log = logging.getLogger(__name__ if __name__ != "__main__" else "firm.server.main")
@@ -102,6 +105,20 @@ def init_remote_cache(config: ServerConfig) -> RemoteCache:
     return SqliteRemoteCache(
         remote_fetch.path or _cache_dir(config) / "remote.sqlite", remote_fetch.max_entries
     )
+
+
+def _delivery_path(config: ServerConfig) -> Path:
+    base = getattr(config.store, "base", None)
+    return Path(base) / "delivery.sqlite" if base is not None else Path("delivery.sqlite")
+
+
+def init_delivery_queue(config: ServerConfig) -> DeliveryQueue:
+    """The queue backend: memory follows a memory store, a file store gets a file."""
+    if config.delivery.queue_path is not None:
+        return SqliteDeliveryQueue(config.delivery.queue_path)
+    if config.store.kind == StorageKind.MEMORY:
+        return MemoryDeliveryQueue()
+    return SqliteDeliveryQueue(_delivery_path(config))
 
 
 def init_remote_provider(config: ServerConfig) -> RemoteResourceProvider | None:
@@ -191,7 +208,9 @@ def app_factory(config: ServerConfig) -> FastAPI:
     global _app
     if _app is None:
         authorizer = CoreAuthorizationService()
-        delivery_service = FirmDeliveryService(config, authorizer=authorizer)
+        delivery_queue = init_delivery_queue(config)
+        delivery_service = FirmDeliveryService(config, authorizer=authorizer, queue=delivery_queue)
+        delivery_worker = DeliveryWorker(delivery_service, delivery_queue, config.delivery)
 
         @contextlib.asynccontextmanager
         async def lifespan(app):
@@ -219,11 +238,26 @@ def app_factory(config: ServerConfig) -> FastAPI:
                 provider.set_signer(await init_remote_signer(config, app.state.resolver))
             app.state.authorizer = authorizer
             app.state.delivery_service = delivery_service
+            app.state.delivery_queue = delivery_queue
+            app.state.delivery_worker = delivery_worker
             delivery_service.set_resolver(app.state.resolver)
             log.info("Remote cache: purged %d expired entries", await app.state.resolver.purge())
 
+            # One pass in the startup path: the queue opens here rather than inside a
+            # cancellable task, and work left by the previous run starts immediately.
+            try:
+                await delivery_worker.tick()
+            except Exception:
+                log.exception("Delivery worker: the first pass failed")
+            worker_task = asyncio.create_task(delivery_worker.serve())
+            log.info("Delivery worker: started, every %ss", config.delivery.worker_interval)
+
             yield
 
+            worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker_task
+            await delivery_queue.close()
             await app.state.resolver.close()
 
             log.info("ASGI lifespan: stopping")

@@ -77,6 +77,12 @@ class DeliveryConfig:
     max_age: float = 86_400.0
     max_expand_depth: int = 2
     concurrency: int = 8
+    # The queue and its worker: where the work lives, and how often it is looked at.
+    queue_path: Path | None = None
+    worker_interval: float = 5.0
+    lease: float = 300.0
+    history_ttl: float = 3_600.0
+    batch: int = 50
 
 
 @dataclass(frozen=True)

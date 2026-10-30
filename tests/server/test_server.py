@@ -21,6 +21,7 @@ from firm.server.config import (
     ServerConfig,
     TenantConfig,
 )
+from firm.server.delivery_worker import DeliveryWorker
 from firm.server.server import (
     app_factory,
     clear_app,
@@ -173,6 +174,12 @@ async def test_http_transport_post(httpx_mock: HTTPXMock):
         auth=HttpSignatureAuth(f"{TENANT_PREFIX}/actor/bob", PRIVATE_KEY),
     )
     assert response.status_code == 403
+
+
+def test_the_delivery_worker_is_started_with_the_app(client: TestClient) -> None:
+    app = cast(FastAPI, client.app)
+    assert isinstance(app.state.delivery_worker, DeliveryWorker)
+    assert app.state.delivery_service._queue is app.state.delivery_queue, "one queue, one source"
 
 
 def test_delivery_is_wired_to_the_resolver(client: TestClient) -> None:

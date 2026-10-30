@@ -55,7 +55,9 @@ class DeliveryQueue(Protocol):
         self, delivery_id: str, *, next_attempt_at: float, reason: str
     ) -> None: ...
 
-    async def abandon(self, delivery_id: str, *, reason: str) -> None: ...
+    async def abandon(
+        self, delivery_id: str, *, reason: str, attempts: int | None = None
+    ) -> None: ...
 
     async def get(self, delivery_id: str) -> Delivery | None: ...
 
@@ -132,13 +134,15 @@ class MemoryDeliveryQueue:
             started_at=None,
         )
 
-    async def abandon(self, delivery_id: str, *, reason: str) -> None:
+    async def abandon(self, delivery_id: str, *, reason: str, attempts: int | None = None) -> None:
         row = self._rows.get(delivery_id)
         if row is None:
             return
         self._rows[delivery_id] = replace(
             row,
             state=DeliveryState.ABANDONED,
+            # An attempt that ended here counts; a cancellation leaves the count alone.
+            attempts=row.attempts if attempts is None else attempts,
             last_reason=reason,
             started_at=None,
             finished_at=self._clock(),

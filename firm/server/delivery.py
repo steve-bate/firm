@@ -1,10 +1,18 @@
 import asyncio
 import copy
+import hashlib
 import logging
+import time
 from typing import Awaitable, Callable, Iterable, Mapping, cast
 
 from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.auth.http_signature import HttpSignatureAuth
+from firm.core.delivery.queue import (
+    Delivery,
+    DeliveryQueue,
+    DeliveryState,
+    MemoryDeliveryQueue,
+)
 from firm.core.interfaces import (
     FIRM_NS,
     JSON,
@@ -116,6 +124,12 @@ def _is_retryable(status_code: int) -> bool:
     return status_code >= 500 or status_code in {408, 425, 429}
 
 
+def _delivery_id(tenant: Tenant, activity_uri: str, endpoint: str) -> str:
+    """A stable id for one activity owed to one endpoint, so enqueueing twice is harmless."""
+    seed = "\n".join((str(tenant.prefix), activity_uri, endpoint))
+    return hashlib.sha256(seed.encode()).hexdigest()[:32]
+
+
 class FirmDeliveryService(DeliveryService):
     def __init__(
         self,
@@ -123,16 +137,21 @@ class FirmDeliveryService(DeliveryService):
         transport: HttpTransport | None = None,
         validator: Validator | None = None,
         authorizer: AuthorizationService | None = None,
+        queue: DeliveryQueue | None = None,
         *,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = time.time,
     ):
         self._config = config
         self._delivery = config.delivery
         self._transport: HttpTransport = transport or HttpxTransport()
         self._validator: Validator = validator or NoOpValidator()
         self._authorizer: AuthorizationService = authorizer or CoreAuthorizationService()
+        self._queue: DeliveryQueue = queue or MemoryDeliveryQueue(clock=clock)
         self._sleep = sleep
+        self._clock = clock
         self._resolver: ResourceResolver | None = None
+        self._tenants: Mapping[str, Tenant] = {}
 
     def _resolver_for(self, *tenants: Tenant) -> ResourceResolver:
         """The instance resolver, or one over the tenants this call can see."""
@@ -155,9 +174,8 @@ class FirmDeliveryService(DeliveryService):
             if owner is not None:
                 return await owner.public_store.get(uri)
             return await self._resolver.fetch(uri)
-        if uri.startswith(tenant.prefix):
-            return await tenant.public_store.get(uri)
-        return None
+        owner = self._owner_of(uri, tenant, self._tenant_map())
+        return await owner.public_store.get(uri) if owner is not None else None
 
     async def _resolve_inboxes(self, tenant: Tenant, recipient_uris: Iterable[str]) -> set[str]:
         """Every inbox reachable from the activity's addressing, each once."""
@@ -330,11 +348,76 @@ class FirmDeliveryService(DeliveryService):
         if actor_uri is None:
             return DeliveryReport(failed=(DeliveryFailure(None, 0, "activity has no actor"),))
         try:
-            auth = await self._signer(tenant, actor_uri)
+            # Fail before recording work that could never be signed; each unit signs
+            # again when it posts, because a queued attempt has to start from the store.
+            await self._signer(tenant, actor_uri)
         except DeliveryError as exc:
             return DeliveryReport(failed=(DeliveryFailure(None, exc.attempts, exc.reason),))
+        self._tenants = all_tenants
         inboxes = await self._resolve_inboxes(tenant, self._targets(activity))
-        return await self._fan_out(tenant, all_tenants, activity, activity_uri, inboxes, auth)
+        return await self._fan_out(tenant, all_tenants, activity, activity_uri, inboxes)
+
+    async def run(self, delivery: Delivery, document: JSONObject | None = None) -> None:
+        """Attempt one unit of work and record where it stands.
+
+        ``document`` is the activity when the caller already holds it (the publisher
+        does); a retry from the worker passes nothing and reads the store instead.
+        """
+        now = self._clock()
+        try:
+            await self._attempt(delivery, document)
+        except DeliveryRefused as exc:
+            # The receiver refused it; another round would be refused the same way.
+            await self._queue.abandon(
+                delivery.id, reason=exc.reason, attempts=delivery.attempts + 1
+            )
+        except DeliveryError as exc:
+            if exc.status is not None and not _is_retryable(exc.status):
+                # The peer answered and will answer the same way; the status is the reason.
+                await self._queue.abandon(
+                    delivery.id, reason=exc.reason, attempts=delivery.attempts + 1
+                )
+                return
+            if now - delivery.created_at >= self._delivery.max_age:
+                await self._queue.abandon(
+                    delivery.id, reason=exc.reason, attempts=delivery.attempts + 1
+                )
+                return
+            attempts = delivery.attempts + 1
+            backoff = min(
+                self._delivery.retry_backoff * 2 ** (attempts - 1),
+                self._delivery.retry_backoff_max,
+            )
+            await self._queue.reschedule(
+                delivery.id, next_attempt_at=now + backoff, reason=exc.reason
+            )
+        else:
+            await self._queue.finish(delivery.id)
+
+    def _tenant_map(self) -> Mapping[str, Tenant]:
+        """The registry: the resolver's when one is attached, else the map `deliver` was handed."""
+        if self._resolver is not None:
+            return self._resolver.tenants
+        return self._tenants
+
+    async def _attempt(self, delivery: Delivery, document: JSONObject | None = None) -> None:
+        tenants = self._tenant_map()
+        tenant = tenants.get(delivery.tenant)
+        if tenant is None:
+            raise DeliveryError(f"unknown tenant {delivery.tenant}", 1)
+        if document is None:
+            document = await tenant.public_store.get(delivery.activity)
+        if document is None:
+            raise DeliveryError(f"activity {delivery.activity} is not stored", 1)
+        if self._config.is_local(delivery.endpoint):
+            owner = self._owner_of(delivery.endpoint, tenant, tenants)
+            if owner is None:
+                raise DeliveryError(f"unknown tenant for inbox {delivery.endpoint}", 1)
+            await self._deliver_locally(owner, tenant, document, delivery.endpoint)
+            return
+        actor_uri = get_id(document.get("actor")) or ""
+        auth = await self._signer(tenant, actor_uri)
+        await self._post(delivery.endpoint, await self._serialize(tenant, document), auth)
 
     def _owner_of(
         self, inbox_uri: str, tenant: Tenant, all_tenants: Mapping[str, Tenant]
@@ -353,40 +436,38 @@ class FirmDeliveryService(DeliveryService):
         activity: JSONObject,
         activity_uri: str,
         inboxes: set[str],
-        auth: HttpSignatureAuth,
     ) -> DeliveryReport:
-        """Send to every inbox, bounded, and report what happened to each."""
-        message: JSONObject | None = None
-        if any(not self._config.is_local(inbox) for inbox in inboxes):
-            message = await self._serialize(tenant, activity)
+        """Record one unit per endpoint, then attempt them all, bounded."""
+        self._tenants = all_tenants
+        now = self._clock()
+        deliveries = [
+            Delivery(
+                id=_delivery_id(tenant, activity_uri, inbox),
+                tenant=str(tenant.prefix),
+                activity=activity_uri,
+                endpoint=inbox,
+                created_at=now,
+                next_attempt_at=now,
+            )
+            for inbox in sorted(inboxes)
+        ]
+        for delivery in deliveries:
+            await self._queue.enqueue(delivery)
         semaphore = asyncio.Semaphore(self._delivery.concurrency)
-        serialized = message
 
-        async def deliver_one(inbox: str) -> str:
+        async def attempt_one(delivery: Delivery) -> None:
             async with semaphore:
-                if self._config.is_local(inbox):
-                    owner = self._owner_of(inbox, tenant, all_tenants)
-                    if owner is None:
-                        raise DeliveryError(f"unknown tenant for inbox {inbox}", 1)
-                    await self._deliver_locally(owner, tenant, activity, inbox)
-                else:
-                    if serialized is None:
-                        raise DeliveryError(f"nothing to post to {inbox}", 1)
-                    await self._post(inbox, serialized, auth)
-                return inbox
+                await self.run(delivery, activity)
 
-        ordered = sorted(inboxes)
-        results = await asyncio.gather(
-            *(deliver_one(inbox) for inbox in ordered), return_exceptions=True
-        )
+        await asyncio.gather(*(attempt_one(delivery) for delivery in deliveries))
         delivered: list[str] = []
         failed: list[DeliveryFailure] = []
-        for inbox, result in zip(ordered, results):
-            if isinstance(result, BaseException):
-                if isinstance(result, DeliveryError):
-                    failed.append(DeliveryFailure(inbox, result.attempts, result.reason))
-                else:
-                    raise result
+        for delivery in deliveries:
+            row = await self._queue.get(delivery.id) or delivery
+            if row.state is DeliveryState.DELIVERED:
+                delivered.append(row.endpoint)
             else:
-                delivered.append(result)
+                failed.append(
+                    DeliveryFailure(row.endpoint, row.attempts, row.last_reason or "not delivered")
+                )
         return DeliveryReport(delivered=tuple(delivered), failed=tuple(failed))

@@ -1,10 +1,14 @@
 """Outbound delivery: inbox resolution, payload, and the failure model."""
 
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from firm.core.auth.keys import create_key_pair
+from firm.core.delivery.queue import Delivery, DeliveryState
+from firm.core.delivery.sqlite import SqliteDeliveryQueue
 from firm.core.interfaces import FIRM_NS, Tenant
 from firm.core.remote.cache import MemoryRemoteCache
 from firm.core.remote.provider import FetchPolicy, RemoteResourceProvider
@@ -12,7 +16,14 @@ from firm.core.resolver import ResourceResolver
 from firm.core.store.memory import MemoryResourceStore
 from firm.server.config import FileStoreConfig, ServerConfig, TenantConfig
 from firm.server.delivery import DeliveryError, FirmDeliveryService
-from tests.support import StubTransport, json_response
+from firm.server.delivery_worker import DeliveryWorker
+from tests.support import (
+    Clock,
+    RecordingAuthorizer,
+    RecordingQueue,
+    StubTransport,
+    json_response,
+)
 
 PREFIX = "https://local.test"
 SENDER = f"{PREFIX}/sender"
@@ -82,8 +93,32 @@ def transport() -> StubTransport:
 
 
 @pytest.fixture
+def queue(tmp_path: Path) -> RecordingQueue:
+    return RecordingQueue()
+
+
+@pytest.fixture
 def service(config: ServerConfig) -> FirmDeliveryService:
     return FirmDeliveryService(config)
+
+
+async def _local_recipient(tenant: Tenant, owner_is_publisher: bool) -> tuple[Tenant, str]:
+    """The publisher's own inbox, or a second tenant's — the same record either way."""
+    if owner_is_publisher:
+        return tenant, INBOX
+    other = Tenant("https://other.test", MemoryResourceStore(), MemoryResourceStore(), Path())
+    await other.public_store.put(
+        {"id": "https://other.test/u2", "type": "Person", "inbox": "https://other.test/u2/inbox"}
+    )
+    await other.public_store.put(
+        {
+            "id": "https://other.test/u2/inbox",
+            "type": "OrderedCollection",
+            "attributedTo": "https://other.test/u2",
+            "items": [],
+        }
+    )
+    return other, "https://other.test/u2/inbox"
 
 
 def activity(**overrides: object) -> dict:
@@ -388,6 +423,257 @@ async def test_a_recipient_without_an_inbox_is_skipped_and_logged(
     assert RECIPIENT in caplog.text, "the actor is named, so the bad document can be found"
 
 
+def pending(**overrides: Any) -> Delivery:
+    """A unit owed by the local tenant to one remote inbox, due at t=1000."""
+    return replace(
+        Delivery(
+            id="d1",
+            tenant=PREFIX,
+            activity=f"{PREFIX}/activities/1",
+            endpoint=REMOTE_INBOX,
+            created_at=1_000.0,
+            next_attempt_at=1_000.0,
+        ),
+        **overrides,
+    )
+
+
+def worker_for(service, queue, config, clock) -> DeliveryWorker:
+    return DeliveryWorker(service, queue, config.delivery, clock=clock)
+
+
+async def test_tick_posts_a_due_delivery(tenant, config, transport, queue):
+    await tenant.public_store.put(activity(**{"to": [REMOTE_ACTOR]}))
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(REMOTE_INBOX, json_response({}, status_code=202))
+    service = FirmDeliveryService(config, transport, queue=queue)
+    service.set_resolver(make_resolver(tenant, transport))
+    worker = worker_for(service, queue, config, Clock(1_000.0))
+    await queue.enqueue(pending())
+
+    assert await worker.tick() == 1
+    row = await queue.get("d1")
+    assert row is not None and row.state is DeliveryState.DELIVERED
+    assert [post["url"] for post in transport.posts] == [REMOTE_INBOX]
+
+
+async def test_tick_leaves_a_delivery_that_is_not_yet_due(tenant, config, transport, queue):
+    service = FirmDeliveryService(config, transport, queue=queue)
+    worker = worker_for(service, queue, config, Clock(1_000.0))
+    await queue.enqueue(pending(next_attempt_at=2_000.0))
+
+    assert await worker.tick() == 0
+    row = await queue.get("d1")
+    assert row is not None and row.state is DeliveryState.PENDING
+    assert transport.posts == []
+
+
+async def test_tick_reclaims_a_stale_claim_and_posts_it(tenant, config, transport, queue):
+    await tenant.public_store.put(activity(**{"to": [REMOTE_ACTOR]}))
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(REMOTE_INBOX, json_response({}, status_code=202))
+    service = FirmDeliveryService(config, transport, queue=queue)
+    service.set_resolver(make_resolver(tenant, transport))
+    clock = Clock(1_000.0)
+    worker = worker_for(service, queue, config, clock)
+    await queue.enqueue(pending())
+    await queue.claim_due(now=1_000.0, limit=10)  # a worker that then died
+    clock.now = 1_400.0
+
+    assert await worker.tick() == 1
+    row = await queue.get("d1")
+    assert row is not None and row.state is DeliveryState.DELIVERED
+    assert len(transport.posts) == 1
+
+
+async def test_tick_abandons_a_delivery_older_than_max_age(tenant, config, transport, queue):
+    await tenant.public_store.put(activity(**{"to": [REMOTE_ACTOR]}))
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(REMOTE_INBOX, json_response({}, status_code=503))
+    service = FirmDeliveryService(config, transport, queue=queue, sleep=_no_sleep)
+    service.set_resolver(make_resolver(tenant, transport))
+    worker = worker_for(service, queue, config, Clock(100_000.0))
+    await queue.enqueue(pending(created_at=0.0))
+
+    assert await worker.tick() == 1
+    row = await queue.get("d1")
+    assert row is not None and row.state is DeliveryState.ABANDONED
+    assert row.last_reason == "HTTP 503"
+
+
+async def test_tick_prunes_delivered_history(tenant, config, transport):
+    queue = RecordingQueue(clock=Clock(1_000.0))
+    await tenant.public_store.put(activity(**{"to": [REMOTE_ACTOR]}))
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(REMOTE_INBOX, json_response({}, status_code=202))
+    service = FirmDeliveryService(config, transport, queue=queue)
+    service.set_resolver(make_resolver(tenant, transport))
+    await queue.enqueue(pending())
+    await service.run(pending(), await tenant.public_store.get(f"{PREFIX}/activities/1"))
+    worker = worker_for(service, queue, config, Clock(10_000.0))
+
+    await worker.tick()
+
+    assert await queue.get("d1") is None, "the delivered row is history, and it expired"
+
+
+async def test_a_pending_delivery_survives_a_restart(tenant, config, transport, tmp_path):
+    path = tmp_path / "delivery.sqlite"
+    first = SqliteDeliveryQueue(path)
+    await first.enqueue(pending())
+    await first.close()
+
+    await tenant.public_store.put(activity(**{"to": [REMOTE_ACTOR]}))
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(REMOTE_INBOX, json_response({}, status_code=202))
+    second = SqliteDeliveryQueue(path)
+    service = FirmDeliveryService(config, transport, queue=second)
+    service.set_resolver(make_resolver(tenant, transport))
+    worker = worker_for(service, second, config, Clock(1_000.0))
+
+    assert await worker.tick() == 1
+    assert len(transport.posts) == 1, "the unit outlived the process that recorded it"
+    assert (await second.get("d1")).state is DeliveryState.DELIVERED
+    await second.close()
+
+
+async def test_every_endpoint_is_enqueued_before_it_is_posted(tenant, config, queue):
+    transport = StubTransport(calls=queue.calls)
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(REMOTE_INBOX, json_response({}, status_code=202))
+    service = FirmDeliveryService(config, transport, queue=queue)
+    service.set_resolver(make_resolver(tenant, transport))
+
+    await service.deliver(tenant, {PREFIX: tenant}, activity(**{"to": [REMOTE_ACTOR]}))
+
+    assert queue.calls.index(("enqueue", REMOTE_INBOX)) < queue.calls.index(
+        ("post", REMOTE_INBOX)
+    ), "the unit is recorded before the request leaves"
+
+
+async def test_a_delivered_endpoint_is_marked_delivered(tenant, config, transport, queue):
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(REMOTE_INBOX, json_response({}, status_code=202))
+    service = FirmDeliveryService(config, transport, queue=queue)
+    service.set_resolver(make_resolver(tenant, transport))
+
+    await service.deliver(tenant, {PREFIX: tenant}, activity(**{"to": [REMOTE_ACTOR]}))
+
+    rows = await queue.list()
+    assert [row.state for row in rows] == [DeliveryState.DELIVERED]
+    assert rows[0].endpoint == REMOTE_INBOX
+    assert rows[0].tenant == PREFIX
+
+
+async def test_a_faulting_endpoint_is_rescheduled_with_backoff(tenant, config, transport, queue):
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(REMOTE_INBOX, json_response({}, status_code=503))
+    service = FirmDeliveryService(config, transport, queue=queue, sleep=_no_sleep)
+    service.set_resolver(make_resolver(tenant, transport))
+
+    report = await service.deliver(tenant, {PREFIX: tenant}, activity(**{"to": [REMOTE_ACTOR]}))
+
+    rows = await queue.list()
+    assert rows[0].state is DeliveryState.PENDING
+    assert rows[0].attempts == 1
+    assert rows[0].next_attempt_at > rows[0].created_at
+    assert rows[0].last_reason == "HTTP 503"
+    assert [failure.inbox for failure in report.failed] == [REMOTE_INBOX]
+
+
+async def test_a_refused_endpoint_is_abandoned_not_rescheduled(tenant, config, transport, queue):
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(REMOTE_INBOX, json_response({}, status_code=403))
+    service = FirmDeliveryService(config, transport, queue=queue, sleep=_no_sleep)
+    service.set_resolver(make_resolver(tenant, transport))
+
+    await service.deliver(tenant, {PREFIX: tenant}, activity(**{"to": [REMOTE_ACTOR]}))
+
+    rows = await queue.list()
+    assert rows[0].state is DeliveryState.ABANDONED
+    assert rows[0].last_reason == "HTTP 403"
+    assert rows[0].next_attempt_at == rows[0].created_at, "it is not coming back"
+
+
+@pytest.mark.parametrize("owner_is_publisher", [True, False], ids=["same-tenant", "other-tenant"])
+async def test_local_delivery_writes_the_owners_inbox_and_records_it(
+    tenant, transport, queue, tmp_path, owner_is_publisher
+):
+    owner, inbox = await _local_recipient(tenant, owner_is_publisher)
+    recipient_uri = RECIPIENT if owner_is_publisher else "https://other.test/u2"
+    config = ServerConfig(
+        [TenantConfig(prefix=PREFIX), TenantConfig(prefix=str(owner.prefix))],
+        FileStoreConfig(base=tmp_path),
+    )
+    service = FirmDeliveryService(config, transport, queue=queue)
+
+    await service.deliver(
+        tenant, {PREFIX: tenant, owner.prefix: owner}, activity(**{"to": [recipient_uri]})
+    )
+
+    assert (await owner.public_store.get(inbox))["items"] == [f"{PREFIX}/activities/1"]
+    assert transport.posts == [], "no request left the process"
+    rows = await queue.list()
+    assert [row.endpoint for row in rows] == [inbox]
+    assert (
+        rows[0].tenant == PREFIX
+    ), "the record's tenant is the publisher, not the endpoint's owner"
+    assert rows[0].state is DeliveryState.DELIVERED
+
+
+async def test_delivery_to_a_remote_server_posts_a_signed_activity(
+    tenant, config, transport, queue
+):
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(f"{REMOTE_ACTOR}/inbox", json_response({}, status_code=202))
+    service = FirmDeliveryService(config, transport, queue=queue)
+    service.set_resolver(make_resolver(tenant, transport))
+
+    await service.deliver(tenant, {PREFIX: tenant}, activity(**{"to": [REMOTE_ACTOR]}))
+
+    assert [post["url"] for post in transport.posts] == [f"{REMOTE_ACTOR}/inbox"]
+    assert transport.posts[0]["auth"] is not None, "a remote POST is signed by the publishing actor"
+    assert transport.urls == [REMOTE_ACTOR], "the recipient document was fetched, not stored"
+
+
+async def test_a_local_delivery_asks_the_receiving_tenant_to_authorize_the_post(
+    tenant, config, queue
+):
+    authorizer = RecordingAuthorizer()
+    service = FirmDeliveryService(config, queue=queue, authorizer=authorizer)
+
+    await service.deliver(tenant, {PREFIX: tenant}, activity())
+
+    assert [call[0].prefix for call in authorizer.post_calls] == [PREFIX], "the owner is asked"
+    assert authorizer.post_calls[0][1].uri == SENDER, "the principal is the publishing actor"
+
+
+async def test_a_denied_post_writes_nothing_and_the_unit_is_abandoned(tenant, config, queue):
+    authorizer = RecordingAuthorizer(
+        post_authorized=False, reason="inbox post is blocked for actor"
+    )
+    service = FirmDeliveryService(config, queue=queue, authorizer=authorizer)
+
+    await service.deliver(tenant, {PREFIX: tenant}, activity())
+
+    assert (await tenant.public_store.get(INBOX))["items"] == []
+    rows = await queue.list()
+    assert [row.state for row in rows] == [DeliveryState.ABANDONED]
+    assert "blocked for actor" in rows[0].last_reason
+
+
+async def test_a_remote_endpoint_asks_no_local_policy(tenant, config, transport, queue):
+    authorizer = RecordingAuthorizer()
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(f"{REMOTE_ACTOR}/inbox", json_response({}, status_code=202))
+    service = FirmDeliveryService(config, transport, queue=queue, authorizer=authorizer)
+    service.set_resolver(make_resolver(tenant, transport))
+
+    await service.deliver(tenant, {PREFIX: tenant}, activity(**{"to": [REMOTE_ACTOR]}))
+
+    assert authorizer.post_calls == [], "the peer decides at its own inbox"
+
+
 INBOXES = [f"https://remote.test/users/{name}/inbox" for name in "abc"]
 
 
@@ -396,10 +682,8 @@ async def test_a_slow_inbox_does_not_delay_the_others(tenant, config):
     for inbox in INBOXES:
         transport.post_script(inbox, json_response({}, status_code=202))
     service = FirmDeliveryService(config, transport)
-    auth = await service._signer(tenant, SENDER)
-
     report = await service._fan_out(
-        tenant, {PREFIX: tenant}, activity(), f"{PREFIX}/activities/1", set(INBOXES), auth
+        tenant, {PREFIX: tenant}, activity(), f"{PREFIX}/activities/1", set(INBOXES)
     )
 
     assert sorted(report.delivered) == sorted(INBOXES)
@@ -412,10 +696,8 @@ async def test_a_failed_inbox_is_reported_beside_a_successful_one(tenant, config
     transport.post_script(INBOXES[1], json_response({}, status_code=404))
     transport.post_script(INBOXES[2], json_response({}, status_code=202))
     service = FirmDeliveryService(config, transport, sleep=_no_sleep)
-    auth = await service._signer(tenant, SENDER)
-
     report = await service._fan_out(
-        tenant, {PREFIX: tenant}, activity(), f"{PREFIX}/activities/1", set(INBOXES), auth
+        tenant, {PREFIX: tenant}, activity(), f"{PREFIX}/activities/1", set(INBOXES)
     )
 
     assert sorted(report.delivered) == sorted([INBOXES[0], INBOXES[2]])
