@@ -168,7 +168,15 @@ class FirmDeliveryService(DeliveryService):
         return self._resolver
 
     async def _recipient_document(self, tenant: Tenant, uri: str) -> JSONObject | None:
-        """The document for a recipient URI: its owner's store, or the network."""
+        """The document for a recipient URI: a copy we hold, then its owner, then the network.
+
+        A stored copy wins, even for a URI another server owns: the document we hold is
+        the document we address, and re-fetching it would make delivery fail on an
+        instance that cannot resolve the name for a reason the address book already knows.
+        """
+        document = await tenant.public_store.get(uri)
+        if document is not None:
+            return document
         if self._resolver is not None:
             owner = self._resolver.owner(uri)
             if owner is not None:
