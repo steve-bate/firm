@@ -46,7 +46,9 @@ async def tenant(tmp_path: Path) -> Tenant:
         }
     )
     await tenant.public_store.put({"id": RECIPIENT, "type": "Person", "inbox": INBOX})
-    await tenant.public_store.put({"id": INBOX, "type": "OrderedCollection", "items": []})
+    await tenant.public_store.put(
+        {"id": INBOX, "type": "OrderedCollection", "attributedTo": RECIPIENT, "items": []}
+    )
     return tenant
 
 
@@ -98,3 +100,52 @@ async def test_missing_credentials_are_reported_not_raised(tenant, service):
 
     assert report.delivered == ()
     assert "credentials" in report.failed[0].reason
+
+
+async def test_delivering_the_same_activity_twice_does_not_duplicate_the_item(tenant, service):
+    await service.deliver(tenant, {PREFIX: tenant}, activity())
+    await service.deliver(tenant, {PREFIX: tenant}, activity())
+
+    inbox = await tenant.public_store.get(INBOX)
+
+    assert inbox["items"] == [f"{PREFIX}/activities/1"]
+    assert inbox["totalItems"] == 1
+
+
+async def test_a_local_create_stores_its_object_like_a_post_does(tenant, service):
+    await service.deliver(tenant, {PREFIX: tenant}, activity())
+
+    assert await tenant.public_store.get(f"{PREFIX}/notes/1") is not None
+
+
+async def test_a_local_follow_is_answered_with_an_accept(tenant, service):
+    followers = f"{RECIPIENT}/followers"
+    outbox = f"{RECIPIENT}/outbox"
+    recipient = await tenant.public_store.get(RECIPIENT)
+    await tenant.public_store.put({**recipient, "followers": followers, "outbox": outbox})
+    await tenant.public_store.put(
+        {"id": followers, "type": "Collection", "attributedTo": RECIPIENT, "items": []}
+    )
+    await tenant.public_store.put(
+        {"id": outbox, "type": "OrderedCollection", "attributedTo": RECIPIENT, "items": []}
+    )
+    sender = await tenant.public_store.get(SENDER)
+    await tenant.public_store.put({**sender, "inbox": f"{SENDER}/inbox"})
+    await tenant.public_store.put(
+        {"id": f"{SENDER}/inbox", "type": "OrderedCollection", "attributedTo": SENDER, "items": []}
+    )
+    follow = {
+        "id": f"{PREFIX}/activities/follow",
+        "type": "Follow",
+        "actor": SENDER,
+        "object": RECIPIENT,
+        "to": [RECIPIENT],
+    }
+
+    await service.deliver(tenant, {PREFIX: tenant}, follow)
+
+    assert SENDER in (await tenant.public_store.get(followers))["items"]
+    accepts = [
+        item for item in (await tenant.public_store.get(outbox))["items"] if "/accept/" in item
+    ]
+    assert accepts, "the follow was accepted, which an append would not do"

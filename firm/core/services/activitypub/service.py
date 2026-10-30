@@ -12,6 +12,7 @@ from firm.core.interfaces import (
     Identity,
     JSONObject,
     NoOpValidator,
+    ResourceStore,
     Url,
     Validator,
 )
@@ -96,6 +97,66 @@ def _addressed_to_box_owner(activity: JSONObject, box_owner: APActor) -> JSONObj
     addressed = copy.deepcopy(activity)
     addressed["to"] = get_list(activity, "to") + [owner_uri]
     return addressed
+
+
+async def resolve_box(store: ResourceStore, box_uri: str) -> tuple[JSONObject, APActor]:
+    """The box document and the actor that owns it, or the reason there is none."""
+    target = await dereference(store, box_uri)
+    if not target:
+        raise NotFoundException(box_uri)
+    if not has_value(target, "type", "OrderedCollection"):
+        raise InvalidResourceTypeException(target.get("type"), "OrderedCollection")
+    box_owner_uri = target.get("attributedTo")
+    if not isinstance(box_owner_uri, str):
+        raise ResourceOwnerException("No owner for box")
+    box_owner = await dereference(store, box_owner_uri)
+    if not box_owner:
+        raise ResourceOwnerException("Unknown box owner")
+    return target, cast(APActor, box_owner)
+
+
+async def post_to_inbox(
+    context: FirmContext,
+    box_owner: APActor,
+    resource: JSONObject,
+    *,
+    box_uri: str,
+    validator: Validator,
+    delivery_service: DeliveryService,
+) -> None:
+    """An activity arrives at an inbox on this instance: authorize, keep, record, apply.
+
+    This is what an inbox POST does once the box is known, with no socket involved.
+    """
+    tenant = context.tenant
+    principal = context.principal
+    store = tenant.public_store
+    decision = await context.authorizer.is_post_authorized(tenant, principal, "inbox", box_uri)
+    if not decision.authorized:
+        raise NotAuthorizedException(decision.reason)
+    validator.validate(resource)
+    decision = await context.authorizer.is_activity_authorized(tenant, principal, resource)
+    if not decision.authorized:
+        raise NotAuthorizedException(decision.reason)
+    # The delivery is what makes the owner a recipient; later steps (and the copy
+    # kept in the box) see the same document.
+    resource = _addressed_to_box_owner(resource, box_owner)
+    log.info(f"Inbox: box={box_uri}, activity_type={resource.get('type')}")
+    activity_id = get_id(resource)
+    if activity_id is None:
+        raise InvalidRequestException("Activity must have an id")
+    await context.keep(resource)
+    await add_collection_item(store, box_owner["inbox"], str(activity_id))
+    box_context = FirmBoxContext(
+        context.resolver,
+        tenant,
+        principal,
+        context.authorizer,
+        box_owner=box_owner,
+        box_uri=box_uri,
+        delivery_service=delivery_service,
+    )
+    await process_inbox(box_context, resource)
 
 
 class ActivityPubService:
@@ -247,39 +308,15 @@ class ActivityPubService:
 
         # Determine the type of box and dispatch accordingly
         if target_uri_str == box_owner.get("inbox"):
-            decision = await self._authorizer.is_post_authorized(
-                tenant, principal, "inbox", target_uri_str
+            await post_to_inbox(
+                context,
+                cast(APActor, box_owner),
+                resource,
+                box_uri=target_uri_str,
+                validator=self._validator,
+                delivery_service=self._delivery_service,
             )
-            if decision.authorized:
-                store = tenant.public_store
-                self._validator.validate(resource)
-                decision = await self._authorizer.is_activity_authorized(
-                    tenant, principal, resource
-                )
-                if not decision.authorized:
-                    raise NotAuthorizedException(decision.reason)
-                # The delivery is what makes the owner a recipient; later steps
-                # (and the copy kept in the box) see the same document.
-                resource = _addressed_to_box_owner(resource, cast(APActor, box_owner))
-                log.info(f"Inbox: box={target_uri}, activity_type={resource.get('type')}")
-                activity_id = get_id(resource)
-                if activity_id is None:
-                    raise InvalidRequestException("Activity must have an id")
-                await context.keep(resource)
-                await add_collection_item(store, box_owner["inbox"], str(activity_id))
-                box_context = FirmBoxContext(
-                    context.resolver,
-                    tenant,
-                    principal,
-                    context.authorizer,
-                    box_owner=box_owner,
-                    box_uri=target_uri_str,
-                    delivery_service=self._delivery_service,
-                )
-                await process_inbox(box_context, resource)
-                return None
-            else:
-                raise NotAuthorizedException(decision.reason)
+            return None
         elif target_uri_str == box_owner.get("outbox"):
             box_decision = await self._authorizer.is_post_authorized(
                 tenant, principal, "outbox", target_uri_str

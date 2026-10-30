@@ -3,16 +3,32 @@ from typing import Callable, Iterable, Mapping, cast
 
 import httpx
 
+from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.auth.http_signature import HttpSignatureAuth
 from firm.core.interfaces import (
     FIRM_NS,
+    APActor,
+    AuthorizationService,
     DeliveryFailure,
     DeliveryReport,
     DeliveryService,
     JSONObject,
+    NoOpValidator,
+    Principal,
     ResourceStore,
     Tenant,
+    Validator,
 )
+from firm.core.resolver import ResourceResolver
+from firm.core.services.activitypub.exceptions import (
+    InvalidRequestException,
+    InvalidResourceTypeException,
+    NotAuthorizedException,
+    NotFoundException,
+    ResourceOwnerException,
+)
+from firm.core.services.activitypub.service import post_to_inbox, resolve_box
+from firm.core.services.activitypub.support import FirmContext
 from firm.core.util import (
     get_id,
     get_prefix_uri,
@@ -45,11 +61,29 @@ class DeliveryError(Exception):
         self.attempts = attempts
 
 
+class DeliveryRefused(DeliveryError):
+    """The receiving instance refused the activity; a retry will not change its mind."""
+
+
 class FirmDeliveryService(DeliveryService):
     _RECIPIENT_PROPS = ["to", "cc", "bto", "bcc"]
 
-    def __init__(self, config: ServerConfig):
+    def __init__(
+        self,
+        config: ServerConfig,
+        validator: Validator | None = None,
+        authorizer: AuthorizationService | None = None,
+    ):
         self._config = config
+        self._validator: Validator = validator or NoOpValidator()
+        self._authorizer: AuthorizationService = authorizer or CoreAuthorizationService()
+        self._resolver: ResourceResolver | None = None
+
+    def _resolver_for(self, *tenants: Tenant) -> ResourceResolver:
+        """The instance resolver, or one over the tenants this call can see."""
+        if self._resolver is not None:
+            return self._resolver
+        return ResourceResolver({str(tenant.prefix): tenant for tenant in tenants})
 
     async def _resolve_inboxes(
         self,
@@ -155,6 +189,43 @@ class FirmDeliveryService(DeliveryService):
                 recipients.update(uri for uri in value if isinstance(uri, str))
         return recipients
 
+    async def _deliver_locally(
+        self,
+        owner: Tenant,
+        publisher: Tenant,
+        document: JSONObject,
+        inbox_uri: str,
+    ) -> None:
+        """Hand the activity to the owning tenant's inbox, exactly as a POST would."""
+        actor_uri = get_id(document.get("actor"))
+        actor = await publisher.public_store.get(actor_uri) if actor_uri else None
+        if actor is None:
+            raise DeliveryError(f"actor {actor_uri} is not stored", 1)
+        context = FirmContext(
+            self._resolver_for(owner, publisher),
+            owner,
+            Principal(cast(APActor, actor), publisher),
+            self._authorizer,
+        )
+        try:
+            _, box_owner = await resolve_box(owner.public_store, inbox_uri)
+            await post_to_inbox(
+                context,
+                box_owner,
+                document,
+                box_uri=inbox_uri,
+                validator=self._validator,
+                delivery_service=self,
+            )
+        except (
+            NotAuthorizedException,
+            ResourceOwnerException,
+            InvalidResourceTypeException,
+        ) as exc:
+            raise DeliveryRefused(str(exc), 1) from exc
+        except (NotFoundException, InvalidRequestException, ValueError) as exc:
+            raise DeliveryError(str(exc), 1) from exc
+
     async def deliver(
         self,
         tenant: Tenant,
@@ -184,16 +255,7 @@ class FirmDeliveryService(DeliveryService):
                     )
                     if not target_tenant:
                         raise DeliveryError(f"unknown tenant for inbox {inbox_uri}", 1)
-                    store = target_tenant.public_store
-                    inbox = await store.get(inbox_uri)
-                    if not inbox:
-                        raise DeliveryError(f"inbox not found: {inbox_uri}", 1)
-                    # inbox storage repr uses items
-                    items = cast(list[JSONObject | str], inbox.get("items", []))
-                    items.insert(0, activity_uri)
-                    inbox["items"] = items
-                    inbox["totalItems"] = len(items)
-                    await store.put(inbox)
+                    await self._deliver_locally(target_tenant, tenant, activity, inbox_uri)
                 else:
                     if message is None:
                         message = await self._serialize(tenant, activity)
