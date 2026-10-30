@@ -9,6 +9,7 @@ from firm.core.interfaces import FIRM_NS, Tenant
 from firm.core.store.memory import MemoryResourceStore
 from firm.server.config import FileStoreConfig, ServerConfig, TenantConfig
 from firm.server.delivery import FirmDeliveryService
+from tests.support import StubTransport, json_response
 
 PREFIX = "https://local.test"
 SENDER = f"{PREFIX}/sender"
@@ -50,6 +51,11 @@ async def tenant(tmp_path: Path) -> Tenant:
         {"id": INBOX, "type": "OrderedCollection", "attributedTo": RECIPIENT, "items": []}
     )
     return tenant
+
+
+@pytest.fixture
+def transport() -> StubTransport:
+    return StubTransport()
 
 
 @pytest.fixture
@@ -139,6 +145,23 @@ async def test_serialize_strips_firm_properties_from_the_embedded_object(tenant,
 
     assert message["object"] == {"id": f"{PREFIX}/notes/1", "type": "Note"}
     assert document["object"][FIRM_NS.privateKey.value] == "leak", "the input is untouched"
+
+
+REMOTE_INBOX = "https://remote.test/users/bob/inbox"
+
+
+async def test_post_uses_the_transport_with_the_configured_timeout(tenant, config, transport):
+    service = FirmDeliveryService(config, transport)
+    auth = await service._signer(tenant, SENDER)
+    transport.post_script(REMOTE_INBOX, json_response({}, status_code=202))
+
+    await service._post(REMOTE_INBOX, {"id": f"{PREFIX}/activities/1"}, auth)
+
+    post = transport.posts[0]
+    assert post["url"] == REMOTE_INBOX
+    assert post["json"] == {"id": f"{PREFIX}/activities/1"}
+    assert post["content_type"] == "application/activity+json"
+    assert post["timeout"] == config.delivery.timeout
 
 
 async def test_serialize_adds_the_activitystreams_context(tenant, service):

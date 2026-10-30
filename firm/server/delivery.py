@@ -1,8 +1,7 @@
+import asyncio
 import copy
 import logging
-from typing import Callable, Iterable, Mapping, cast
-
-import httpx
+from typing import Awaitable, Callable, Iterable, Mapping, cast
 
 from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.auth.http_signature import HttpSignatureAuth
@@ -14,6 +13,7 @@ from firm.core.interfaces import (
     DeliveryFailure,
     DeliveryReport,
     DeliveryService,
+    HttpTransport,
     JSONObject,
     NoOpValidator,
     Principal,
@@ -39,7 +39,7 @@ from firm.core.util import (
     is_collection,
     is_public,
 )
-from firm.server.adapters import HttpxAuthAdapter
+from firm.server.adapters import HttpxTransport
 from firm.server.config import ServerConfig
 
 log = logging.getLogger(__name__)
@@ -91,12 +91,18 @@ class FirmDeliveryService(DeliveryService):
     def __init__(
         self,
         config: ServerConfig,
+        transport: HttpTransport | None = None,
         validator: Validator | None = None,
         authorizer: AuthorizationService | None = None,
+        *,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
         self._config = config
+        self._delivery = config.delivery
+        self._transport: HttpTransport = transport or HttpxTransport()
         self._validator: Validator = validator or NoOpValidator()
         self._authorizer: AuthorizationService = authorizer or CoreAuthorizationService()
+        self._sleep = sleep
         self._resolver: ResourceResolver | None = None
 
     def _resolver_for(self, *tenants: Tenant) -> ResourceResolver:
@@ -136,20 +142,18 @@ class FirmDeliveryService(DeliveryService):
         message: JSONObject,
         auth: HttpSignatureAuth,
     ) -> None:
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.post(
-                    inbox,
-                    json=message,
-                    headers={"Content-Type": "application/activity+json"},
-                    auth=HttpxAuthAdapter(auth),
-                )
-            except Exception as e:
-                log.error(f"Error posting to {inbox}: {e}")
-                return
-            log.info(
-                f"FirmDeliveryService POST {inbox} " f"{response.status_code} text={response.text}"
+        try:
+            response = await self._transport.post(
+                inbox,
+                json=message,
+                headers={"Content-Type": "application/activity+json"},
+                auth=auth,
+                timeout=self._delivery.timeout,
             )
+        except Exception as e:
+            log.error(f"Error posting to {inbox}: {e}")
+            return
+        log.info(f"FirmDeliveryService POST {inbox} {response.status_code}")
 
     async def _serialize(self, tenant: Tenant, activity: JSONObject) -> JSONObject:
         message = copy.deepcopy(activity)

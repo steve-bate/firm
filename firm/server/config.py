@@ -63,6 +63,23 @@ class RemoteFetchConfig:
 
 
 @dataclass(frozen=True)
+class DeliveryConfig:
+    """Outbound delivery: how long to wait, how many tries, how far to expand.
+
+    ``timeout`` repeats firm.core.interfaces.DEFAULT_HTTP_TIMEOUT because this module
+    must not import the core: the import closes the cycle through interfaces.
+    """
+
+    timeout: float = 5.0
+    max_attempts: int = 3
+    retry_backoff: float = 0.5
+    retry_backoff_max: float = 3_600.0
+    max_age: float = 86_400.0
+    max_expand_depth: int = 2
+    concurrency: int = 8
+
+
+@dataclass(frozen=True)
 class TenantConfig:
     prefix: str
 
@@ -75,6 +92,7 @@ class ServerConfig:
     validation: ValidationConfig = ValidationConfig()
     shared_inbox_path: str = "shared"
     remote_fetch: RemoteFetchConfig = field(default_factory=RemoteFetchConfig)
+    delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
 
     def is_local(self, uri: str) -> bool:
         return any(uri.startswith(tenant.prefix) for tenant in self.tenants)

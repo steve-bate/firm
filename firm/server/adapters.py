@@ -289,16 +289,22 @@ class HttpxTransport(HttpTransport):
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         # trust_env: bool = True,
     ) -> HttpResponse:
+        body: dict[str, Any] = {}
+        if json is not None:
+            body["json"] = json
+        elif content is not None:
+            body["content"] = content
+        elif data is not None:
+            body["data"] = data
         async with httpx.AsyncClient(verify=verify) as client:
             response = await client.post(
                 url,
-                json=data,
-                content=content,
                 headers=headers,
                 cookies=cookies,
                 auth=HttpxAuthAdapter(auth) if auth else httpx.USE_CLIENT_DEFAULT,
                 follow_redirects=follow_redirects,
                 timeout=timeout,
+                **body,
             )
             return HttpResponse(
                 status_code=response.status_code,

@@ -173,6 +173,22 @@ async def test_http_transport_post(httpx_mock: HTTPXMock):
     assert response.status_code == 403
 
 
+async def test_http_transport_post_sends_the_json_body(httpx_mock: HTTPXMock):
+    httpx_mock.add_response(method="POST", status_code=202)
+    transport = HttpxTransport()
+
+    response = await transport.post(
+        f"{TENANT_PREFIX}/actor/steve/inbox",
+        json={"hello": "world"},
+        headers={"Content-Type": "application/activity+json"},
+    )
+
+    assert response.status_code == 202
+    request = httpx_mock.get_requests()[0]
+    assert request.content == b'{"hello": "world"}'
+    assert request.headers["content-type"] == "application/activity+json"
+
+
 async def _tenant_with_actor(tmp_path) -> tuple[Tenant, str]:
     tenant = Tenant(TENANT_PREFIX, MemoryResourceStore(), MemoryResourceStore(), tmp_path)
     actor_uri = f"{TENANT_PREFIX}/user1"

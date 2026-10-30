@@ -428,9 +428,10 @@ class StubSigner(HttpRequestSigner):
 class StubTransport(HttpTransport):
     """Replays a scripted response per URL, and records what it was asked.
 
-    A stub: every answer is canned by the test. An unscripted URL gets a 404,
-    which is what the network would eventually say, and ``post`` raises so a
-    stray federated write fails loudly instead of passing silently.
+    A stub: every answer is canned by the test. An unscripted GET gets a 404,
+    which is what the network would eventually say. A POST must be scripted with
+    ``post_script``; an unscripted one raises, so a stray federated write fails
+    loudly instead of passing silently.
     """
 
     def __init__(
@@ -439,9 +440,17 @@ class StubTransport(HttpTransport):
         self._responses: dict[str, HttpResponse] = dict(responses or {})
         self._delay = delay
         self.requests: list[tuple[str, dict[str, str], HttpRequestSigner | None]] = []
+        self.posts: list[dict[str, Any]] = []
+        self.max_concurrent_posts = 0
+        self._active_posts = 0
+        self._post_responses: dict[str, list[HttpResponse]] = {}
 
     def script(self, url: str, response: HttpResponse) -> None:
         self._responses[url] = response
+
+    def post_script(self, url: str, response: HttpResponse | list[HttpResponse]) -> None:
+        """Script the answer for one inbox; one answer repeats, several are used in order."""
+        self._post_responses[url] = list(response) if isinstance(response, list) else [response]
 
     async def get(
         self,
@@ -461,7 +470,26 @@ class StubTransport(HttpTransport):
         return self._responses.get(target, HttpResponse(status_code=404))
 
     async def post(self, *args: Any, **kwargs: Any) -> HttpResponse:
-        raise AssertionError("StubTransport.post is not expected in these tests")
+        target = str(args[0])
+        self.posts.append(
+            {
+                "url": target,
+                "json": kwargs.get("json"),
+                "content_type": dict(kwargs.get("headers") or {}).get("Content-Type"),
+                "timeout": kwargs.get("timeout"),
+                "auth": kwargs.get("auth"),
+            }
+        )
+        self._active_posts += 1
+        self.max_concurrent_posts = max(self.max_concurrent_posts, self._active_posts)
+        try:
+            await asyncio.sleep(self._delay)
+        finally:
+            self._active_posts -= 1
+        scripted = self._post_responses.get(target)
+        if not scripted:
+            raise AssertionError(f"StubTransport.post to unscripted {target}")
+        return scripted[0] if len(scripted) == 1 else scripted.pop(0)
 
     @property
     def urls(self) -> list[str]:
