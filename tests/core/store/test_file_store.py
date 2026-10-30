@@ -19,6 +19,19 @@ async def test_put_get_remove(path_type, tmp_path):
     assert (await region.get(id_)) is None
 
 
+async def test_get_hands_back_a_document_the_caller_may_modify(tmp_path):
+    region = FileResourceStore(tmp_path, "test")
+    id_ = "http://server.test/obj1"
+    await region.put({"id": id_, "type": "Something", "to": ["as:Public"]})
+
+    fetched = await region.get(id_)
+    assert fetched is not None
+    fetched["type"] = "Modified"
+    fetched["to"] = []
+
+    assert await region.get(id_) == {"id": id_, "type": "Something", "to": ["as:Public"]}
+
+
 async def test_create_subdir(tmp_path):
     _ = FileResourceStore(tmp_path, "test")
     assert (tmp_path / "test").exists()

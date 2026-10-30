@@ -23,7 +23,6 @@ def client(tmp_path):
             ServerConfig([TenantConfig(prefix=prefix)], FileStoreConfig(base=tmp_path))
         ),
         base_url=prefix,
-        raise_server_exceptions=False,
     ) as test_client:
         yield test_client
     server_module._app = None
@@ -149,12 +148,7 @@ def test_sse_subscription_crud(authenticated_client: TestClient):
 
 def test_sse_stream_requires_valid_ticket(authenticated_client: TestClient):
     with pytest.raises(ExceptionGroup) as ex:
-        with TestClient(
-            authenticated_client.app,
-            base_url=str(authenticated_client.base_url),
-            raise_server_exceptions=True,
-        ) as strict_client:
-            strict_client.get("/sse/stream")
+        authenticated_client.get("/sse/stream")
 
     http_exception = ex.value.exceptions[0]
     assert isinstance(http_exception, HTTPException)
