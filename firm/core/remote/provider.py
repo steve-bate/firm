@@ -29,7 +29,7 @@ from firm.core.interfaces import (
     HttpTransport,
     JSONObject,
 )
-from firm.core.remote.cache import CacheEntry, RemoteCache
+from firm.core.remote.cache import DEFAULT_MAX_ENTRIES, CacheEntry, RemoteCache
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,12 @@ ACTIVITYPUB_ACCEPT = (
     "application/activity+json, "
     'application/ld+json; profile="https://www.w3.org/ns/activitystreams", '
     "application/json;q=0.5"
+)
+
+# What a response may be declared as. The profile parameter is not required: many
+# servers omit it, and the body is validated against the requested id either way.
+ACTIVITYPUB_MEDIA_TYPES = frozenset(
+    {"application/activity+json", "application/ld+json", "application/json"}
 )
 
 GONE_STATUSES = frozenset({404, 410})
@@ -113,6 +119,7 @@ class FetchPolicy:
     failure_ttl: float = 60.0
     not_found_ttl: float = 86_400.0
     max_bytes: int = 1_048_576
+    max_entries: int = DEFAULT_MAX_ENTRIES
     allow_private_addresses: bool = False
     timeout: float = DEFAULT_HTTP_TIMEOUT
     accept: str = ACTIVITYPUB_ACCEPT
@@ -247,7 +254,22 @@ class RemoteResourceProvider:
             return 200, self._parse(target, response)
         raise FetchError(f"Too many redirects for {uri}")
 
+    @staticmethod
+    def _check_media_type(uri: str, response: HttpResponse) -> None:
+        """Refuse a body that was not served as ActivityPub.
+
+        A missing Content-Type is tolerated: the header cannot then contradict the
+        body, and the ``id`` rule below still has to hold.
+        """
+        declared = response.media_type
+        if declared is None:
+            return
+        media_type = declared.split(";", 1)[0].strip().lower()
+        if media_type not in ACTIVITYPUB_MEDIA_TYPES:
+            raise FetchError(f"Response from {uri} is {declared}, not an ActivityPub media type")
+
     def _parse(self, uri: str, response: HttpResponse) -> JSONObject:
+        self._check_media_type(uri, response)
         body = response.body or b""
         if len(body) > self._policy.max_bytes:
             raise FetchError(

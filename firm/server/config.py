@@ -55,6 +55,9 @@ class RemoteFetchConfig:
     not_found_ttl: float = 86_400.0
     max_bytes: int = 1_048_576
     timeout: float = 5.0
+    # Kept equal to firm.core.remote.cache.DEFAULT_MAX_ENTRIES by hand: config cannot
+    # import the core (the cycle closes through firm.core.interfaces).
+    max_entries: int = 10_000
     allow_private_addresses: bool = False
     signing_actor: str | None = None
 

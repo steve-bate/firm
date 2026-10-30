@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from firm.core.interfaces import HttpResponse
+from firm.core.interfaces import HttpResponse, JSONObject
 from firm.core.remote import provider as provider_module
 from firm.core.remote.cache import MemoryRemoteCache
 from firm.core.remote.provider import (
@@ -15,7 +15,7 @@ from tests.support import Clock, StubSigner, StubTransport, json_response
 
 NOTE_URI = "http://remote.test/note/1"
 PUBLIC_ADDRESS = "93.184.216.34"
-NOTE = {
+NOTE: JSONObject = {
     "@context": "https://www.w3.org/ns/activitystreams",
     "id": NOTE_URI,
     "type": "Note",
@@ -344,3 +344,32 @@ async def test_signed_get_carries_the_signature_header():
     await unsigned.get(NOTE_URI)
 
     assert [request[2] for request in transport.requests] == [signer, None]
+
+
+@pytest.mark.parametrize(
+    "media_type",
+    [
+        "application/activity+json",
+        "application/ld+json",
+        "application/json; charset=utf-8",
+    ],
+)
+async def test_activitypub_media_types_are_accepted(media_type: str):
+    transport = StubTransport({NOTE_URI: json_response(NOTE, headers={"Content-Type": media_type})})
+
+    assert await _provider(transport).get(NOTE_URI) == NOTE
+
+
+async def test_html_200_is_a_failed_fetch_not_a_document():
+    transport = StubTransport(
+        {NOTE_URI: json_response(NOTE, headers={"Content-Type": "text/html"})}
+    )
+    cache = MemoryRemoteCache()
+    provider = _provider(transport, cache)
+
+    assert await provider.get(NOTE_URI) is None
+    assert await provider.get(NOTE_URI) is None
+
+    assert transport.urls == [NOTE_URI], "a rejected body is remembered, not refetched"
+    entry = await cache.get(NOTE_URI)
+    assert entry is not None and entry.document is None, "a failed fetch, not a stored document"

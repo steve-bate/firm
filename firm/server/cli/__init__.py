@@ -17,12 +17,16 @@ log = logging.root
 
 @dataclass
 class Context:
-    tenant_uri: str
+    tenant_uri: str | None
     config: ServerConfig
 
     _tenant: Tenant | None = field(default=None, init=False)
 
     def get_tenant(self) -> Tenant:
+        if self.tenant_uri is None:
+            raise click.UsageError(
+                "Tenant URI is required. Use --tenant option " "or set FIRM_TENANT env variable."
+            )
         if not self._tenant:
             self._tenant = init_tenant(self.config, self.tenant_uri)
         return self._tenant
@@ -31,6 +35,12 @@ class Context:
         """Get the appropriate store based on the URI."""
         tenant = self.get_tenant()
         return tenant.private_store if uri.startswith("urn:") else tenant.public_store
+
+    async def close(self) -> None:
+        """Close the tenant stores, if this command opened any."""
+        if self._tenant is not None:
+            await self._tenant.public_store.close()
+            await self._tenant.private_store.close()
 
 
 @click.group(context_settings=dict(auto_envvar_prefix="FIRM"))
@@ -44,15 +54,11 @@ class Context:
     envvar="FIRM_TENANT",
 )
 @click.pass_context
-def cli(ctx: click.Context, config: click.File, tenant: str):
+def cli(ctx: click.Context, config: click.File, tenant: str | None):
     """FIRM - Federated Information Resource Manager
 
     To get subcommand help, use '<subcommand> --help'
     """
-    if tenant is None:
-        raise click.UsageError(
-            "Tenant URI is required. Use --tenant option " "or set FIRM_TENANT env variable."
-        )
     coloredlogs.install()
     config = load_config(config)
     ctx.obj = Context(tenant_uri=tenant, config=config)
@@ -61,11 +67,7 @@ def cli(ctx: click.Context, config: click.File, tenant: str):
 @cli.result_callback()
 @click.pass_obj
 def after_command(ctx: Context, result, **kwargs):
-    async def close_stores():
-        await ctx.get_tenant().public_store.close()
-        await ctx.get_tenant().private_store.close()
-
-    asyncio.run(close_stores())
+    asyncio.run(ctx.close())
     log.info("tenant stores closed")
 
 

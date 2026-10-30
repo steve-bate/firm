@@ -5,6 +5,7 @@ from . import cli
 import_module("firm.server.cli.serve")
 import_module("firm.server.cli.actor")
 import_module("firm.server.cli.resource")
+import_module("firm.server.cli.cache")
 
 if __name__ == "__main__":
     cli()

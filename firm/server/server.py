@@ -97,8 +97,10 @@ def init_remote_cache(config: ServerConfig) -> RemoteCache:
     remote_fetch = config.remote_fetch
     kind = remote_fetch.kind or _default_cache_kind(config)
     if kind == CacheKind.MEMORY:
-        return MemoryRemoteCache()
-    return SqliteRemoteCache(remote_fetch.path or _cache_dir(config) / "remote.sqlite")
+        return MemoryRemoteCache(remote_fetch.max_entries)
+    return SqliteRemoteCache(
+        remote_fetch.path or _cache_dir(config) / "remote.sqlite", remote_fetch.max_entries
+    )
 
 
 def init_remote_provider(config: ServerConfig) -> RemoteResourceProvider | None:
@@ -112,6 +114,7 @@ def init_remote_provider(config: ServerConfig) -> RemoteResourceProvider | None:
         not_found_ttl=remote_fetch.not_found_ttl,
         timeout=remote_fetch.timeout,
         max_bytes=remote_fetch.max_bytes,
+        max_entries=remote_fetch.max_entries,
         allow_private_addresses=remote_fetch.allow_private_addresses,
     )
     return RemoteResourceProvider(init_remote_cache(config), HttpxTransport(), policy=policy)

@@ -1,4 +1,6 @@
+import asyncio
 import os
+import time
 
 import pytest
 from pytest_httpx import HTTPXMock
@@ -7,6 +9,7 @@ from starlette.testclient import TestClient
 from firm.core.auth.http_signature import HttpSignatureAuth
 from firm.core.auth.keys import create_key_pair
 from firm.core.interfaces import FIRM_NS, Tenant
+from firm.core.remote.cache import CacheEntry, SqliteRemoteCache
 from firm.core.resolver import ResourceResolver
 from firm.core.store.memory import MemoryResourceStore
 from firm.server.adapters import HttpxTransport
@@ -16,7 +19,13 @@ from firm.server.config import (
     ServerConfig,
     TenantConfig,
 )
-from firm.server.server import app_factory, clear_app, init_remote_signer
+from firm.server.server import (
+    app_factory,
+    clear_app,
+    init_remote_cache,
+    init_remote_provider,
+    init_remote_signer,
+)
 
 TENANT_PREFIX = "https://server.test"
 
@@ -210,3 +219,97 @@ async def test_unsigned_when_no_signing_actor_is_configured(tmp_path):
     config = ServerConfig([TenantConfig(prefix=TENANT_PREFIX)], FileStoreConfig(base=tmp_path))
 
     assert await init_remote_signer(config, resolver) is None
+
+
+async def test_remote_fetch_config_bounds_the_cache(tmp_path):
+    config = ServerConfig(
+        [TenantConfig(prefix=TENANT_PREFIX)],
+        FileStoreConfig(base=tmp_path),
+        remote_fetch=RemoteFetchConfig(max_entries=2),
+    )
+    provider = init_remote_provider(config)
+    assert provider is not None
+
+    assert provider.policy.max_entries == 2
+
+    cache = init_remote_cache(config)
+    for index in range(3):
+        await cache.put(
+            CacheEntry(
+                uri=f"http://remote.test/note/{index}",
+                document=None,
+                status_code=404,
+                fetched_at=0.0,
+                expires_at=1.0,
+            )
+        )
+    kept = [await cache.get(f"http://remote.test/note/{index}") for index in range(3)]
+
+    assert sum(entry is not None for entry in kept) == 2, "the configured cap reached the cache"
+    await cache.close()
+    await provider.close()
+
+
+def test_cache_purge_reports_what_it_removed(tmp_path):
+    from click.testing import CliRunner
+
+    import firm.server.cli.main  # noqa: F401  (registers the subcommands)
+    from firm.server.cli import cli as firm_cli
+
+    database = tmp_path / "cache" / "remote.sqlite"
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(f"""tenants:
+  - prefix: "{TENANT_PREFIX}"
+store:
+  kind: filesystem
+  base: {tmp_path / "store"}
+remote_fetch:
+  kind: sqlite
+  path: {database}
+""")
+
+    async def seed() -> None:
+        cache = SqliteRemoteCache(database, max_entries=10)
+        try:
+            for uri in ("http://remote.test/stale-1", "http://remote.test/stale-2"):
+                await cache.put(
+                    CacheEntry(
+                        uri=uri,
+                        document=None,
+                        status_code=404,
+                        fetched_at=0.0,
+                        expires_at=1.0,
+                    )
+                )
+            await cache.put(
+                CacheEntry(
+                    uri="http://remote.test/fresh",
+                    document={"id": "http://remote.test/fresh", "type": "Note"},
+                    status_code=200,
+                    fetched_at=time.time(),
+                    expires_at=time.time() + 3600,
+                )
+            )
+        finally:
+            await cache.close()
+
+    asyncio.run(seed())
+
+    result = CliRunner().invoke(firm_cli, ["--config", str(config_path), "cache", "purge"])
+
+    assert result.exit_code == 0, result.output
+    assert "purged 2" in result.output, result.output
+
+    async def read() -> tuple[CacheEntry | None, CacheEntry | None]:
+        reopened = SqliteRemoteCache(database, max_entries=10)
+        try:
+            return (
+                await reopened.get("http://remote.test/stale-1"),
+                await reopened.get("http://remote.test/fresh"),
+            )
+        finally:
+            await reopened.close()
+
+    stale, fresh = asyncio.run(read())
+    assert stale is None, "an expired entry went"
+    assert fresh is not None, "a fresh entry stayed"

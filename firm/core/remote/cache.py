@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -10,6 +11,10 @@ from typing import Protocol, runtime_checkable
 import aiosqlite
 
 from firm.core.interfaces import JSONObject
+
+# How many entries a cache keeps when the caller names no limit. The provider
+# passes this from configuration; a cache built by hand uses it as the default.
+DEFAULT_MAX_ENTRIES = 10_000
 
 
 @dataclass(frozen=True)
@@ -34,7 +39,11 @@ class CacheEntry:
 
 @runtime_checkable
 class RemoteCache(Protocol):
-    """Where entries live. Keys are cache keys, not raw URIs."""
+    """Where entries live. Keys are cache keys, not raw URIs.
+
+    A cache holds at most ``max_entries``; a ``put`` that takes it past the cap
+    drops the least recently used entry. Recency is a ``get`` hit or a ``put``.
+    """
 
     async def get(self, key: str) -> CacheEntry | None: ...
 
@@ -48,16 +57,23 @@ class RemoteCache(Protocol):
 
 
 class MemoryRemoteCache:
-    """An in-process cache, unbounded by design."""
+    """An in-process cache, bounded to the most recently used entries."""
 
-    def __init__(self) -> None:
-        self._entries: dict[str, CacheEntry] = {}
+    def __init__(self, max_entries: int = DEFAULT_MAX_ENTRIES) -> None:
+        self._max_entries = max_entries
+        self._entries: OrderedDict[str, CacheEntry] = OrderedDict()
 
     async def get(self, key: str) -> CacheEntry | None:
-        return self._entries.get(key)
+        entry = self._entries.get(key)
+        if entry is not None:
+            self._entries.move_to_end(key)
+        return entry
 
     async def put(self, entry: CacheEntry) -> None:
         self._entries[entry.uri] = entry
+        self._entries.move_to_end(entry.uri)
+        while len(self._entries) > self._max_entries:
+            self._entries.popitem(last=False)
 
     async def delete(self, key: str) -> None:
         self._entries.pop(key, None)
@@ -73,10 +89,11 @@ class MemoryRemoteCache:
 
 
 class SqliteRemoteCache:
-    """A cache in one SQLite file: a row per URI, purged with one statement."""
+    """A cache in one SQLite file: a row per URI plus the order it was last used."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, max_entries: int = DEFAULT_MAX_ENTRIES) -> None:
         self._path = Path(path)
+        self._max_entries = max_entries
         self._connection: aiosqlite.Connection | None = None
 
     async def _db(self) -> aiosqlite.Connection:
@@ -91,12 +108,24 @@ class SqliteRemoteCache:
                 document TEXT,
                 status_code INTEGER,
                 fetched_at REAL NOT NULL,
-                expires_at REAL NOT NULL
+                expires_at REAL NOT NULL,
+                used_at REAL NOT NULL DEFAULT 0
             )
             """)
+        columns = {
+            row[1]
+            for row in await (await connection.execute("PRAGMA table_info(entries)")).fetchall()
+        }
+        if "used_at" not in columns:
+            # A file written before the cap existed: recency starts as fetch time.
+            await connection.execute(
+                "ALTER TABLE entries ADD COLUMN used_at REAL NOT NULL DEFAULT 0"
+            )
+            await connection.execute("UPDATE entries SET used_at = fetched_at")
         await connection.execute(
             "CREATE INDEX IF NOT EXISTS entries_expires_at ON entries (expires_at)"
         )
+        await connection.execute("CREATE INDEX IF NOT EXISTS entries_used_at ON entries (used_at)")
         await connection.commit()
         self._connection = connection
         return connection
@@ -110,6 +139,12 @@ class SqliteRemoteCache:
             row = await cursor.fetchone()
         if row is None:
             return None
+        await db.execute(
+            "UPDATE entries SET used_at = (SELECT COALESCE(MAX(used_at), 0) + 1 FROM entries)"
+            " WHERE uri = ?",
+            (key,),
+        )
+        await db.commit()
         document, status_code, fetched_at, expires_at = row
         return CacheEntry(
             uri=key,
@@ -123,13 +158,14 @@ class SqliteRemoteCache:
         db = await self._db()
         await db.execute(
             """
-            INSERT INTO entries (uri, document, status_code, fetched_at, expires_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO entries (uri, document, status_code, fetched_at, expires_at, used_at)
+            VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(used_at), 0) + 1 FROM entries))
             ON CONFLICT(uri) DO UPDATE SET
                 document = excluded.document,
                 status_code = excluded.status_code,
                 fetched_at = excluded.fetched_at,
-                expires_at = excluded.expires_at
+                expires_at = excluded.expires_at,
+                used_at = excluded.used_at
             """,
             (
                 entry.uri,
@@ -139,6 +175,15 @@ class SqliteRemoteCache:
                 entry.expires_at,
             ),
         )
+        async with db.execute("SELECT COUNT(*) FROM entries") as cursor:
+            row = await cursor.fetchone()
+        excess = (row[0] if row else 0) - self._max_entries
+        if excess > 0:
+            await db.execute(
+                "DELETE FROM entries WHERE uri IN"
+                " (SELECT uri FROM entries ORDER BY used_at ASC LIMIT ?)",
+                (excess,),
+            )
         await db.commit()
 
     async def delete(self, key: str) -> None:
