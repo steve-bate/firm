@@ -17,7 +17,6 @@ from firm.core.interfaces import (
     JSONObject,
     NoOpValidator,
     Principal,
-    ResourceStore,
     Tenant,
     Validator,
 )
@@ -33,6 +32,7 @@ from firm.core.services.activitypub.service import post_to_inbox, resolve_box
 from firm.core.services.activitypub.support import FirmContext
 from firm.core.util import (
     AS2_CONTEXT,
+    RECIPIENT_FIELDS,
     get_id,
     get_types,
     is_collection,
@@ -71,6 +71,28 @@ def strip_firm_properties(value: JSON, predicate: Callable[[str], bool]) -> JSON
     return value
 
 
+def _inbox_of(document: JSONObject, *, local: bool) -> str | None:
+    """The inbox to post to, or None when the document has none.
+
+    Every actor must have an ``inbox``; a shared inbox is optional. For a remote
+    recipient the shared inbox collapses a followers list into one request, which is
+    what it is for, so it is preferred when advertised. A local recipient is written
+    into its own box: our shared inbox is a route, not a stored collection, so there
+    would be nothing to append to.
+    """
+    inbox = document.get("inbox")
+    if not isinstance(inbox, str):
+        return None
+    if local:
+        return inbox
+    endpoints = document.get("endpoints")
+    if isinstance(endpoints, Mapping):
+        shared = endpoints.get("sharedInbox")
+        if isinstance(shared, str):
+            return shared
+    return inbox
+
+
 class DeliveryError(Exception):
     """One inbox, or the activity itself, could not be delivered.
 
@@ -95,8 +117,6 @@ def _is_retryable(status_code: int) -> bool:
 
 
 class FirmDeliveryService(DeliveryService):
-    _RECIPIENT_PROPS = ["to", "cc", "bto", "bcc"]
-
     def __init__(
         self,
         config: ServerConfig,
@@ -120,28 +140,53 @@ class FirmDeliveryService(DeliveryService):
             return self._resolver
         return ResourceResolver({str(tenant.prefix): tenant for tenant in tenants})
 
-    async def _resolve_inboxes(
-        self,
-        store: ResourceStore,
-        recipient_uris: Iterable[str],
-    ) -> set[str]:
-        inboxes = set()
-        for uri in recipient_uris:
-            if is_public(uri):
+    def set_resolver(self, resolver: ResourceResolver) -> None:
+        """Attach the instance registry once the lifespan has built it."""
+        self._resolver = resolver
+
+    @property
+    def resolver(self) -> ResourceResolver | None:
+        return self._resolver
+
+    async def _recipient_document(self, tenant: Tenant, uri: str) -> JSONObject | None:
+        """The document for a recipient URI: its owner's store, or the network."""
+        if self._resolver is not None:
+            owner = self._resolver.owner(uri)
+            if owner is not None:
+                return await owner.public_store.get(uri)
+            return await self._resolver.fetch(uri)
+        if uri.startswith(tenant.prefix):
+            return await tenant.public_store.get(uri)
+        return None
+
+    async def _resolve_inboxes(self, tenant: Tenant, recipient_uris: Iterable[str]) -> set[str]:
+        """Every inbox reachable from the activity's addressing, each once."""
+        inboxes: set[str] = set()
+        seen: set[str] = set()
+        queue: list[tuple[str, int]] = [(uri, 0) for uri in recipient_uris]
+        while queue:
+            uri, depth = queue.pop(0)
+            if uri in seen or is_public(uri):
                 continue
-            obj = await store.get(uri)
-            if not obj:
+            seen.add(uri)
+            document = await self._recipient_document(tenant, uri)
+            if document is None:
+                log.info("Delivery target not resolvable: %s", uri)
                 continue
-            if is_collection(obj):  # TODO Expand server-local collections for inboxes
-                # ... and self._store.is_local(uri):
-                if items := cast(
-                    list[JSONObject | str], obj.get("items") or obj.get("orderedItems")
-                ):
-                    for item in await self._resolve_inboxes(store, _get_uris(items)):
-                        inboxes.add(item)
+            if is_collection(document):
+                if depth >= self._delivery.max_expand_depth:
+                    log.warning("Delivery expansion stopped at depth %d: %s", depth, uri)
+                    continue
+                items = document.get("items") or document.get("orderedItems") or []
+                if isinstance(items, list):
+                    stored = cast(list[JSONObject | str], items)
+                    queue.extend((item, depth + 1) for item in _get_uris(stored))
+                continue
+            inbox_uri = _inbox_of(document, local=self._config.is_local(uri))
+            if inbox_uri:
+                inboxes.add(inbox_uri)
             else:
-                if inbox_uri := obj.get("sharedInbox") or obj.get("inbox"):
-                    inboxes.add(cast(str, inbox_uri))
+                log.warning("Recipient %s has no inbox", uri)
         return inboxes
 
     async def _post(
@@ -222,15 +267,18 @@ class FirmDeliveryService(DeliveryService):
             raise DeliveryError(f"no private key for {actor_uri}", 0)
         return HttpSignatureAuth(key_uri, private_key_pem)
 
-    def _recipients(self, activity: JSONObject) -> set[str]:
-        recipients: set[str] = set()
-        for prop in self._RECIPIENT_PROPS:
+    def _targets(self, activity: JSONObject) -> set[str]:
+        """The addressees of an activity, minus the actor that published it (AP 7.1)."""
+        actor_uri = get_id(activity.get("actor"))
+        targets: set[str] = set()
+        for prop in RECIPIENT_FIELDS:
             value = activity.get(prop)
             if isinstance(value, str):
-                recipients.add(value)
+                targets.add(value)
             elif isinstance(value, list):
-                recipients.update(uri for uri in value if isinstance(uri, str))
-        return recipients
+                targets.update(uri for uri in value if isinstance(uri, str))
+        targets.discard(actor_uri or "")
+        return targets
 
     async def _deliver_locally(
         self,
@@ -285,7 +333,7 @@ class FirmDeliveryService(DeliveryService):
             auth = await self._signer(tenant, actor_uri)
         except DeliveryError as exc:
             return DeliveryReport(failed=(DeliveryFailure(None, exc.attempts, exc.reason),))
-        inboxes = await self._resolve_inboxes(tenant.public_store, self._recipients(activity))
+        inboxes = await self._resolve_inboxes(tenant, self._targets(activity))
         return await self._fan_out(tenant, all_tenants, activity, activity_uri, inboxes, auth)
 
     def _owner_of(

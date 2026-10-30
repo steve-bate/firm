@@ -6,6 +6,9 @@ import pytest
 
 from firm.core.auth.keys import create_key_pair
 from firm.core.interfaces import FIRM_NS, Tenant
+from firm.core.remote.cache import MemoryRemoteCache
+from firm.core.remote.provider import FetchPolicy, RemoteResourceProvider
+from firm.core.resolver import ResourceResolver
 from firm.core.store.memory import MemoryResourceStore
 from firm.server.config import FileStoreConfig, ServerConfig, TenantConfig
 from firm.server.delivery import DeliveryError, FirmDeliveryService
@@ -51,6 +54,26 @@ async def tenant(tmp_path: Path) -> Tenant:
         {"id": INBOX, "type": "OrderedCollection", "attributedTo": RECIPIENT, "items": []}
     )
     return tenant
+
+
+REMOTE_ACTOR = "https://remote.test/users/bob"
+REMOTE_ACTOR_DOC = {"id": REMOTE_ACTOR, "type": "Person", "inbox": f"{REMOTE_ACTOR}/inbox"}
+
+
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    """A delivery test fetches remote.test; the SSRF guard resolves it, so name an address."""
+    from firm.core.remote import provider as provider_module
+
+    monkeypatch.setattr(
+        provider_module, "_resolve_host", lambda host, port: ["93.184.216.34"], raising=False
+    )
+
+
+def make_resolver(tenant: Tenant, transport: StubTransport) -> ResourceResolver:
+    """The real resolver over one tenant and a fetch provider backed by the stub."""
+    provider = RemoteResourceProvider(MemoryRemoteCache(), transport, policy=FetchPolicy())
+    return ResourceResolver({str(tenant.prefix): tenant}, provider)
 
 
 @pytest.fixture
@@ -235,6 +258,134 @@ async def test_a_transport_error_is_retried(tenant, config):
 
     assert len(transport.posts) == 3
     assert "AssertionError" in raised.value.reason
+
+
+async def test_a_remote_follower_resolves_through_the_resolver(tenant, config, transport):
+    followers = f"{SENDER}/followers"
+    await tenant.public_store.put(
+        {"id": followers, "type": "Collection", "attributedTo": SENDER, "items": [REMOTE_ACTOR]}
+    )
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(f"{REMOTE_ACTOR}/inbox", json_response({}, status_code=202))
+    service = FirmDeliveryService(config, transport)
+    service.set_resolver(make_resolver(tenant, transport))
+
+    report = await service.deliver(tenant, {PREFIX: tenant}, activity(**{"to": [followers]}))
+
+    assert report.delivered == (f"{REMOTE_ACTOR}/inbox",)
+    assert transport.urls == [REMOTE_ACTOR], "the actor document was fetched once"
+
+
+async def test_a_cyclic_collection_terminates(tenant, config):
+    loop = f"{PREFIX}/loop"
+    await tenant.public_store.put(
+        {"id": loop, "type": "Collection", "attributedTo": SENDER, "items": [loop]}
+    )
+    service = FirmDeliveryService(config)
+
+    report = await service.deliver(tenant, {PREFIX: tenant}, activity(**{"to": [loop]}))
+
+    assert report.delivered == ()
+
+
+async def test_expansion_stops_at_the_configured_depth(tenant, config):
+    outer, inner, deeper = (f"{PREFIX}/{name}" for name in ("outer", "inner", "deeper"))
+    for uri, item in ((outer, inner), (inner, deeper), (deeper, RECIPIENT)):
+        await tenant.public_store.put(
+            {"id": uri, "type": "Collection", "attributedTo": SENDER, "items": [item]}
+        )
+    service = FirmDeliveryService(config)  # max_expand_depth is 2
+
+    report = await service.deliver(tenant, {PREFIX: tenant}, activity(**{"to": [outer]}))
+
+    assert report.delivered == (), "the walk stopped before reaching the actor"
+
+
+async def test_another_local_tenant_recipient_is_resolved_from_its_own_store(tenant, config):
+    other = Tenant("https://other.test", MemoryResourceStore(), MemoryResourceStore(), Path())
+    await other.public_store.put(
+        {"id": "https://other.test/u2", "type": "Person", "inbox": "https://other.test/u2/inbox"}
+    )
+    service = FirmDeliveryService(config)
+    service.set_resolver(ResourceResolver({PREFIX: tenant, "https://other.test": other}))
+
+    inboxes = await service._resolve_inboxes(tenant, {"https://other.test/u2"})
+
+    assert inboxes == {"https://other.test/u2/inbox"}
+
+
+async def test_audience_is_a_target_field(tenant, config):
+    document = activity(**{"to": [], "audience": [RECIPIENT]})
+    service = FirmDeliveryService(config)
+
+    report = await service.deliver(tenant, {PREFIX: tenant}, document)
+
+    assert report.delivered == (INBOX,), "an audience-only activity still reaches its addressee"
+
+
+async def test_an_actor_is_not_delivered_its_own_activity(tenant, config):
+    sender = await tenant.public_store.get(SENDER)
+    await tenant.public_store.put({**sender, "inbox": f"{SENDER}/inbox"})
+    await tenant.public_store.put(
+        {"id": f"{SENDER}/inbox", "type": "OrderedCollection", "attributedTo": SENDER, "items": []}
+    )
+    document = activity(**{"to": [SENDER, RECIPIENT]})
+    service = FirmDeliveryService(config)
+
+    report = await service.deliver(tenant, {PREFIX: tenant}, document)
+
+    assert report.delivered == (INBOX,), "the publisher is excluded from its own targets"
+    assert (await tenant.public_store.get(f"{SENDER}/inbox"))["items"] == []
+
+
+async def test_shared_inbox_is_read_from_endpoints(tenant, config, transport):
+    transport.script(
+        REMOTE_ACTOR,
+        json_response(
+            {
+                "id": REMOTE_ACTOR,
+                "type": "Person",
+                "inbox": f"{REMOTE_ACTOR}/inbox",
+                "endpoints": {"sharedInbox": "https://remote.test/shared"},
+            }
+        ),
+    )
+    transport.post_script("https://remote.test/shared", json_response({}, status_code=202))
+    service = FirmDeliveryService(config, transport)
+    service.set_resolver(make_resolver(tenant, transport))
+
+    report = await service.deliver(tenant, {PREFIX: tenant}, activity(**{"to": [REMOTE_ACTOR]}))
+
+    assert report.delivered == ("https://remote.test/shared",)
+
+
+async def test_a_local_recipient_is_delivered_to_its_personal_inbox(tenant, config, transport):
+    await tenant.public_store.put(
+        {
+            "id": RECIPIENT,
+            "type": "Person",
+            "inbox": INBOX,
+            "endpoints": {"sharedInbox": f"{PREFIX}/shared"},
+        }
+    )
+    service = FirmDeliveryService(config, transport)
+
+    report = await service.deliver(tenant, {PREFIX: tenant}, activity())
+
+    assert report.delivered == (INBOX,)
+
+
+async def test_a_recipient_without_an_inbox_is_skipped_and_logged(
+    tenant, config, transport, caplog
+):
+    await tenant.public_store.put({"id": RECIPIENT, "type": "Person"})
+    service = FirmDeliveryService(config, transport)
+
+    with caplog.at_level("WARNING", logger="firm.server.delivery"):
+        report = await service.deliver(tenant, {PREFIX: tenant}, activity())
+
+    assert report.delivered == ()
+    assert RECIPIENT in caplog.text, "the actor is named, so the bad document can be found"
 
 
 INBOXES = [f"https://remote.test/users/{name}/inbox" for name in "abc"]

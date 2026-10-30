@@ -30,6 +30,7 @@ from firm.server.config import (
     ServerConfig,
     StorageKind,
 )
+from firm.server.delivery import FirmDeliveryService
 from firm.server.routes import create_router
 
 log = logging.getLogger(__name__ if __name__ != "__main__" else "firm.server.main")
@@ -189,6 +190,8 @@ class TenantMiddleware:
 def app_factory(config: ServerConfig) -> FastAPI:
     global _app
     if _app is None:
+        authorizer = CoreAuthorizationService()
+        delivery_service = FirmDeliveryService(config, authorizer=authorizer)
 
         @contextlib.asynccontextmanager
         async def lifespan(app):
@@ -214,7 +217,9 @@ def app_factory(config: ServerConfig) -> FastAPI:
             app.state.resolver = ResourceResolver(tenants, provider)
             if provider is not None:
                 provider.set_signer(await init_remote_signer(config, app.state.resolver))
-            app.state.authorizer = CoreAuthorizationService()
+            app.state.authorizer = authorizer
+            app.state.delivery_service = delivery_service
+            delivery_service.set_resolver(app.state.resolver)
             log.info("Remote cache: purged %d expired entries", await app.state.resolver.purge())
 
             yield
@@ -224,7 +229,7 @@ def app_factory(config: ServerConfig) -> FastAPI:
             log.info("ASGI lifespan: stopping")
 
         _app = FastAPI(lifespan=lifespan)
-        _app.include_router(create_router(config))
+        _app.include_router(create_router(config, delivery_service))
 
         log.info("Adding CORS middleware")
 

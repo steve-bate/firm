@@ -1,8 +1,10 @@
 import asyncio
 import os
 import time
+from typing import cast
 
 import pytest
+from fastapi import FastAPI
 from pytest_httpx import HTTPXMock
 from starlette.testclient import TestClient
 
@@ -171,6 +173,12 @@ async def test_http_transport_post(httpx_mock: HTTPXMock):
         auth=HttpSignatureAuth(f"{TENANT_PREFIX}/actor/bob", PRIVATE_KEY),
     )
     assert response.status_code == 403
+
+
+def test_delivery_is_wired_to_the_resolver(client: TestClient) -> None:
+    app = cast(FastAPI, client.app)
+    assert app.state.delivery_service.resolver is app.state.resolver
+    assert app.state.delivery_service._authorizer is app.state.authorizer
 
 
 async def test_http_transport_post_sends_the_json_body(httpx_mock: HTTPXMock):

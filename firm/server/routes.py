@@ -16,6 +16,7 @@ from jsonschema.exceptions import ValidationError
 
 from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.interfaces import (
+    DeliveryService,
     Identity,
     JSONObject,
     Principal,
@@ -407,7 +408,9 @@ def proxy_endpoint(request: Request, principal: Principal = Depends(get_principa
     return proxy(request)
 
 
-def create_router(config: ServerConfig) -> APIRouter:
+def create_router(
+    config: ServerConfig, delivery_service: DeliveryService | None = None
+) -> APIRouter:
     router = APIRouter()
 
     router.add_api_route("/.well-known/nodeinfo", nodeinfo_index_endpoint, methods=["GET"])
@@ -456,7 +459,7 @@ def create_router(config: ServerConfig) -> APIRouter:
 
     activitypub_service = ActivityPubService(
         authorizer=CoreAuthorizationService(),
-        delivery_service=FirmDeliveryService(config),
+        delivery_service=delivery_service or FirmDeliveryService(config, validator=validator),
         validator=validator,
     )
 

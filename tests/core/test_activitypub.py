@@ -1,10 +1,18 @@
 import copy
+import logging
 from typing import Sequence, cast
 
 import pytest
 
 from firm.core.auth.authorization import CoreAuthorizationService
-from firm.core.interfaces import FIRM_NS, Identity, JSONObject, ResourceStore, Tenant
+from firm.core.interfaces import (
+    FIRM_NS,
+    DeliveryFailure,
+    Identity,
+    JSONObject,
+    ResourceStore,
+    Tenant,
+)
 from firm.core.remote.cache import MemoryRemoteCache
 from firm.core.remote.provider import FetchPolicy, RemoteResourceProvider
 from firm.core.services.activitypub.collections import dereference_collection_items
@@ -15,6 +23,7 @@ from firm.core.services.activitypub.exceptions import (
     NotFoundException,
     ResourceOwnerException,
 )
+from firm.core.services.activitypub.publish import outbox_send
 from firm.core.services.activitypub.serialization import serialize
 from firm.core.services.activitypub.service import (
     ActivityPubService,
@@ -1403,3 +1412,21 @@ async def test_inbox_post_leaves_a_public_activity_unaddressed(
     stored = await context.dereference("http://remote.test/create10")
     assert stored is not None
     assert stored["to"] == ["as:Public"], "a public activity needs no implicit recipient"
+
+
+async def test_outbox_send_logs_a_failed_delivery(tenant, caplog):
+    outbox = f"{tenant.prefix}/outbox"
+    await tenant.public_store.put({"id": outbox, "type": "OrderedCollection", "items": []})
+    activity: JSONObject = {
+        "id": f"{tenant.prefix}/activities/1",
+        "type": "Create",
+        "actor": f"{tenant.prefix}/user1",
+    }
+    delivery = StubDeliveryService()
+    delivery.failures = [DeliveryFailure("https://remote.test/inbox", 3, "HTTP 503")]
+
+    with caplog.at_level(logging.ERROR, logger="firm.core.services.activitypub.publish"):
+        await outbox_send(tenant, {str(tenant.prefix): tenant}, activity, outbox, delivery)
+
+    assert "https://remote.test/inbox" in caplog.text
+    assert "HTTP 503" in caplog.text
