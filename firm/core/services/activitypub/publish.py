@@ -1,10 +1,13 @@
 """Publishing an activity as its owner: store it, append it to the outbox, deliver it."""
 
+import logging
 from typing import Mapping, cast
 
 from firm.core.interfaces import DeliveryService, JSONObject, Tenant
 from firm.core.services.activitypub.collections import add_collection_item
 from firm.core.util import get_id, is_local_uri, resource_id
+
+log = logging.getLogger(__name__)
 
 
 async def outbox_send(
@@ -21,4 +24,12 @@ async def outbox_send(
             await tenant.public_store.put(cast(JSONObject, object_))
     await tenant.public_store.put(activity)
     await add_collection_item(tenant.public_store, outbox_uri, resource_id(activity))
-    await delivery_service.deliver(tenant, tenants, activity)
+    report = await delivery_service.deliver(tenant, tenants, activity)
+    for failure in report.failed:
+        log.error(
+            "Delivery of %s to %s failed after %d attempts: %s",
+            resource_id(activity),
+            failure.inbox or "the receiving instance",
+            failure.attempts,
+            failure.reason,
+        )

@@ -6,6 +6,8 @@ import httpx
 from firm.core.auth.http_signature import HttpSignatureAuth
 from firm.core.interfaces import (
     FIRM_NS,
+    DeliveryFailure,
+    DeliveryReport,
     DeliveryService,
     JSONObject,
     ResourceStore,
@@ -17,7 +19,6 @@ from firm.core.util import (
     get_types,
     is_collection,
     is_public,
-    resource_id,
 )
 from firm.server.adapters import HttpxAuthAdapter
 from firm.server.config import ServerConfig
@@ -33,6 +34,15 @@ def _get_uris(items: list[JSONObject | str]) -> list[str]:
         elif isinstance(item, dict) and "id" in item:
             uris.append(cast(str, item["id"]))
     return uris
+
+
+class DeliveryError(Exception):
+    """One inbox, or the activity itself, could not be delivered."""
+
+    def __init__(self, reason: str, attempts: int) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.attempts = attempts
 
 
 class FirmDeliveryService(DeliveryService):
@@ -115,65 +125,81 @@ class FirmDeliveryService(DeliveryService):
                     message["object"] = obj
         return message
 
+    async def _signer(self, tenant: Tenant, actor_uri: str) -> HttpSignatureAuth:
+        actor = await tenant.public_store.get(actor_uri)
+        if not actor:
+            raise DeliveryError(f"actor {actor_uri} is not in the tenant store", 0)
+        key_uri = get_id(actor.get("publicKey", {}))
+        if not key_uri:
+            raise DeliveryError(f"actor {actor_uri} has no publicKey id", 0)
+        credentials = await tenant.private_store.query_one(
+            {
+                "type": FIRM_NS.Credentials.value,
+                "attributedTo": actor_uri,
+            }
+        )
+        if not credentials:
+            raise DeliveryError(f"no credentials for {actor_uri}", 0)
+        private_key_pem = credentials.get(FIRM_NS.privateKey.value)
+        if not isinstance(private_key_pem, str) or not private_key_pem:
+            raise DeliveryError(f"no private key for {actor_uri}", 0)
+        return HttpSignatureAuth(key_uri, private_key_pem)
+
+    def _recipients(self, activity: JSONObject) -> set[str]:
+        recipients: set[str] = set()
+        for prop in self._RECIPIENT_PROPS:
+            value = activity.get(prop)
+            if isinstance(value, str):
+                recipients.add(value)
+            elif isinstance(value, list):
+                recipients.update(uri for uri in value if isinstance(uri, str))
+        return recipients
+
     async def deliver(
         self,
         tenant: Tenant,
         all_tenants: Mapping[str, Tenant],
         activity: JSONObject,
-    ) -> None:
-        # TODO Delivery - Handle failures and redelivery
-        actor = await tenant.public_store.get(resource_id(activity["actor"]))
-        if not actor:
-            log.error("Actor not found for activity: %s", resource_id(activity["actor"]))
-            return
-        key_uri = get_id(actor.get("publicKey", {}))
-        if not key_uri:
-            log.error("No key for actor %s", actor["id"])
-            return
-        credentials = await tenant.private_store.query_one(
-            {
-                "type": FIRM_NS.Credentials.value,
-                "attributedTo": actor["id"],
-            }
-        )
-        if not credentials:
-            log.error("No credentials found for actor %s", actor["id"])
-            return
-        private_key_pem = cast(str, credentials.get(FIRM_NS.privateKey.value))
-        if not private_key_pem:
-            log.error("No private key found for actor %s", actor["id"])
-            return
-        auth = HttpSignatureAuth(key_uri, private_key_pem)
-        recipient_uris: set[str] = set()
-        for prop in self._RECIPIENT_PROPS:
-            if r := activity.get(prop):
-                if isinstance(r, str):
-                    recipient_uris.add(r)
-                elif isinstance(r, list):
-                    recipient_uris.update(r)
-        inboxes = await self._resolve_inboxes(tenant.public_store, recipient_uris)
+    ) -> DeliveryReport:
+        activity_uri = get_id(activity.get("id"))
+        actor_uri = get_id(activity.get("actor"))
+        if activity_uri is None:
+            return DeliveryReport(failed=(DeliveryFailure(None, 0, "activity has no id"),))
+        if actor_uri is None:
+            return DeliveryReport(failed=(DeliveryFailure(None, 0, "activity has no actor"),))
+        try:
+            auth = await self._signer(tenant, actor_uri)
+        except DeliveryError as exc:
+            return DeliveryReport(failed=(DeliveryFailure(None, exc.attempts, exc.reason),))
+        inboxes = await self._resolve_inboxes(tenant.public_store, self._recipients(activity))
+        delivered: list[str] = []
+        failed: list[DeliveryFailure] = []
         message = None
-        for inbox_uri in inboxes:
-            if self._config.is_local(inbox_uri):
-                inbox_prefix = get_prefix_uri(inbox_uri)
-                target_tenant = (
-                    tenant if inbox_prefix == tenant.prefix else all_tenants.get(inbox_prefix)
-                )
-                if not target_tenant:
-                    log.error(f"Unknown tenant for inbox {inbox_uri}")
-                    continue
-                store = target_tenant.public_store
-                inbox = await store.get(inbox_uri)
-                if not inbox:
-                    log.error(f"Inbox not found: {inbox_uri}")
-                    continue
-                # inbox storage repr uses items
-                items = cast(list[JSONObject | str], inbox.get("items", []))
-                items.insert(0, cast(str, activity["id"]))
-                inbox["items"] = items
-                inbox["totalItems"] = len(items)
-                await store.put(inbox)
+        for inbox_uri in sorted(inboxes):
+            try:
+                if self._config.is_local(inbox_uri):
+                    inbox_prefix = get_prefix_uri(inbox_uri)
+                    target_tenant = (
+                        tenant if inbox_prefix == tenant.prefix else all_tenants.get(inbox_prefix)
+                    )
+                    if not target_tenant:
+                        raise DeliveryError(f"unknown tenant for inbox {inbox_uri}", 1)
+                    store = target_tenant.public_store
+                    inbox = await store.get(inbox_uri)
+                    if not inbox:
+                        raise DeliveryError(f"inbox not found: {inbox_uri}", 1)
+                    # inbox storage repr uses items
+                    items = cast(list[JSONObject | str], inbox.get("items", []))
+                    items.insert(0, activity_uri)
+                    inbox["items"] = items
+                    inbox["totalItems"] = len(items)
+                    await store.put(inbox)
+                else:
+                    if message is None:
+                        message = await self._serialize(tenant, activity)
+                    await self._post(inbox_uri, message=message, auth=auth)
+            except DeliveryError as exc:
+                failed.append(DeliveryFailure(inbox_uri, exc.attempts, exc.reason))
             else:
-                if message is None:
-                    message = await self._serialize(tenant, activity)
-                await self._post(inbox_uri, message=message, auth=auth)
+                delivered.append(inbox_uri)
+        return DeliveryReport(delivered=tuple(delivered), failed=tuple(failed))

@@ -10,6 +10,8 @@ from firm.core.interfaces import (
     APActor,
     AuthorizationDecision,
     AuthorizationService,
+    DeliveryFailure,
+    DeliveryReport,
     DeliveryService,
     HttpApplication,
     HttpApplicationState,
@@ -176,14 +178,17 @@ class StubDeliveryService(DeliveryService):
 
     def __init__(self) -> None:
         self.delivered: list[str] = []
+        self.failures: list[DeliveryFailure] = []
 
     async def deliver(
         self,
         tenant: Tenant,
         all_tenants: Mapping[str, Tenant],
         activity: JSONObject,
-    ) -> None:
-        self.delivered.append(str(activity.get("id")))
+    ) -> DeliveryReport:
+        activity_id = str(activity.get("id"))
+        self.delivered.append(activity_id)
+        return DeliveryReport(delivered=(activity_id,), failed=tuple(self.failures))
 
 
 class StubState(HttpApplicationState):

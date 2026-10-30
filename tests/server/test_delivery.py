@@ -74,3 +74,27 @@ async def test_local_delivery_writes_the_inbox_items(tenant, service):
 
     assert inbox["items"] == [f"{PREFIX}/activities/1"]
     assert inbox["totalItems"] == 1
+
+
+async def test_deliver_reports_the_inbox_it_wrote_to(tenant, service):
+    report = await service.deliver(tenant, {PREFIX: tenant}, activity())
+
+    assert report.delivered == (INBOX,)
+    assert report.failed == ()
+
+
+async def test_an_activity_without_an_actor_is_reported_not_raised(tenant, service):
+    report = await service.deliver(tenant, {PREFIX: tenant}, activity(actor=None))
+
+    assert report.delivered == ()
+    assert report.failed[0].inbox is None
+    assert "actor" in report.failed[0].reason
+
+
+async def test_missing_credentials_are_reported_not_raised(tenant, service):
+    tenant.private_store = MemoryResourceStore()
+
+    report = await service.deliver(tenant, {PREFIX: tenant}, activity())
+
+    assert report.delivered == ()
+    assert "credentials" in report.failed[0].reason

@@ -438,13 +438,38 @@ class AuthorizationService(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class DeliveryFailure:
+    """One inbox the activity did not reach.
+
+    ``inbox`` is ``None`` for a failure that happened before any inbox was chosen:
+    no id or actor on the activity, or no signing key for the actor.
+    """
+
+    inbox: str | None
+    attempts: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class DeliveryReport:
+    """What happened to one activity: the inboxes written to, the ones that failed."""
+
+    delivered: tuple[str, ...] = ()
+    failed: tuple[DeliveryFailure, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed
+
+
 class DeliveryService(Protocol):
     async def deliver(
         self,
         tenant: Tenant,
         tenants: Mapping[str, Tenant],
         activity: JSONObject,
-    ) -> None: ...
+    ) -> DeliveryReport: ...
 
 
 UrlTypes: TypeAlias = str | Url
