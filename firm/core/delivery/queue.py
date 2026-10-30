@@ -67,7 +67,7 @@ class DeliveryQueue(Protocol):
 
     async def counts(self) -> dict[str, int]: ...
 
-    async def prune(self, *, now: float, history_ttl: float) -> int: ...
+    async def prune(self, *, now: float, history_ttl: float, abandoned: bool = False) -> int: ...
 
     async def close(self) -> None: ...
 
@@ -162,11 +162,14 @@ class MemoryDeliveryQueue:
             counts[row.state.value] += 1
         return counts
 
-    async def prune(self, *, now: float, history_ttl: float) -> int:
+    async def prune(self, *, now: float, history_ttl: float, abandoned: bool = False) -> int:
+        states = {DeliveryState.DELIVERED}
+        if abandoned:
+            states.add(DeliveryState.ABANDONED)
         stale = [
             row.id
             for row in self._rows.values()
-            if row.state is DeliveryState.DELIVERED
+            if row.state in states
             and row.finished_at is not None
             and row.finished_at < now - history_ttl
         ]

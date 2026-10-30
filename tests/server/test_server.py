@@ -344,3 +344,145 @@ remote_fetch:
     stale, fresh = asyncio.run(read())
     assert stale is None, "an expired entry went"
     assert fresh is not None, "a fresh entry stayed"
+
+
+def _delivery_config(tmp_path) -> tuple[object, str]:
+    """A config file with a filesystem store, so the queue is a real file."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(f"""tenants:
+  - prefix: "{TENANT_PREFIX}"
+store:
+  kind: filesystem
+  base: {tmp_path / "store"}
+""")
+    return config_path, str(tmp_path / "store" / "delivery.sqlite")
+
+
+def _seed_delivery(path: str, **overrides) -> None:
+    from dataclasses import replace
+
+    from firm.core.delivery.queue import Delivery
+    from firm.core.delivery.sqlite import SqliteDeliveryQueue
+
+    row = replace(
+        Delivery(
+            id="d1",
+            tenant=TENANT_PREFIX,
+            activity=f"{TENANT_PREFIX}/activities/1",
+            endpoint="https://remote.test/users/bob/inbox",
+            created_at=1_000.0,
+            next_attempt_at=1_000.0,
+        ),
+        **overrides,
+    )
+
+    async def seed() -> None:
+        queue = SqliteDeliveryQueue(path)
+        try:
+            await queue.enqueue(row)
+        finally:
+            await queue.close()
+
+    asyncio.run(seed())
+
+
+def _read_delivery(path: str):
+    from firm.core.delivery.sqlite import SqliteDeliveryQueue
+
+    async def read():
+        queue = SqliteDeliveryQueue(path)
+        try:
+            return await queue.get("d1")
+        finally:
+            await queue.close()
+
+    return asyncio.run(read())
+
+
+def test_delivery_list_prints_the_outstanding_units(tmp_path):
+    from click.testing import CliRunner
+
+    import firm.server.cli.main  # noqa: F401  (registers the subcommands)
+    from firm.server.cli import cli as firm_cli
+
+    config_path, queue_path = _delivery_config(tmp_path)
+    _seed_delivery(queue_path)
+
+    result = CliRunner().invoke(firm_cli, ["--config", str(config_path), "delivery", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "https://remote.test/users/bob/inbox" in result.output
+    assert "pending" in result.output
+
+
+def test_delivery_cancel_abandons_the_unit(tmp_path):
+    from click.testing import CliRunner
+
+    import firm.server.cli.main  # noqa: F401
+    from firm.server.cli import cli as firm_cli
+
+    config_path, queue_path = _delivery_config(tmp_path)
+    _seed_delivery(queue_path)
+
+    result = CliRunner().invoke(
+        firm_cli, ["--config", str(config_path), "delivery", "cancel", "d1"]
+    )
+
+    assert result.exit_code == 0, result.output
+    row = _read_delivery(queue_path)
+    assert row is not None
+    assert row.state.value == "abandoned"
+    assert row.last_reason == "cancelled"
+
+
+def test_delivery_purge_reports_the_class_and_count(tmp_path):
+    from click.testing import CliRunner
+
+    import firm.server.cli.main  # noqa: F401
+    from firm.server.cli import cli as firm_cli
+
+    config_path, queue_path = _delivery_config(tmp_path)
+    from firm.core.delivery.queue import DeliveryState
+
+    _seed_delivery(queue_path, state=DeliveryState.DELIVERED, finished_at=1_000.0)
+
+    result = CliRunner().invoke(firm_cli, ["--config", str(config_path), "delivery", "purge"])
+
+    assert result.exit_code == 0, result.output
+    assert "purged 1 rows from SqliteDeliveryQueue" in result.output
+    assert _read_delivery(queue_path) is None
+
+
+def test_delivery_purge_all_drops_abandoned_rows(tmp_path):
+    from click.testing import CliRunner
+
+    import firm.server.cli.main  # noqa: F401
+    from firm.core.delivery.queue import DeliveryState
+    from firm.server.cli import cli as firm_cli
+
+    config_path, queue_path = _delivery_config(tmp_path)
+    _seed_delivery(queue_path, state=DeliveryState.ABANDONED, finished_at=1_000.0)
+
+    kept = CliRunner().invoke(firm_cli, ["--config", str(config_path), "delivery", "purge"])
+    cleared = CliRunner().invoke(
+        firm_cli, ["--config", str(config_path), "delivery", "purge", "--all"]
+    )
+
+    assert "purged 0 rows" in kept.output, kept.output
+    assert "purged 1 rows" in cleared.output, cleared.output
+    assert _read_delivery(queue_path) is None
+
+
+def test_delivery_retry_refuses_a_remote_unit_without_a_signing_actor(tmp_path):
+    from click.testing import CliRunner
+
+    import firm.server.cli.main  # noqa: F401
+    from firm.server.cli import cli as firm_cli
+
+    config_path, queue_path = _delivery_config(tmp_path)
+    _seed_delivery(queue_path)
+
+    result = CliRunner().invoke(firm_cli, ["--config", str(config_path), "delivery", "retry", "d1"])
+
+    assert result.exit_code != 0, result.output
+    assert "signing_actor" in result.output

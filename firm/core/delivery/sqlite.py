@@ -181,12 +181,16 @@ class SqliteDeliveryQueue:
             counts[row["state"]] = row["n"]
         return counts
 
-    async def prune(self, *, now: float, history_ttl: float) -> int:
+    async def prune(self, *, now: float, history_ttl: float, abandoned: bool = False) -> int:
         db = await self._connection()
+        states = [DeliveryState.DELIVERED.value]
+        if abandoned:
+            states.append(DeliveryState.ABANDONED.value)
+        marks = ",".join("?" for _ in states)
         cursor = await db.execute(
-            "DELETE FROM deliveries WHERE state = ? AND finished_at IS NOT NULL"
+            f"DELETE FROM deliveries WHERE state IN ({marks}) AND finished_at IS NOT NULL"
             " AND finished_at < ?",
-            (DeliveryState.DELIVERED.value, now - history_ttl),
+            (*states, now - history_ttl),
         )
         await db.commit()
         return cursor.rowcount
