@@ -32,8 +32,6 @@ from firm.core.util import (
     resource_id,
 )
 
-from .inbox import _process_undo_follow
-
 log = logging.getLogger(__name__)
 
 
@@ -210,15 +208,44 @@ async def _process_outbox_patch(context: FirmContext, activity: JSONObject):
 
 
 async def _process_outbox_undo(context: FirmBoxContext, activity: JSONObject) -> None:
-    # implement undo for follow, like, announce
-    if resource_get(activity, "object", "type") == "Follow":
-        await _process_undo_follow(context, activity)  # type: ignore
+    undone = await _undone_activity(context, activity)
+    if undone is None:
+        raise InvalidRequestException("Request has no activity to undo")
+    if has_value(undone, "type", "Follow"):
+        await _process_outbox_undo_follow(context, undone)
     # TODO Implement outbox undo like
     # elif resource_get(activity, "object", "type") == "Like":
     #     await self._process_inbox_undo_like(request, activity)
     # TODO Implement outbox undo announce
     # elif resource_get(activity, "object", "type") == "Announce":
     #     await self._process_inbox_undo_announce(request, activity)
+
+
+async def _undone_activity(context: FirmBoxContext, activity: JSONObject) -> JSONObject | None:
+    """The activity an Undo undoes, from the Undo itself or from our own record.
+
+    An Undo may embed the activity it undoes or name it by IRI. A named one is our
+    own activity, so it is read from this tenant's store - never fetched.
+    """
+    undone = activity.get("object")
+    if isinstance(undone, dict):
+        return undone
+    if isinstance(undone, str):
+        return await context.tenant.public_store.get(undone)
+    return None
+
+
+async def _process_outbox_undo_follow(context: FirmBoxContext, follow: JSONObject) -> None:
+    """Undoing our follow of an actor drops that actor from our following.
+
+    The followed actor is named by the Follow we already hold, so the unfollow
+    needs no document from the other server.
+    """
+    followed_uri = resource_id(resource_get(follow, "object"))
+    following_uri = get_id(context.box_owner.get("following"))
+    if followed_uri is None or following_uri is None:
+        raise InvalidRequestException("Request has no follow to undo")
+    await remove_collection_item(context.tenant.public_store, following_uri, followed_uri)
 
 
 async def _process_outbox_like(context: FirmBoxContext, activity: JSONObject) -> None:

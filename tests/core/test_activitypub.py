@@ -646,6 +646,97 @@ async def test_inbox_undo_follow(service: ActivityPubService, remote_identity: S
     ), "a received Undo is not a tenant document"
 
 
+async def _setup_follow_collections(tenant: Tenant):
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+                "followers": "http://tenant1.test/user2/followers",
+                "following": "http://tenant1.test/user2/following",
+            },
+            {
+                "id": "http://tenant1.test/outbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+            {
+                "id": "http://tenant1.test/user2/following",
+                "type": "Collection",
+                "attributedTo": "http://tenant1.test/user2",
+                "items": ["http://remote.test/user1"],
+            },
+        ],
+    )
+
+
+async def test_outbox_undo_follow_removes_the_actor_from_following(
+    service: ActivityPubService, tenant: Tenant
+):
+    await _setup_follow_collections(tenant)
+    transport = StubTransport()
+    context = make_context(
+        tenant,
+        principal=StubIdentity("http://tenant1.test/user2", tenant),
+        remote=_provider(transport),
+    )
+
+    await service.process_post(
+        context,
+        StubUrl.parse("http://tenant1.test/outbox"),
+        {
+            "id": "http://tenant1.test/undo-follow1",
+            "type": "Undo",
+            "actor": "http://tenant1.test/user2",
+            "object": {"type": "Follow", "object": "http://remote.test/user1"},
+        },
+    )
+
+    following = await tenant.public_store.get("http://tenant1.test/user2/following")
+    assert following is not None
+    assert following["items"] == [], "the unfollowed actor is gone"
+    assert transport.urls == [], "unfollowing needs no remote document"
+
+
+async def test_outbox_undo_follow_by_id_removes_the_actor_from_following(
+    service: ActivityPubService, tenant: Tenant
+):
+    await _setup_follow_collections(tenant)
+    await tenant.public_store.put(
+        {
+            "id": "http://tenant1.test/follow/1",
+            "type": "Follow",
+            "actor": "http://tenant1.test/user2",
+            "object": "http://remote.test/user1",
+        }
+    )
+    transport = StubTransport()
+    context = make_context(
+        tenant,
+        principal=StubIdentity("http://tenant1.test/user2", tenant),
+        remote=_provider(transport),
+    )
+
+    await service.process_post(
+        context,
+        StubUrl.parse("http://tenant1.test/outbox"),
+        {
+            "id": "http://tenant1.test/undo-follow2",
+            "type": "Undo",
+            "actor": "http://tenant1.test/user2",
+            "object": "http://tenant1.test/follow/1",
+        },
+    )
+
+    following = await tenant.public_store.get("http://tenant1.test/user2/following")
+    assert following is not None
+    assert following["items"] == [], "the undone Follow names the actor"
+    assert transport.urls == []
+
+
 async def test_inbox_like(service: ActivityPubService, remote_identity: StubIdentity):
     tenant = remote_identity.tenant
     await setup_resources(
@@ -1085,6 +1176,47 @@ async def test_collection_item_is_fetched_and_cached(tenant: Tenant):
     assert (
         await tenant.public_store.get(REMOTE_ITEM) is None
     ), "a fetched copy stays out of our store"
+
+
+async def test_relationship_collection_is_served_as_uris(tenant: Tenant):
+    following: JSONObject = {
+        "id": "http://tenant1.test/user2/following",
+        "type": "Collection",
+        "attributedTo": "http://tenant1.test/user2",
+        "totalItems": 1,
+        "items": [REMOTE_ITEM],
+    }
+    transport = StubTransport()
+    context = make_context(tenant, remote=_provider(transport))
+
+    served = await serialize(context, following)
+
+    assert served["items"] == [REMOTE_ITEM], "the item is an IRI, not an object"
+    assert transport.urls == [], "a list of IRIs is served without fetching them"
+
+
+async def test_inbox_collection_embeds_its_activities(tenant: Tenant, identity: StubIdentity):
+    activity: JSONObject = {
+        "id": "http://tenant1.test/user1/activity/1",
+        "type": "Announce",
+        "actor": "http://tenant1.test/user2",
+        "to": [identity.uri],
+        "object": REMOTE_ITEM,
+    }
+    await tenant.public_store.put(activity)
+    inbox: JSONObject = {
+        "id": "http://tenant1.test/user1/inbox",
+        "type": "OrderedCollection",
+        "attributedTo": identity.uri,
+        "totalItems": 1,
+        "items": [activity["id"]],
+    }
+    await tenant.public_store.put(inbox)
+    context = make_context(tenant, principal=identity, authorizer=CoreAuthorizationService())
+
+    served = await serialize(context, inbox)
+
+    assert (served.get("orderedItems") or served.get("items")) == [activity]
 
 
 async def test_failed_item_fetch_is_dropped_and_not_retried(tenant: Tenant):

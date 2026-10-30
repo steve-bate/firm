@@ -54,15 +54,37 @@ async def remove_collection_item(store: ResourceStore, collection_uri: str, item
     await store.put(collection)
 
 
+RELATIONSHIP_COLLECTIONS = frozenset({"followers", "following", "liked"})
+
+
+def embeds_items(collection: JSONObject) -> bool:
+    """Whether a collection is served with its items embedded.
+
+    A relationship collection is a list of actors this server does not hold, so it
+    is served as IRIs: embedding would fetch every one of them on every read and
+    silently drop whoever cannot be fetched.
+    """
+    uri = collection.get("id")
+    if not isinstance(uri, str):
+        return True
+    return uri.rstrip("/").rsplit("/", 1)[-1] not in RELATIONSHIP_COLLECTIONS
+
+
 async def dereference_collection_items(
-    context: FirmContext, collection: JSONObject, inplace=False
-) -> list[JSONObject] | JSONObject | None:
+    context: FirmContext,
+    collection: JSONObject,
+    *,
+    embed: bool = True,
+    inplace: bool = False,
+) -> list[JSONObject | str] | JSONObject | None:
     # all stored collections use "items" for storage,
     # even if they serialize as "orderedItems"
     items_key = "items"
     items = collection.get(items_key, [])
     if isinstance(items, list):
-        dereferenced_items: list[JSONObject] = []
+        if not embed:
+            return collection if inplace else cast(list[JSONObject | str], list(items))
+        dereferenced_items: list[JSONObject | str] = []
         for item in items:
             if isinstance(item, str):
                 resolved = await context.dereference(item)

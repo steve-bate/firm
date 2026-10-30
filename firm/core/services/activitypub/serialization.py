@@ -2,7 +2,10 @@ import copy
 from typing import cast
 
 from firm.core.interfaces import FIRM_NS, JSONObject, Url
-from firm.core.services.activitypub.collections import dereference_collection_items
+from firm.core.services.activitypub.collections import (
+    dereference_collection_items,
+    embeds_items,
+)
 from firm.core.services.activitypub.exceptions import InvalidResourceException
 from firm.core.services.activitypub.support import FirmContext
 from firm.core.util import (
@@ -45,7 +48,10 @@ async def serialize(context: FirmContext, resource: JSONObject) -> JSONObject:
 
     if is_collection(resource):
         resource = cast(
-            JSONObject, await dereference_collection_items(context, resource, inplace=True)
+            JSONObject,
+            await dereference_collection_items(
+                context, resource, embed=embeds_items(resource), inplace=True
+            ),
         )
         items_key = get_collection_items_key(resource)
         if items_key != "items":

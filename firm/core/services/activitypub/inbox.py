@@ -163,18 +163,18 @@ async def _process_undo_follow(
     context: FirmBoxContext,
     activity: JSONObject,
 ) -> None:
-    followed_uri = resource_id(resource_get(activity, "object", "object"))
-    if followed_uri is None:
-        raise InvalidRequestException("Request has no activity to undo")
-    followed_object = await context.dereference(followed_uri)
-    if followed_object is None:
-        raise InvalidResourceException("Unknown box owner")
-    followers_uri = get_id(followed_object["followers"])
+    """A remote actor undoes their follow of the box owner.
+
+    Only the owner's own followers collection is involved: the actor to drop is
+    the sender, and the owner document is already loaded, so nothing is fetched.
+    """
+    follower_uri = resource_id(activity.get("actor"))
+    if follower_uri is None:
+        raise InvalidRequestException("Request has no actor to remove")
+    followers_uri = get_id(context.box_owner.get("followers"))
     if followers_uri is None:
         raise InvalidResourceException("No followers collection")
-    store = context.tenant.public_store
-    await remove_collection_item(store, followers_uri, resource_id(activity.get("actor")))
-    await remove_collection_item(store, context.box_owner["following"], followed_uri)
+    await remove_collection_item(context.tenant.public_store, followers_uri, follower_uri)
 
 
 async def _process_inbox_undo_like(
