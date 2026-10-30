@@ -1096,3 +1096,55 @@ async def test_non_public_remote_item_is_dropped(tenant: Tenant):
 
     assert "orderedItems" not in served and "items" not in served
     assert transport.urls == [REMOTE_ITEM], "the fetch happens, serving does not"
+
+
+@pytest.mark.parametrize(
+    "deleted",
+    [
+        "http://remote.test/note/7",
+        {"id": "http://remote.test/note/7", "type": "Tombstone"},
+    ],
+    ids=["bare-uri", "tombstone"],
+)
+async def test_inbox_delete_invalidates_the_cached_copy(
+    service: ActivityPubService, remote_identity: StubIdentity, deleted
+):
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+                "followers": "http://tenant1.test/user2/followers",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    note_uri = "http://remote.test/note/7"
+    note: JSONObject = {"id": note_uri, "type": "Note", "content": "hello"}
+    transport = StubTransport({note_uri: json_response(note)})
+    provider = _provider(transport)
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+
+    assert await provider.get(note_uri) == note, "the document is cached"
+
+    await service.process_post(
+        context,
+        StubUrl.parse("http://tenant1.test/inbox"),
+        {
+            "id": "http://remote.test/delete7",
+            "type": "Delete",
+            "actor": "http://remote.test/user1",
+            "object": deleted,
+        },
+    )
+
+    assert await provider.get(note_uri) == note
+    assert transport.urls == [note_uri, note_uri], "the delete invalidated the cached copy"

@@ -76,6 +76,19 @@ class ResourceResolver:
             return
         await self._remote.remember(document)
 
+    async def invalidate(self, uri: str) -> None:
+        """Drop the cached copy of a document another server owns.
+
+        Refused for a locally owned URI: this server's own documents are not cached
+        here, and evicting one would be a request to ourselves by another name.
+        """
+        if self.owner(uri) is not None or is_urn(uri):
+            log.warning("Refusing to invalidate a locally owned document: %s", uri)
+            return
+        if self._remote is None:
+            return
+        await self._remote.invalidate(uri)
+
     async def purge(self) -> int:
         """Drop expired cached documents. Returns the number removed."""
         if self._remote is None:

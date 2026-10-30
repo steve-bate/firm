@@ -32,6 +32,8 @@ async def process_inbox(
         return await _process_inbox_create(context, activity)
     elif has_value(activity, "type", "Undo"):
         return await _process_inbox_undo(context, activity)
+    elif has_value(activity, "type", "Delete"):
+        return await _process_inbox_delete(context, activity)
     elif has_value(activity, "type", "Announce"):
         return await _process_inbox_announce(context, activity)
     else:
@@ -128,6 +130,20 @@ async def _process_inbox_create(
         activity["object"] = resource_id(activity_object)
         await context.keep(activity_object)
         await context.keep(activity)
+
+
+async def _process_inbox_delete(
+    context: FirmBoxContext,
+    activity: JSONObject,
+) -> None:
+    """Another server has withdrawn a document: drop whatever copy we cached.
+
+    The object is either the deleted URI or an embedded ``Tombstone`` naming it.
+    """
+    target = get_id(activity.get("object"))
+    if target is None:
+        raise InvalidRequestException("Delete without an object")
+    await context.resolver.invalidate(str(target))
 
 
 async def _process_inbox_undo(
