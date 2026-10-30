@@ -7,9 +7,11 @@ import pytest
 from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.interfaces import (
     FIRM_NS,
+    APActor,
     DeliveryFailure,
     Identity,
     JSONObject,
+    NoOpValidator,
     ResourceStore,
     Tenant,
 )
@@ -27,6 +29,7 @@ from firm.core.services.activitypub.publish import outbox_send
 from firm.core.services.activitypub.serialization import serialize
 from firm.core.services.activitypub.service import (
     ActivityPubService,
+    post_to_inbox,
 )
 from firm.core.store.memory import MemoryResourceStore
 from tests.support import (
@@ -1430,3 +1433,116 @@ async def test_outbox_send_logs_a_failed_delivery(tenant, caplog):
 
     assert "https://remote.test/inbox" in caplog.text
     assert "HTTP 503" in caplog.text
+
+
+REMOTE_REPLY_ID = "http://remote.test/activities/1"
+REMOTE_AUTHOR = "http://remote.test/user9"
+REMOTE_NOTE = "http://remote.test/notes/1"
+
+
+async def _box_and_followers(tenant) -> tuple[JSONObject, str, str]:
+    """An owner with an inbox, a second local follower, and a note of ours."""
+    owner = f"{tenant.prefix}/user1"
+    other = f"{tenant.prefix}/user2"
+    followers = f"{owner}/followers"
+    note = f"{tenant.prefix}/notes/1"
+    await tenant.public_store.put(
+        {"id": owner, "type": "Person", "inbox": f"{owner}/inbox", "followers": followers}
+    )
+    await tenant.public_store.put(
+        {"id": f"{owner}/inbox", "type": "OrderedCollection", "attributedTo": owner, "items": []}
+    )
+    await tenant.public_store.put({"id": other, "type": "Person", "inbox": f"{other}/inbox"})
+    await tenant.public_store.put(
+        {"id": f"{other}/inbox", "type": "OrderedCollection", "attributedTo": other, "items": []}
+    )
+    await tenant.public_store.put(
+        {"id": followers, "type": "Collection", "attributedTo": owner, "items": [other]}
+    )
+    await tenant.public_store.put({"id": note, "type": "Note", "attributedTo": owner})
+    box_owner = await tenant.public_store.get(owner)
+    return box_owner, followers, note
+
+
+def _reply(followers: str, note: str, **overrides) -> JSONObject:
+    activity: JSONObject = {
+        "id": REMOTE_REPLY_ID,
+        "type": "Create",
+        "actor": REMOTE_AUTHOR,
+        "to": [followers],
+        "cc": [],
+        "inReplyTo": note,
+        "object": {"id": REMOTE_NOTE, "type": "Note", "inReplyTo": note},
+    }
+    activity.update(overrides)
+    return activity
+
+
+async def _arrive(tenant, box_owner: JSONObject, activity: JSONObject, delivery) -> None:
+    context = make_context(tenant, principal=StubIdentity(REMOTE_AUTHOR, tenant))
+    await post_to_inbox(
+        context,
+        cast(APActor, box_owner),
+        activity,
+        box_uri=str(box_owner["inbox"]),
+        validator=NoOpValidator(),
+        delivery_service=delivery,
+    )
+
+
+async def test_a_reply_addressed_to_our_followers_is_forwarded_to_them(tenant):
+    box_owner, followers, note = await _box_and_followers(tenant)
+    delivery = StubDeliveryService()
+
+    await _arrive(tenant, box_owner, _reply(followers, note), delivery)
+
+    assert delivery.delivered == [REMOTE_REPLY_ID]
+    assert delivery.local_only == [True], "forwarding reaches our addressees, not the peer's"
+
+
+async def test_an_activity_seen_before_is_not_forwarded_again(tenant):
+    box_owner, followers, note = await _box_and_followers(tenant)
+    delivery = StubDeliveryService()
+    activity = _reply(followers, note)
+
+    await _arrive(tenant, box_owner, copy.deepcopy(activity), delivery)
+    await _arrive(tenant, box_owner, copy.deepcopy(activity), delivery)
+
+    assert delivery.delivered == [REMOTE_REPLY_ID], "the second arrival is not new"
+
+
+async def test_an_activity_about_nothing_of_ours_is_not_forwarded(tenant):
+    box_owner, followers, _note = await _box_and_followers(tenant)
+    delivery = StubDeliveryService()
+
+    await _arrive(
+        tenant,
+        box_owner,
+        _reply(followers, "http://third.test/notes/1"),
+        delivery,
+    )
+
+    assert delivery.delivered == []
+
+
+async def test_forwarding_does_not_pick_up_new_addressees(tenant):
+    box_owner, followers, note = await _box_and_followers(tenant)
+    delivery = StubDeliveryService()
+
+    await _arrive(tenant, box_owner, _reply(followers, note), delivery)
+
+    forwarded = delivery.activities[0]
+    # The original addressees, plus the box owner the inbox path already added.
+    assert set(forwarded["to"]) == {followers, box_owner["id"]}
+    assert forwarded["cc"] == []
+    assert f"{tenant.prefix}/user2" not in forwarded["to"], "the collection was not expanded"
+
+
+async def test_an_activity_of_ours_is_not_forwarded(tenant):
+    box_owner, followers, note = await _box_and_followers(tenant)
+    delivery = StubDeliveryService()
+    activity = _reply(followers, note, actor=f"{tenant.prefix}/user1")
+
+    await _arrive(tenant, box_owner, activity, delivery)
+
+    assert delivery.delivered == [], "our own delivery already addressed our addressees"

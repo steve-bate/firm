@@ -268,10 +268,10 @@ class FirmDeliveryService(DeliveryService):
     async def _signer(self, tenant: Tenant, actor_uri: str) -> HttpSignatureAuth:
         actor = await tenant.public_store.get(actor_uri)
         if not actor:
-            raise DeliveryError(f"actor {actor_uri} is not in the tenant store", 0)
+            raise DeliveryRefused(f"actor {actor_uri} is not in the tenant store", 1)
         key_uri = get_id(actor.get("publicKey", {}))
         if not key_uri:
-            raise DeliveryError(f"actor {actor_uri} has no publicKey id", 0)
+            raise DeliveryRefused(f"actor {actor_uri} has no publicKey id", 1)
         credentials = await tenant.private_store.query_one(
             {
                 "type": FIRM_NS.Credentials.value,
@@ -279,10 +279,10 @@ class FirmDeliveryService(DeliveryService):
             }
         )
         if not credentials:
-            raise DeliveryError(f"no credentials for {actor_uri}", 0)
+            raise DeliveryRefused(f"no credentials for {actor_uri}", 1)
         private_key_pem = credentials.get(FIRM_NS.privateKey.value)
         if not isinstance(private_key_pem, str) or not private_key_pem:
-            raise DeliveryError(f"no private key for {actor_uri}", 0)
+            raise DeliveryRefused(f"no private key for {actor_uri}", 1)
         return HttpSignatureAuth(key_uri, private_key_pem)
 
     def _targets(self, activity: JSONObject) -> set[str]:
@@ -308,6 +308,10 @@ class FirmDeliveryService(DeliveryService):
         """Hand the activity to the owning tenant's inbox, exactly as a POST would."""
         actor_uri = get_id(document.get("actor"))
         actor = await publisher.public_store.get(actor_uri) if actor_uri else None
+        if actor is None and actor_uri is not None:
+            # A forwarded activity was authored elsewhere, so the actor is not in our
+            # store: it comes from the resolver like any other remote document.
+            actor = await self._recipient_document(publisher, actor_uri)
         if actor is None:
             raise DeliveryError(f"actor {actor_uri} is not stored", 1)
         context = FirmContext(
@@ -340,6 +344,8 @@ class FirmDeliveryService(DeliveryService):
         tenant: Tenant,
         all_tenants: Mapping[str, Tenant],
         activity: JSONObject,
+        *,
+        local_only: bool = False,
     ) -> DeliveryReport:
         activity_uri = get_id(activity.get("id"))
         actor_uri = get_id(activity.get("actor"))
@@ -347,14 +353,12 @@ class FirmDeliveryService(DeliveryService):
             return DeliveryReport(failed=(DeliveryFailure(None, 0, "activity has no id"),))
         if actor_uri is None:
             return DeliveryReport(failed=(DeliveryFailure(None, 0, "activity has no actor"),))
-        try:
-            # Fail before recording work that could never be signed; each unit signs
-            # again when it posts, because a queued attempt has to start from the store.
-            await self._signer(tenant, actor_uri)
-        except DeliveryError as exc:
-            return DeliveryReport(failed=(DeliveryFailure(None, exc.attempts, exc.reason),))
         self._tenants = all_tenants
         inboxes = await self._resolve_inboxes(tenant, self._targets(activity))
+        if local_only:
+            # AP 7.1.2 forwarding: the origin already reached the addressees it could
+            # see, so re-posting to them would be duplication, not forwarding.
+            inboxes = {inbox for inbox in inboxes if self._config.is_local(inbox)}
         return await self._fan_out(tenant, all_tenants, activity, activity_uri, inboxes)
 
     async def run(self, delivery: Delivery, document: JSONObject | None = None) -> None:

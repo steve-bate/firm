@@ -224,15 +224,21 @@ class StubDeliveryService(DeliveryService):
     def __init__(self) -> None:
         self.delivered: list[str] = []
         self.failures: list[DeliveryFailure] = []
+        self.activities: list[JSONObject] = []
+        self.local_only: list[bool] = []
 
     async def deliver(
         self,
         tenant: Tenant,
         all_tenants: Mapping[str, Tenant],
         activity: JSONObject,
+        *,
+        local_only: bool = False,
     ) -> DeliveryReport:
         activity_id = str(activity.get("id"))
         self.delivered.append(activity_id)
+        self.activities.append(activity)
+        self.local_only.append(local_only)
         return DeliveryReport(delivered=(activity_id,), failed=tuple(self.failures))
 
 

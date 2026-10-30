@@ -56,6 +56,86 @@ def item_filter(expr: str) -> str:
     return expr
 
 
+# How far into a nested object the "is this ours?" walk may look. Local copy of the
+# idea `DeliveryConfig.max_expand_depth` expresses, because core cannot read the config.
+_MAX_REFERENCE_DEPTH = 2
+
+# AP 7.1.2 (3): the fields that can tie an activity to something this server owns.
+_REFERENCE_FIELDS = ("inReplyTo", "object", "target", "tag")
+
+# AP 7.1.2: the values that name the addressees of the *original* activity.
+_ADDRESS_FIELDS = ("to", "cc", "audience")
+
+
+def _target_uris(activity: JSONObject, fields: tuple[str, ...]) -> set[str]:
+    """Every URI named by the given addressing fields."""
+    uris: set[str] = set()
+    for field in fields:
+        value = activity.get(field)
+        if isinstance(value, str):
+            uris.add(value)
+        elif isinstance(value, list):
+            uris.update(uri for uri in value if isinstance(uri, str))
+    return uris
+
+
+def _references_something_of_ours(context: FirmContext, value: Any, depth: int = 0) -> bool:
+    """Does this reference point at anything this server owns? Bounded, cycle-free."""
+    if depth > _MAX_REFERENCE_DEPTH:
+        return False
+    if isinstance(value, str):
+        return context.resolver.owner(value) is not None
+    if isinstance(value, list):
+        return any(_references_something_of_ours(context, item, depth) for item in value)
+    if isinstance(value, Mapping):
+        uri = get_id(value)
+        if uri is not None and context.resolver.owner(str(uri)) is not None:
+            return True
+        return any(
+            _references_something_of_ours(context, value[field], depth + 1)
+            for field in _REFERENCE_FIELDS
+            if field in value
+        )
+    return False
+
+
+async def _is_our_collection(context: FirmContext, uri: str) -> bool:
+    """Is this URI a collection stored on one of our tenants?"""
+    owner = context.resolver.owner(uri)
+    if owner is None:
+        return False
+    document = await owner.public_store.get(uri)
+    return document is not None and is_collection(document)
+
+
+async def _forward_to_local_addressees(
+    context: FirmContext, activity: JSONObject, delivery_service: DeliveryService
+) -> None:
+    """AP 7.1.2: hand an inbox activity to our own addressees.
+
+    The origin posted to every addressee it could resolve. When one of those is a
+    collection we own, its members are invisible to the origin, so the reply would
+    reach the box owner alone and everyone else would see a reply to nothing.
+    """
+    author = get_id(activity.get("actor"))
+    if author is not None and context.resolver.owner(str(author)) is not None:
+        # Our own activity: publishing already addressed our addressees, and forwarding
+        # it again would re-enter this function on every hop.
+        return
+    if not any(
+        _references_something_of_ours(context, activity.get(field)) for field in _REFERENCE_FIELDS
+    ):
+        return
+    targets = {
+        uri for uri in _target_uris(activity, _ADDRESS_FIELDS) if context.resolver.owner(uri)
+    }
+    if not any([await _is_our_collection(context, uri) for uri in targets]):
+        return
+    await delivery_service.deliver(
+        context.tenant, context.resolver.tenants, activity, local_only=True
+    )
+
+
 def _get_query_param(params: Mapping[str, list[str]], key: str, default_value: str) -> str:
     values = params.get(key)
     if not values or len(values) == 0:
@@ -145,6 +225,13 @@ async def post_to_inbox(
     activity_id = get_id(resource)
     if activity_id is None:
         raise InvalidRequestException("Activity must have an id")
+    # AP 7.1.2 asks whether this is the first time we have seen the activity: the
+    # owner's inbox list is our own record of what we accepted.
+    inbox_uri = get_id(box_owner.get("inbox"))
+    inbox_document = await store.get(inbox_uri) if inbox_uri else None
+    seen_items = inbox_document.get("items") if isinstance(inbox_document, Mapping) else None
+    seen: list[Any] = seen_items if isinstance(seen_items, list) else []
+    first_time = str(activity_id) not in seen
     await context.keep(resource)
     await add_collection_item(store, box_owner["inbox"], str(activity_id))
     box_context = FirmBoxContext(
@@ -157,6 +244,8 @@ async def post_to_inbox(
         delivery_service=delivery_service,
     )
     await process_inbox(box_context, resource)
+    if first_time:
+        await _forward_to_local_addressees(context, resource, delivery_service)
 
 
 class ActivityPubService:

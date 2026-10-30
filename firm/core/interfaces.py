@@ -467,8 +467,10 @@ class DeliveryService(Protocol):
     async def deliver(
         self,
         tenant: Tenant,
-        tenants: Mapping[str, Tenant],
+        all_tenants: Mapping[str, Tenant],
         activity: JSONObject,
+        *,
+        local_only: bool = False,
     ) -> DeliveryReport: ...
 
 

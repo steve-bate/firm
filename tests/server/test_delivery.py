@@ -2,17 +2,20 @@
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.auth.keys import create_key_pair
 from firm.core.delivery.queue import Delivery, DeliveryState
 from firm.core.delivery.sqlite import SqliteDeliveryQueue
-from firm.core.interfaces import FIRM_NS, Tenant
+from firm.core.interfaces import FIRM_NS, APActor, NoOpValidator, Principal, Tenant
 from firm.core.remote.cache import MemoryRemoteCache
 from firm.core.remote.provider import FetchPolicy, RemoteResourceProvider
 from firm.core.resolver import ResourceResolver
+from firm.core.services.activitypub.service import post_to_inbox
+from firm.core.services.activitypub.support import FirmContext
 from firm.core.store.memory import MemoryResourceStore
 from firm.server.config import FileStoreConfig, ServerConfig, TenantConfig
 from firm.server.delivery import DeliveryError, FirmDeliveryService
@@ -157,13 +160,26 @@ async def test_an_activity_without_an_actor_is_reported_not_raised(tenant, servi
     assert "actor" in report.failed[0].reason
 
 
-async def test_missing_credentials_are_reported_not_raised(tenant, service):
+async def test_a_local_delivery_needs_no_credentials(tenant, service):
     tenant.private_store = MemoryResourceStore()
 
     report = await service.deliver(tenant, {PREFIX: tenant}, activity())
 
+    assert report.delivered == (INBOX,), "nothing is signed on the way into our own store"
+
+
+async def test_a_remote_delivery_without_credentials_is_abandoned(tenant, config, transport, queue):
+    tenant.private_store = MemoryResourceStore()
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    service = FirmDeliveryService(config, transport, queue=queue)
+    service.set_resolver(make_resolver(tenant, transport))
+
+    report = await service.deliver(tenant, {PREFIX: tenant}, activity(**{"to": [REMOTE_ACTOR]}))
+
     assert report.delivered == ()
     assert "credentials" in report.failed[0].reason
+    rows = await queue.list()
+    assert [row.state for row in rows] == [DeliveryState.ABANDONED], "a key is not coming"
 
 
 async def test_delivering_the_same_activity_twice_does_not_duplicate_the_item(tenant, service):
@@ -749,10 +765,14 @@ async def test_a_local_follow_is_answered_with_an_accept(tenant, service):
     await tenant.public_store.put(
         {"id": outbox, "type": "OrderedCollection", "attributedTo": RECIPIENT, "items": []}
     )
+    following = f"{SENDER}/following"
     sender = await tenant.public_store.get(SENDER)
-    await tenant.public_store.put({**sender, "inbox": f"{SENDER}/inbox"})
+    await tenant.public_store.put({**sender, "inbox": f"{SENDER}/inbox", "following": following})
     await tenant.public_store.put(
         {"id": f"{SENDER}/inbox", "type": "OrderedCollection", "attributedTo": SENDER, "items": []}
+    )
+    await tenant.public_store.put(
+        {"id": following, "type": "Collection", "attributedTo": SENDER, "items": []}
     )
     follow = {
         "id": f"{PREFIX}/activities/follow",
@@ -769,3 +789,60 @@ async def test_a_local_follow_is_answered_with_an_accept(tenant, service):
         item for item in (await tenant.public_store.get(outbox))["items"] if "/accept/" in item
     ]
     assert accepts, "the follow was accepted, which an append would not do"
+
+
+async def test_a_forwarded_reply_reaches_another_local_follower(tenant, config, transport):
+    """AP 7.1.2 end to end: a remote reply to our followers reaches them, and no peer."""
+    owner = RECIPIENT
+    other = f"{PREFIX}/other"
+    other_inbox = f"{other}/inbox"
+    followers = f"{SENDER}/followers"
+    note = f"{PREFIX}/notes/1"
+    await tenant.public_store.put({"id": other, "type": "Person", "inbox": other_inbox})
+    await tenant.public_store.put(
+        {
+            "id": other_inbox,
+            "type": "OrderedCollection",
+            "attributedTo": other,
+            "items": [],
+        }
+    )
+    await tenant.public_store.put(
+        {
+            "id": followers,
+            "type": "Collection",
+            "attributedTo": SENDER,
+            "items": [other, REMOTE_ACTOR],
+        }
+    )
+    await tenant.public_store.put({"id": note, "type": "Note", "attributedTo": SENDER})
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    service = FirmDeliveryService(config, transport)
+    service.set_resolver(make_resolver(tenant, transport))
+    authorizer = CoreAuthorizationService()
+    remote_actor = {"id": REMOTE_ACTOR, "type": "Person", "inbox": f"{REMOTE_ACTOR}/inbox"}
+    context = FirmContext(
+        service.resolver, tenant, Principal(cast(APActor, remote_actor), tenant), authorizer
+    )
+    reply = {
+        "id": "https://remote.test/activities/7",
+        "type": "Create",
+        "actor": REMOTE_ACTOR,
+        "to": [followers],
+        "inReplyTo": note,
+        "object": {"id": "https://remote.test/notes/7", "type": "Note", "inReplyTo": note},
+    }
+
+    await post_to_inbox(
+        context,
+        cast(APActor, await tenant.public_store.get(owner)),
+        reply,
+        box_uri=INBOX,
+        validator=NoOpValidator(),
+        delivery_service=service,
+    )
+
+    assert (await tenant.public_store.get(other_inbox))["items"] == [
+        "https://remote.test/activities/7"
+    ], "the other local follower saw the reply"
+    assert transport.posts == [], "forwarding does not re-post to the peer's followers"
