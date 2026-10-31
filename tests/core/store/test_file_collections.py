@@ -207,6 +207,75 @@ async def test_a_torn_final_line_is_ignored(store):
     assert page.items == ("a",), "the partial line is not an item"
 
 
+async def test_store_methods_use_the_log(store):
+    await _collection(store)
+
+    await store.append_item(COLLECTION, "a")
+
+    assert (await store.page_items(COLLECTION)).items == ("a",)
+    document = await store.get(COLLECTION)
+    assert "items" not in document, "the list has left the document"
+    assert _paths(store).log.read_text() == "a\n"
+
+
+async def test_an_existing_document_is_imported_once(store):
+    await store.put(
+        {
+            "id": COLLECTION,
+            "type": "OrderedCollection",
+            "items": ["a", "b", "c"],
+            "totalItems": 3,
+        }
+    )
+
+    page = await store.page_items(COLLECTION)
+
+    assert page.items == ("a", "b", "c"), "a document stores its items newest first"
+    assert _paths(store).log.read_text() == "c\nb\na\n", "the log is oldest first"
+    document = await store.get(COLLECTION)
+    assert "items" not in document
+    assert document["totalItems"] == 3
+
+    assert (await store.page_items(COLLECTION)).items == ("a", "b", "c")
+    assert _paths(store).log.read_text() == "c\nb\na\n", "a second call imports nothing"
+
+
+async def test_a_document_with_ordered_items_is_imported(store):
+    await store.put(
+        {
+            "id": COLLECTION,
+            "type": "OrderedCollection",
+            "orderedItems": ["x", "y"],
+            "totalItems": 2,
+        }
+    )
+
+    assert (await store.page_items(COLLECTION)).items == ("x", "y")
+
+    document = await store.get(COLLECTION)
+    assert "orderedItems" not in document
+    assert _paths(store).log.read_text() == "y\nx\n"
+
+
+async def test_the_log_wins_when_both_exist(store):
+    await store.put(
+        {
+            "id": COLLECTION,
+            "type": "OrderedCollection",
+            "items": ["a", "b"],
+            "totalItems": 2,
+        }
+    )
+    file_collections.append_line(_paths(store), "z", 0)
+
+    page = await store.page_items(COLLECTION)
+
+    assert page.items == ("z",), "the log is authoritative"
+    assert page.total == 1
+    assert "items" not in await store.get(COLLECTION)
+    assert _paths(store).log.read_text() == "z\n"
+
+
 async def test_two_collections_do_not_share_files(store):
     await _seeded(store, "a", uri=COLLECTION)
     await _seeded(store, "b", uri=OTHER)

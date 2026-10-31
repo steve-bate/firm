@@ -11,7 +11,7 @@ import os
 from collections import OrderedDict
 from hashlib import md5
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from firm.core.interfaces import (
     DEFAULT_COLLECTION_PAGE_SIZE,
@@ -20,7 +20,7 @@ from firm.core.interfaces import (
     JSONObject,
     UnknownCollectionError,
 )
-from firm.core.store.collection_items import decode_cursor, encode_cursor
+from firm.core.store.collection_items import ITEMS_KEYS, decode_cursor, encode_cursor
 from firm.core.store.naming import uri_hash
 
 BLOCK = 128
@@ -158,11 +158,38 @@ def _window(total: int, start: int, limit: int) -> tuple[int, int]:
     return low, max(0, high - low)
 
 
-async def _document(store: FileCollectionStore, collection_uri: str) -> JSONObject:
+async def migrate(
+    store: FileCollectionStore, paths: CollectionPaths, document: JSONObject
+) -> JSONObject:
+    """Import the document's item array into the log, then drop the key.
+
+    A document holds its items newest first and the log holds them oldest first, so the
+    array is written reversed. A log that already holds lines wins: the collection has been
+    migrated, and the document's array is then simply stale.
+    """
+    key = next((name for name in ITEMS_KEYS if name in document), None)
+    if key is None:
+        return document
+    items = [str(item) for item in cast(list, document.get(key) or [])]
+    if items and not paths.exists:
+        rewrite(paths, list(reversed(items)))
+    migrated = {name: value for name, value in document.items() if name != key}
+    migrated["totalItems"] = len(_all_lines(paths))
+    await store.put(migrated)
+    return migrated
+
+
+async def _prepare(
+    store: FileCollectionStore, collection_uri: str, *, required: bool
+) -> tuple[JSONObject | None, CollectionPaths]:
+    """The migrated document and the collection's files, or ``None`` for a missing one."""
+    paths = CollectionPaths(store.store_path, collection_uri)
     document = await store.get(collection_uri)
-    if not document:
-        raise UnknownCollectionError(f"Unknown collection: {collection_uri}")
-    return document
+    if document is None:
+        if required:
+            raise UnknownCollectionError(f"Unknown collection: {collection_uri}")
+        return None, paths
+    return await migrate(store, paths, document), paths
 
 
 def _total(document: JSONObject) -> int:
@@ -171,9 +198,9 @@ def _total(document: JSONObject) -> int:
 
 
 async def append_item(store: FileCollectionStore, collection_uri: str, item_uri: str) -> int:
-    document = await _document(store, collection_uri)
+    document, paths = await _prepare(store, collection_uri, required=True)
+    assert document is not None
     total = _total(document)
-    paths = CollectionPaths(store.store_path, collection_uri)
     append_line(paths, item_uri, total)
     members(paths).add(_digest(item_uri))
     document["totalItems"] = total + 1
@@ -183,8 +210,8 @@ async def append_item(store: FileCollectionStore, collection_uri: str, item_uri:
 
 async def remove_item(store: FileCollectionStore, collection_uri: str, item_uri: str) -> int:
     """Drop every copy of `item_uri`, rewriting the collection's files."""
-    document = await _document(store, collection_uri)
-    paths = CollectionPaths(store.store_path, collection_uri)
+    document, paths = await _prepare(store, collection_uri, required=True)
+    assert document is not None
     known = members(paths)
     if _digest(item_uri) not in known:
         return _total(document)
@@ -197,13 +224,14 @@ async def remove_item(store: FileCollectionStore, collection_uri: str, item_uri:
 
 
 async def contains_item(store: FileCollectionStore, collection_uri: str, item_uri: str) -> bool:
-    if not await store.get(collection_uri):
+    document, paths = await _prepare(store, collection_uri, required=False)
+    if document is None:
         return False
-    return _digest(item_uri) in members(CollectionPaths(store.store_path, collection_uri))
+    return _digest(item_uri) in members(paths)
 
 
 async def count_items(store: FileCollectionStore, collection_uri: str) -> int:
-    document = await store.get(collection_uri)
+    document, _ = await _prepare(store, collection_uri, required=False)
     return _total(document) if document else 0
 
 
@@ -217,11 +245,10 @@ async def page_items(
     if limit < 1:
         raise ValueError("limit must be at least 1")
     limit = min(limit, MAX_COLLECTION_PAGE_SIZE)
-    document = await store.get(collection_uri)
-    if not document:
+    document, paths = await _prepare(store, collection_uri, required=False)
+    if document is None:
         return CollectionPage()
     total = _total(document)
-    paths = CollectionPaths(store.store_path, collection_uri)
     if cursor is None:
         low, count = _window(total, 0, limit)
     else:

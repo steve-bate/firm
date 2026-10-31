@@ -185,6 +185,34 @@ class FirmDeliveryService(DeliveryService):
         owner = self._owner_of(uri, tenant, self._tenant_map())
         return await owner.public_store.get(uri) if owner is not None else None
 
+    async def _collection_item_uris(self, tenant: Tenant, uri: str) -> list[str]:
+        """The items of a collection the store keeps as a log, walked one page at a time."""
+        store = await self._store_holding(tenant, uri)
+        if store is None:
+            return []
+        items: list[str] = []
+        cursor: str | None = None
+        while True:
+            page = await store.page_items(uri, cursor)
+            items.extend(page.items)
+            if page.cursor is None:
+                return items
+            cursor = page.cursor
+
+    async def _store_holding(self, tenant: Tenant, uri: str):
+        """The store whose copy of `uri` is the one delivery addresses, if any."""
+        if await tenant.public_store.is_stored(uri):
+            return tenant.public_store
+        if self._resolver is not None:
+            owner = self._resolver.owner(uri)
+            if owner is not None and await owner.public_store.is_stored(uri):
+                return owner.public_store
+            return None
+        owner = self._owner_of(uri, tenant, self._tenant_map())
+        if owner is not None and await owner.public_store.is_stored(uri):
+            return owner.public_store
+        return None
+
     async def _resolve_inboxes(self, tenant: Tenant, recipient_uris: Iterable[str]) -> set[str]:
         """Every inbox reachable from the activity's addressing, each once."""
         inboxes: set[str] = set()
@@ -203,10 +231,16 @@ class FirmDeliveryService(DeliveryService):
                 if depth >= self._delivery.max_expand_depth:
                     log.warning("Delivery expansion stopped at depth %d: %s", depth, uri)
                     continue
-                items = document.get("items") or document.get("orderedItems") or []
-                if isinstance(items, list):
-                    stored = cast(list[JSONObject | str], items)
-                    queue.extend((item, depth + 1) for item in _get_uris(stored))
+                if "items" in document or "orderedItems" in document:
+                    items = document.get("items") or document.get("orderedItems") or []
+                    stored: list[JSONObject | str] = (
+                        cast(list[JSONObject | str], items) if isinstance(items, list) else []
+                    )
+                else:
+                    stored = cast(
+                        list[JSONObject | str], await self._collection_item_uris(tenant, uri)
+                    )
+                queue.extend((item, depth + 1) for item in _get_uris(stored))
                 continue
             inbox_uri = _inbox_of(document, local=self._config.is_local(uri))
             if inbox_uri:

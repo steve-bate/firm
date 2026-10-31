@@ -1,9 +1,9 @@
 """Collection counts must stay correct on the remove path, not just the add path.
 
-``remove_collection_item`` mutates the item list but never recomputes
-``totalItems``, so a client is told the collection still holds the item that
-was just removed. Covered on both backends: the filesystem store is what a
-deployed tenant uses, the memory store is what most of the suite uses.
+The count lives in the document and the item list does not: on the filesystem store the
+list is a log beside the collection, so this asserts through the API rather than by reading
+an array. Covered on both backends: the filesystem store is what a deployed tenant uses, the
+memory store is what most of the suite uses.
 """
 
 import pytest
@@ -36,6 +36,7 @@ async def test_remove_recomputes_total_items(store):
 
     await remove_collection_item(store, COLLECTION, ITEM_B)
 
-    collection = await store.get(COLLECTION)
-    assert collection["items"] == [ITEM_A]
-    assert collection["totalItems"] == 1
+    page = await store.page_items(COLLECTION)
+    assert page.items == (ITEM_A,)
+    assert page.total == 1
+    assert (await store.get(COLLECTION))["totalItems"] == 1

@@ -147,9 +147,14 @@ class SqliteResourceStore(ResourceStoreBase):
         items = [str(item) for item in cast(list, document.get(key) or [])]
         if items and self._item_count(collection_uri) == 0:
             with self.connection:
+                # A stored document holds its items newest first; positions run the other
+                # way, so the array's first item takes the highest position.
                 self.connection.executemany(
                     "INSERT INTO collection_items (collection, position, uri) VALUES (?,?,?)",
-                    [(collection_uri, position, item) for position, item in enumerate(items, 1)],
+                    [
+                        (collection_uri, len(items) - index, item)
+                        for index, item in enumerate(items)
+                    ],
                 )
         migrated = {name: value for name, value in document.items() if name != key}
         migrated["totalItems"] = self._item_count(collection_uri)

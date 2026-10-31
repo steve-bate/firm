@@ -388,6 +388,12 @@ async def actor_followers(ctx: Context, actor: str):
     if ":" not in actor:
         actor = f"{os.getenv('FIRM_TENANT')}/actors/{actor}"
     actor_doc = await _safe_get(store, actor)
-    followers = await _safe_get(store, resource_id(actor_doc["followers"]))
-    for follower in cast(list, followers["items"]):
-        print(resource_id(follower))
+    followers_uri = resource_id(actor_doc["followers"])
+    cursor = None
+    while followers_uri:
+        page = await store.page_items(followers_uri, cursor)
+        for follower in page.items:
+            print(follower)
+        if page.cursor is None:
+            break
+        cursor = page.cursor

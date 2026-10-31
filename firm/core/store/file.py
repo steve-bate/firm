@@ -6,7 +6,13 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, cast
 
-from firm.core.interfaces import JSONObject, QueryCriteria
+from firm.core.interfaces import (
+    DEFAULT_COLLECTION_PAGE_SIZE,
+    CollectionPage,
+    JSONObject,
+    QueryCriteria,
+)
+from firm.core.store import file_collections
 from firm.core.store.base import ResourceStoreBase
 from firm.core.store.naming import uri_hash
 
@@ -64,6 +70,27 @@ class FileResourceStore(ResourceStoreBase):  # type: ignore
                 if self.is_match(data, criteria):
                     matches.append(data)
         return matches
+
+    async def append_item(self, collection_uri: str, item_uri: str) -> int:
+        return await file_collections.append_item(self, collection_uri, item_uri)
+
+    async def remove_item(self, collection_uri: str, item_uri: str) -> int:
+        return await file_collections.remove_item(self, collection_uri, item_uri)
+
+    async def contains_item(self, collection_uri: str, item_uri: str) -> bool:
+        return await file_collections.contains_item(self, collection_uri, item_uri)
+
+    async def count_items(self, collection_uri: str) -> int:
+        return await file_collections.count_items(self, collection_uri)
+
+    async def page_items(
+        self,
+        collection_uri: str,
+        cursor: str | None = None,
+        *,
+        limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
+    ) -> CollectionPage:
+        return await file_collections.page_items(self, collection_uri, cursor, limit=limit)
 
     async def close(self) -> None:
         pass

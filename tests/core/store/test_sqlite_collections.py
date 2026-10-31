@@ -112,14 +112,14 @@ async def test_an_existing_document_is_imported_once(store):
 
     page = await store.page_items(COLLECTION)
 
-    assert page.items == ("c", "b", "a")
+    assert page.items == ("a", "b", "c"), "a document stores its items newest first"
     assert page.total == 3
-    assert _rows(store) == [(1, "a"), (2, "b"), (3, "c")], "the array's last item is the newest"
+    assert _rows(store) == [(1, "c"), (2, "b"), (3, "a")], "the array's first item is the newest"
     assert "items" not in _document(store), "the key is gone once the rows exist"
     assert _document(store)["totalItems"] == 3
 
-    assert (await store.page_items(COLLECTION)).items == ("c", "b", "a")
-    assert _rows(store) == [(1, "a"), (2, "b"), (3, "c")], "a second call imports nothing"
+    assert (await store.page_items(COLLECTION)).items == ("a", "b", "c")
+    assert _rows(store) == [(1, "c"), (2, "b"), (3, "a")], "a second call imports nothing"
 
 
 async def test_a_document_with_ordered_items_is_imported(store):
@@ -127,8 +127,8 @@ async def test_a_document_with_ordered_items_is_imported(store):
 
     page = await store.page_items(COLLECTION)
 
-    assert page.items == ("y", "x")
-    assert _rows(store) == [(1, "x"), (2, "y")]
+    assert page.items == ("x", "y"), "newest first, like the items key"
+    assert _rows(store) == [(1, "y"), (2, "x")]
     assert "orderedItems" not in _document(store)
 
 
@@ -138,6 +138,6 @@ async def test_the_table_wins_when_both_exist(store):
 
     await _collection(store, items=["z"])  # a stale array alongside live rows
 
-    assert (await store.page_items(COLLECTION)).items == ("b", "a"), "the rows are served"
-    assert _rows(store) == [(1, "a"), (2, "b")], "nothing is re-imported or duplicated"
+    assert (await store.page_items(COLLECTION)).items == ("a", "b"), "the rows are served"
+    assert _rows(store) == [(1, "b"), (2, "a")], "nothing is re-imported or duplicated"
     assert "items" not in _document(store)

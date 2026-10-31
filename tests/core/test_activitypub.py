@@ -31,6 +31,7 @@ from firm.core.services.activitypub.service import (
     ActivityPubService,
     post_to_inbox,
 )
+from firm.core.store.file import FileResourceStore
 from firm.core.store.memory import MemoryResourceStore
 from tests.support import (
     CountingStore,
@@ -1546,3 +1547,31 @@ async def test_an_activity_of_ours_is_not_forwarded(tenant):
     await _arrive(tenant, box_owner, activity, delivery)
 
     assert delivery.delivered == [], "our own delivery already addressed our addressees"
+
+
+async def test_a_migrated_collection_is_served_with_its_items(tmp_path):
+    """The item list lives in the store now, so serving one means walking its pages."""
+    prefix = "http://tenant1.test"
+    store = FileResourceStore(tmp_path, "public")
+    tenant = Tenant(prefix, store, MemoryResourceStore(), tmp_path)
+    collection_uri = f"{prefix}/user1/likes"
+    item_uri = f"{prefix}/note/1"
+    await store.put({"id": item_uri, "type": "Note", "attributedTo": f"{prefix}/user1"})
+    await store.put(
+        {
+            "id": collection_uri,
+            "type": "OrderedCollection",
+            "attributedTo": f"{prefix}/user1",
+            "items": [item_uri],
+            "totalItems": 1,
+        }
+    )
+
+    newer_uri = f"{prefix}/note/2"
+    await store.put({"id": newer_uri, "type": "Note", "attributedTo": f"{prefix}/user1"})
+    await store.append_item(collection_uri, newer_uri)
+
+    served = await serialize(make_context(tenant), await store.get(collection_uri))
+
+    assert [item["id"] for item in served["orderedItems"]] == [newer_uri, item_uri]
+    assert "items" not in await store.get(collection_uri), "the array is gone from the document"
