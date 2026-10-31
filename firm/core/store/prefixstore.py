@@ -3,6 +3,8 @@ from functools import cache
 from urllib.parse import urlparse
 
 from firm.core.interfaces import (
+    DEFAULT_COLLECTION_PAGE_SIZE,
+    CollectionPage,
     JSONObject,
     QueryCriteria,
     ResourceStore,
@@ -87,6 +89,32 @@ class PrefixAwareResourceStore(ResourceStore):
         return await self._get_store_for_prefix(self._get_prefix(criteria)).upsert(
             criteria, updates
         )
+
+    async def append_item(self, collection_uri: str, item_uri: str) -> int:
+        store = self._get_store_for_uri(collection_uri)
+        return await store.append_item(collection_uri, item_uri)
+
+    async def remove_item(self, collection_uri: str, item_uri: str) -> int:
+        store = self._get_store_for_uri(collection_uri)
+        return await store.remove_item(collection_uri, item_uri)
+
+    async def contains_item(self, collection_uri: str, item_uri: str) -> bool:
+        store = self._get_store_for_uri(collection_uri)
+        return await store.contains_item(collection_uri, item_uri)
+
+    async def count_items(self, collection_uri: str) -> int:
+        store = self._get_store_for_uri(collection_uri)
+        return await store.count_items(collection_uri)
+
+    async def page_items(
+        self,
+        collection_uri: str,
+        cursor: str | None = None,
+        *,
+        limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
+    ) -> CollectionPage:
+        store = self._get_store_for_uri(collection_uri)
+        return await store.page_items(collection_uri, cursor, limit=limit)
 
     async def close(self) -> None:
         for store in self.tenant_private_stores.values():

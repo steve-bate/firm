@@ -17,15 +17,18 @@ from firm.core.interfaces import (
 )
 from firm.core.store.file import FileResourceStore
 from firm.core.store.memory import MemoryResourceStore
+from firm.core.store.sqlite import SqliteResourceStore
 
 COLLECTION = "http://server.test/collection"
 
 
-@pytest.fixture(params=["memory", "file"])
+@pytest.fixture(params=["memory", "file", "sqlite"])
 def store(request, tmp_path):
     if request.param == "memory":
         return MemoryResourceStore()
-    return FileResourceStore(tmp_path, "test")
+    if request.param == "file":
+        return FileResourceStore(tmp_path, "test")
+    return SqliteResourceStore("test", str(tmp_path / "test.sqlite"))
 
 
 async def _collection(store, *items, key="items"):

@@ -5,7 +5,14 @@ from contextlib import closing
 from functools import lru_cache
 from typing import Any, cast
 
-from firm.core.interfaces import JSONObject, QueryCriteria, ResourceStore
+from firm.core.interfaces import (
+    DEFAULT_COLLECTION_PAGE_SIZE,
+    CollectionPage,
+    JSONObject,
+    QueryCriteria,
+    ResourceStore,
+)
+from firm.core.store import collection_items
 
 
 class SqliteResourceStore(ResourceStore):
@@ -95,3 +102,24 @@ class SqliteResourceStore(ResourceStore):
         with closing(self.connection.cursor()) as cursor:
             rows = cursor.execute(sql, (self.name,)).fetchmany(100)
             return [json.loads(row[0]) for row in rows] if rows else []
+
+    async def append_item(self, collection_uri: str, item_uri: str) -> int:
+        return await collection_items.append_item(self, collection_uri, item_uri)
+
+    async def remove_item(self, collection_uri: str, item_uri: str) -> int:
+        return await collection_items.remove_item(self, collection_uri, item_uri)
+
+    async def contains_item(self, collection_uri: str, item_uri: str) -> bool:
+        return await collection_items.contains_item(self, collection_uri, item_uri)
+
+    async def count_items(self, collection_uri: str) -> int:
+        return await collection_items.count_items(self, collection_uri)
+
+    async def page_items(
+        self,
+        collection_uri: str,
+        cursor: str | None = None,
+        *,
+        limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
+    ) -> CollectionPage:
+        return await collection_items.page_items(self, collection_uri, cursor, limit=limit)
