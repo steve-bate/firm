@@ -1,5 +1,4 @@
 import glob
-import hashlib
 import json
 import logging
 from functools import lru_cache
@@ -9,14 +8,9 @@ from typing import Any, cast
 
 from firm.core.interfaces import JSONObject, QueryCriteria
 from firm.core.store.base import ResourceStoreBase
+from firm.core.store.naming import uri_hash
 
 log = logging.getLogger(__name__)
-
-
-def uri_hash(uri: str) -> str:
-    md5 = hashlib.md5()
-    md5.update(uri.encode())
-    return md5.hexdigest()
 
 
 class FileResourceStore(ResourceStoreBase):  # type: ignore
