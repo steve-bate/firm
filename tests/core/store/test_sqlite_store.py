@@ -114,3 +114,52 @@ async def test_query_multikey(partition) -> None:
         "http://server.test/obj-2",
         "http://server.test/obj-3",
     ]
+
+
+async def test_query_one_returns_the_match(partition):
+    await partition.put({"id": "http://server.test/obj1", "name": "foo"})
+
+    found = await partition.query_one({"name": "foo"})
+
+    assert found is not None and found["id"] == "http://server.test/obj1"
+    assert await partition.query_one({"name": "absent"}) is None
+
+
+async def test_update_changes_the_stored_object(partition):
+    await partition.put({"id": "http://server.test/obj1", "name": "foo"})
+
+    await partition.update("http://server.test/obj1", {"name": "bar"})
+
+    assert (await partition.get("http://server.test/obj1"))["name"] == "bar"
+
+
+async def test_upsert_creates_then_updates(partition):
+    await partition.upsert({"id": "http://server.test/obj1"}, {"name": "foo"})
+    await partition.upsert({"id": "http://server.test/obj1"}, {"name": "bar"})
+
+    assert (await partition.get("http://server.test/obj1"))["name"] == "bar"
+
+
+async def test_query_binds_its_values(partition):
+    await partition.put({"id": "http://server.test/obj1", "name": "it's a name"})
+
+    found = await partition.query({"name": "it's a name"})
+
+    assert [r["id"] for r in found] == ["http://server.test/obj1"], "not a syntax error"
+    assert await partition.query({"name": "x' or '1'='1"}) == [], "not an injection"
+
+
+async def test_query_with_no_criteria_returns_the_partition(partition):
+    await partition.put({"id": "http://server.test/obj1"})
+    await partition.put({"id": "http://server.test/obj2"})
+
+    assert len(await partition.query({})) == 2
+
+
+async def test_put_replaces_rather_than_duplicating(partition):
+    for summary in ("one", "two"):
+        await partition.put({"id": "http://server.test/obj1", "summary": summary})
+
+    (rows,) = partition.connection.execute("SELECT COUNT(*) FROM objects").fetchone()
+
+    assert rows == 1, "replace in place, one row"

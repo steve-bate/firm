@@ -1,21 +1,22 @@
-import hashlib
 import json
 import sqlite3
 from contextlib import closing
-from functools import lru_cache
 from typing import Any, cast
 
 from firm.core.interfaces import (
     DEFAULT_COLLECTION_PAGE_SIZE,
+    MAX_COLLECTION_PAGE_SIZE,
     CollectionPage,
     JSONObject,
     QueryCriteria,
-    ResourceStore,
+    UnknownCollectionError,
 )
-from firm.core.store import collection_items
+from firm.core.store.base import ResourceStoreBase
+
+ITEMS_KEYS = ("items", "orderedItems")
 
 
-class SqliteResourceStore(ResourceStore):
+class SqliteResourceStore(ResourceStoreBase):
     def __init__(self, name: str, db: str):
         self.name = name
         self.connection = sqlite3.connect(db)
@@ -37,12 +38,22 @@ class SqliteResourceStore(ResourceStore):
                 PRIMARY KEY (partition, uri)
             )
             """)
-
-    @lru_cache
-    def _hash(self, uri: str) -> str:
-        md5 = hashlib.md5()
-        md5.update(uri.encode())
-        return md5.hexdigest()
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS collection_items (
+                collection TEXT    NOT NULL,
+                position   INTEGER NOT NULL,
+                uri        TEXT    NOT NULL,
+                PRIMARY KEY (collection, position)
+            )
+            """)
+            cursor.execute("""
+            CREATE INDEX IF NOT EXISTS ix_collection_items_uri
+                ON collection_items (collection, uri)
+            """)
+            cursor.execute("""
+            CREATE INDEX IF NOT EXISTS ix_collection_items_order
+                ON collection_items (collection, position DESC)
+            """)
 
     async def get(self, uri: str) -> dict[str, Any] | None:
         """Retrieve Object based on uri"""
@@ -67,53 +78,129 @@ class SqliteResourceStore(ResourceStore):
     async def put(self, resource: JSONObject) -> None:
         """Store an AP Object"""
         uri = str(resource["id"])
-        await self.remove(uri)
-        with closing(self.connection.cursor()) as cursor:
-            # Remove existing object
-            data = json.dumps(resource)
-            cursor.execute(
-                "INSERT INTO objects (partition, uri, object) VALUES (?,?,?)",
-                (self.name, uri, data),
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO objects (partition, uri, object) VALUES (?,?,?)
+                   ON CONFLICT(partition, uri) DO UPDATE SET object = excluded.object""",
+                (self.name, uri, json.dumps(resource)),
             )
-            self.connection.commit()
 
     async def remove(self, uri: str) -> None:
         """Remove an object from the store"""
-        with closing(self.connection.cursor()) as cursor:
-            # Remove existing object
-            cursor.execute(
+        with self.connection:
+            self.connection.execute(
                 "DELETE FROM objects WHERE partition = ? and uri = ?",
                 (self.name, uri),
             )
-            self.connection.commit()
 
     # NOTE This API will change
     async def query(self, criteria: QueryCriteria) -> list[JSONObject]:
-        field_criteria = " and ".join(
-            (
-                f"(json_extract(object, '$.{key}') = '{value}' "
-                f"or (json_type(object, '$.{key}') = 'array' and "
-                f"'{value}' in (select value from json_each(object, '$.{key}')))"
-                ")"
+        conditions = []
+        params: list[Any] = [self.name]
+        for key, value in criteria.items():
+            path = f"$.{key}"
+            conditions.append(
+                "(json_extract(object, ?) = ? or (json_type(object, ?) = 'array' and ? in "
+                "(select value from json_each(object, ?))))"
             )
-            for key, value in criteria.items()
-        )
-        sql = f"SELECT object FROM objects WHERE partition = ? and {field_criteria}"
+            params.extend([path, value, path, value, path])
+        sql = "SELECT object FROM objects WHERE partition = ?"
+        if conditions:
+            sql += " and " + " and ".join(conditions)
         with closing(self.connection.cursor()) as cursor:
-            rows = cursor.execute(sql, (self.name,)).fetchmany(100)
+            rows = cursor.execute(sql, params).fetchmany(100)
             return [json.loads(row[0]) for row in rows] if rows else []
 
+    def _item_count(self, collection_uri: str) -> int:
+        (count,) = self.connection.execute(
+            "SELECT COUNT(*) FROM collection_items WHERE collection = ?", (collection_uri,)
+        ).fetchone()
+        return cast(int, count)
+
+    def _count_above(self, collection_uri: str, position: int) -> int:
+        (count,) = self.connection.execute(
+            "SELECT COUNT(*) FROM collection_items WHERE collection = ? and position > ?",
+            (collection_uri, position),
+        ).fetchone()
+        return cast(int, count)
+
+    def _next_position(self, collection_uri: str) -> int:
+        (position,) = self.connection.execute(
+            "SELECT COALESCE(MAX(position), 0) + 1 FROM collection_items WHERE collection = ?",
+            (collection_uri,),
+        ).fetchone()
+        return cast(int, position)
+
+    def _holds(self, collection_uri: str, item_uri: str) -> bool:
+        found = self.connection.execute(
+            "SELECT 1 FROM collection_items WHERE collection = ? and uri = ? LIMIT 1",
+            (collection_uri, item_uri),
+        ).fetchone()
+        return found is not None
+
+    async def _migrated(self, document: JSONObject) -> JSONObject:
+        """Import a legacy item array into the table, then drop the key."""
+        key = next((name for name in ITEMS_KEYS if name in document), None)
+        if key is None:
+            return document
+        collection_uri = str(document["id"])
+        items = [str(item) for item in cast(list, document.get(key) or [])]
+        if items and self._item_count(collection_uri) == 0:
+            with self.connection:
+                self.connection.executemany(
+                    "INSERT INTO collection_items (collection, position, uri) VALUES (?,?,?)",
+                    [(collection_uri, position, item) for position, item in enumerate(items, 1)],
+                )
+        migrated = {name: value for name, value in document.items() if name != key}
+        migrated["totalItems"] = self._item_count(collection_uri)
+        await self.put(migrated)
+        return migrated
+
+    async def _collection(self, collection_uri: str) -> JSONObject | None:
+        document = await self.get(collection_uri)
+        return await self._migrated(document) if document else None
+
+    async def _sync_total(self, collection_uri: str, document: JSONObject) -> int:
+        count = self._item_count(collection_uri)
+        if document.get("totalItems") != count:
+            document["totalItems"] = count
+            await self.put(document)
+        return count
+
     async def append_item(self, collection_uri: str, item_uri: str) -> int:
-        return await collection_items.append_item(self, collection_uri, item_uri)
+        document = await self._collection(collection_uri)
+        if document is None:
+            raise UnknownCollectionError(f"Unknown collection: {collection_uri}")
+        with self.connection:
+            self.connection.execute(
+                "INSERT INTO collection_items (collection, position, uri) VALUES (?,?,?) "
+                "ON CONFLICT DO NOTHING",
+                (collection_uri, self._next_position(collection_uri), item_uri),
+            )
+        return await self._sync_total(collection_uri, document)
 
     async def remove_item(self, collection_uri: str, item_uri: str) -> int:
-        return await collection_items.remove_item(self, collection_uri, item_uri)
+        document = await self._collection(collection_uri)
+        if document is None:
+            raise UnknownCollectionError(f"Unknown collection: {collection_uri}")
+        if not self._holds(collection_uri, item_uri):
+            return self._item_count(collection_uri)
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM collection_items WHERE collection = ? and uri = ?",
+                (collection_uri, item_uri),
+            )
+        return await self._sync_total(collection_uri, document)
 
     async def contains_item(self, collection_uri: str, item_uri: str) -> bool:
-        return await collection_items.contains_item(self, collection_uri, item_uri)
+        if await self._collection(collection_uri) is None:
+            return False
+        return self._holds(collection_uri, item_uri)
 
     async def count_items(self, collection_uri: str) -> int:
-        return await collection_items.count_items(self, collection_uri)
+        if await self._collection(collection_uri) is None:
+            return 0
+        return self._item_count(collection_uri)
 
     async def page_items(
         self,
@@ -122,4 +209,31 @@ class SqliteResourceStore(ResourceStore):
         *,
         limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
     ) -> CollectionPage:
-        return await collection_items.page_items(self, collection_uri, cursor, limit=limit)
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        limit = min(limit, MAX_COLLECTION_PAGE_SIZE)
+        if await self._collection(collection_uri) is None:
+            return CollectionPage()
+        below = None
+        if cursor is not None:
+            try:
+                below = int(cursor)
+            except ValueError:
+                raise ValueError(f"Malformed collection cursor: {cursor}") from None
+        sql = "SELECT uri, position FROM collection_items WHERE collection = ?"
+        params: list[Any] = [collection_uri]
+        if below is not None:
+            sql += " and position < ?"
+            params.append(below)
+        sql += " ORDER BY position DESC LIMIT ?"
+        params.append(limit + 1)
+        rows = self.connection.execute(sql, params).fetchall()
+        total = self._item_count(collection_uri)
+        page = rows[:limit]
+        next_cursor = str(page[-1][1]) if len(rows) > limit else None
+        return CollectionPage(
+            items=tuple(str(row[0]) for row in page),
+            cursor=next_cursor,
+            total=total,
+            start_index=self._count_above(collection_uri, page[0][1]) if page else total,
+        )
