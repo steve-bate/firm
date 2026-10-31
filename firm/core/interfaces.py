@@ -97,6 +97,42 @@ URI: TypeAlias = str
 
 QueryCriteria: TypeAlias = JSONObject
 
+DEFAULT_COLLECTION_PAGE_SIZE = 20
+MAX_COLLECTION_PAGE_SIZE = 100
+
+
+class UnknownCollectionError(ValueError):
+    """A collection that the store does not hold.
+
+    A ValueError, so any caller catching ValueError keeps working; a distinct type, so the
+    HTTP layer can map it to 404 rather than 500.
+    """
+
+
+@dataclass(frozen=True)
+class AppendOutcome:
+    """What one append did: whether the item was new, and the collection's size."""
+
+    added: bool
+    count: int
+
+
+@dataclass(frozen=True)
+class CollectionPage:
+    """One page of a collection's item list, newest first.
+
+    ``cursor`` names the position of the last item returned and is passed back to
+    ``ResourceStore.page_items`` for the next page; it is ``None`` when the walk is
+    exhausted. It is opaque: only the store that produced it may interpret it.
+    ``total`` is how many items the collection holds — the wire's ``totalItems``.
+    ``start_index`` is the position of the page's first item — the wire's ``startIndex``.
+    """
+
+    items: tuple[str, ...] = ()
+    cursor: str | None = None
+    total: int = 0
+    start_index: int = 0
+
 
 class ResourceStore(Protocol):
     async def get(self, uri: str) -> JSONObject | None: ...
