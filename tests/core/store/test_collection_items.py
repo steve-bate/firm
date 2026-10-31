@@ -177,3 +177,54 @@ async def test_malformed_cursor_raises(store):
     await _collection(store, "a")
     with pytest.raises(ValueError):
         await store.page_items(COLLECTION, "not-a-cursor")
+
+
+async def test_a_page_can_start_at_an_index(store):
+    await _seeded(store, "a", "b", "c", "d", "e")
+
+    page = await store.page_items(COLLECTION, start=2, limit=2)
+
+    assert page.items == ("c", "b"), "the third and fourth newest"
+    assert page.start_index == 2
+    assert page.total == 5
+
+
+async def test_a_page_started_at_an_index_agrees_with_the_cursor_walk(store):
+    await _seeded(store, "a", "b", "c", "d", "e")
+    first = await store.page_items(COLLECTION, limit=2)
+    walked = await store.page_items(COLLECTION, first.cursor, limit=2)
+
+    by_index = await store.page_items(COLLECTION, start=2, limit=2)
+
+    assert by_index.items == walked.items
+    assert by_index.start_index == walked.start_index
+
+
+async def test_start_beyond_the_end_is_empty(store):
+    await _seeded(store, "a", "b", "c", "d", "e")
+
+    page = await store.page_items(COLLECTION, start=99, limit=2)
+
+    assert page.items == ()
+    assert page.cursor is None
+    assert page.total == 5
+
+
+async def test_cursor_and_start_together_raise(store):
+    await _seeded(store, "a", "b", "c")
+    first = await store.page_items(COLLECTION, limit=2)
+
+    with pytest.raises(ValueError):
+        await store.page_items(COLLECTION, first.cursor, start=2, limit=2)
+
+
+async def test_prev_cursor_walks_backwards(store):
+    await _seeded(store, "a", "b", "c", "d", "e")
+    second = await store.page_items(COLLECTION, start=2, limit=2)
+    assert second.prev_cursor is not None
+
+    back = await store.page_items(COLLECTION, second.prev_cursor, limit=2)
+
+    assert back.items == ("e", "d"), "the page before it"
+    assert back.start_index == 0
+    assert back.prev_cursor is None

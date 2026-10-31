@@ -19,6 +19,8 @@ from firm.core.interfaces import (
     CollectionPage,
     JSONObject,
     UnknownCollectionError,
+    decode_start,
+    encode_start,
 )
 from firm.core.store.collection_items import ITEMS_KEYS, decode_cursor, encode_cursor
 from firm.core.store.naming import uri_hash
@@ -240,26 +242,43 @@ async def page_items(
     collection_uri: str,
     cursor: str | None = None,
     *,
+    start: int | None = None,
     limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
 ) -> CollectionPage:
     if limit < 1:
         raise ValueError("limit must be at least 1")
     limit = min(limit, MAX_COLLECTION_PAGE_SIZE)
+    if cursor is not None and start is not None:
+        raise ValueError("cursor and start are mutually exclusive")
     document, paths = await _prepare(store, collection_uri, required=False)
     if document is None:
         return CollectionPage()
     total = _total(document)
-    if cursor is None:
+    if cursor is not None:
+        token_start = decode_start(cursor)
+        if token_start is not None:
+            start, cursor = token_start, None
+    if start is not None:
+        if start < 0:
+            raise ValueError("start must not be negative")
+        begin = min(start, total)
+        low, count = _window(total, begin, limit)
+        start_index = begin
+    elif cursor is None:
         low, count = _window(total, 0, limit)
+        start_index = 0
     else:
         line, _item = decode_cursor(cursor)
         low = max(0, line - limit)
         count = max(0, line - low)
+        start_index = total - (low + count)
     lines = read_lines(paths, low, count)
     next_cursor = encode_cursor(low, lines[0]) if low > 0 and lines else None
+    prev_cursor = encode_start(max(start_index - limit, 0)) if start_index > 0 else None
     return CollectionPage(
         items=tuple(reversed(lines)),
         cursor=next_cursor,
+        prev_cursor=prev_cursor,
         total=total,
-        start_index=total - (low + count),
+        start_index=start_index,
     )

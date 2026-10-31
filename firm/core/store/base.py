@@ -48,9 +48,12 @@ class ResourceStoreBase(ABC):
         collection_uri: str,
         cursor: str | None = None,
         *,
+        start: int | None = None,
         limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
     ) -> CollectionPage:
-        return await collection_items.page_items(self, collection_uri, cursor, limit=limit)
+        return await collection_items.page_items(
+            self, collection_uri, cursor, start=start, limit=limit
+        )
 
     async def close(self) -> None:
         """Release anything the store holds open. The default holds nothing."""

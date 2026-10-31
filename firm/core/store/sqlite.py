@@ -10,6 +10,8 @@ from firm.core.interfaces import (
     JSONObject,
     QueryCriteria,
     UnknownCollectionError,
+    decode_start,
+    encode_start,
 )
 from firm.core.store.base import ResourceStoreBase
 
@@ -212,33 +214,55 @@ class SqliteResourceStore(ResourceStoreBase):
         collection_uri: str,
         cursor: str | None = None,
         *,
+        start: int | None = None,
         limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
     ) -> CollectionPage:
         if limit < 1:
             raise ValueError("limit must be at least 1")
         limit = min(limit, MAX_COLLECTION_PAGE_SIZE)
+        if cursor is not None and start is not None:
+            raise ValueError("cursor and start are mutually exclusive")
         if await self._collection(collection_uri) is None:
             return CollectionPage()
-        below = None
-        if cursor is not None:
-            try:
-                below = int(cursor)
-            except ValueError:
-                raise ValueError(f"Malformed collection cursor: {cursor}") from None
-        sql = "SELECT uri, position FROM collection_items WHERE collection = ?"
-        params: list[Any] = [collection_uri]
-        if below is not None:
-            sql += " and position < ?"
-            params.append(below)
-        sql += " ORDER BY position DESC LIMIT ?"
-        params.append(limit + 1)
-        rows = self.connection.execute(sql, params).fetchall()
         total = self._item_count(collection_uri)
+        if cursor is not None:
+            token_start = decode_start(cursor)
+            if token_start is not None:
+                start, cursor = token_start, None
+        if start is not None:
+            if start < 0:
+                raise ValueError("start must not be negative")
+            # A page number is answered in one read: `start` is how far into the newest
+            # first ordering the page begins, so OFFSET is exact here.
+            offset = min(start, total)
+            rows = self.connection.execute(
+                "SELECT uri, position FROM collection_items WHERE collection = ? "
+                "ORDER BY position DESC LIMIT ? OFFSET ?",
+                (collection_uri, limit + 1, offset),
+            ).fetchall()
+            start_index = offset
+        else:
+            below = None
+            if cursor is not None:
+                try:
+                    below = int(cursor)
+                except ValueError:
+                    raise ValueError(f"Malformed collection cursor: {cursor}") from None
+            sql = "SELECT uri, position FROM collection_items WHERE collection = ?"
+            params: list[Any] = [collection_uri]
+            if below is not None:
+                sql += " and position < ?"
+                params.append(below)
+            sql += " ORDER BY position DESC LIMIT ?"
+            params.append(limit + 1)
+            rows = self.connection.execute(sql, params).fetchall()
+            start_index = self._count_above(collection_uri, rows[0][1]) if rows else total
         page = rows[:limit]
         next_cursor = str(page[-1][1]) if len(rows) > limit else None
         return CollectionPage(
             items=tuple(str(row[0]) for row in page),
             cursor=next_cursor,
+            prev_cursor=encode_start(max(start_index - limit, 0)) if start_index > 0 else None,
             total=total,
-            start_index=self._count_above(collection_uri, page[0][1]) if page else total,
+            start_index=start_index,
         )

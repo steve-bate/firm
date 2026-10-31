@@ -109,6 +109,30 @@ class UnknownCollectionError(ValueError):
     """
 
 
+START_PREFIX = "start:"
+"""How a page token that means "begin at this newest-first index" is written.
+
+A walk backwards cannot be expressed as "resume after an item" — every backend's cursor
+means the next item *older* than the one it names — so the token for the previous page names
+the index to begin at instead. ``page_items`` accepts either form.
+"""
+
+
+def encode_start(index: int) -> str:
+    """A page token for the window that begins at ``index``, newest first."""
+    return f"{START_PREFIX}{max(index, 0)}"
+
+
+def decode_start(token: str) -> int | None:
+    """The index a start token names, or None when the token is an ordinary cursor."""
+    if not token.startswith(START_PREFIX):
+        return None
+    try:
+        return max(int(token[len(START_PREFIX) :]), 0)
+    except ValueError:
+        raise ValueError(f"Malformed collection cursor: {token}") from None
+
+
 @dataclass(frozen=True)
 class CollectionPage:
     """One page of a collection's item list, newest first.
@@ -116,12 +140,14 @@ class CollectionPage:
     ``cursor`` names the position of the last item returned and is passed back to
     ``ResourceStore.page_items`` for the next page; it is ``None`` when the walk is
     exhausted. It is opaque: only the store that produced it may interpret it.
+    ``prev_cursor`` names the window before this one, or ``None`` at the start.
     ``total`` is how many items the collection holds — the wire's ``totalItems``.
     ``start_index`` is the position of the page's first item — the wire's ``startIndex``.
     """
 
     items: tuple[str, ...] = ()
     cursor: str | None = None
+    prev_cursor: str | None = None
     total: int = 0
     start_index: int = 0
 
@@ -177,12 +203,16 @@ class ResourceStore(Protocol):
         collection_uri: str,
         cursor: str | None = None,
         *,
+        start: int | None = None,
         limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
     ) -> CollectionPage:
         """Up to ``limit`` item URIs, newest first, starting after ``cursor``.
 
-        ``cursor=None`` starts at the newest item. The returned page's cursor is ``None``
-        when the walk is exhausted. An unknown collection is an empty page.
+        ``cursor=None`` starts at the newest item. ``start`` names the newest-first index to
+        begin at, which is how a page number is answered in one read; it and ``cursor`` are
+        mutually exclusive. The returned page's cursor is ``None`` when the walk is
+        exhausted, and its ``prev_cursor`` names the window before this one. An unknown
+        collection is an empty page.
         """
         ...
 

@@ -17,8 +17,14 @@ from firm.core.interfaces import (
     Validator,
 )
 from firm.core.services.activitypub.collections import (
+    LAST,
     add_collection_item,
+    build_page_document,
     dereference_collection_items,
+    option_value,
+    page_number,
+    page_size,
+    page_uri,
 )
 from firm.core.services.activitypub.exceptions import (
     InvalidRequestException,
@@ -226,12 +232,10 @@ async def post_to_inbox(
     if activity_id is None:
         raise InvalidRequestException("Activity must have an id")
     # AP 7.1.2 asks whether this is the first time we have seen the activity: the
-    # owner's inbox list is our own record of what we accepted.
+    # owner's inbox is our own record of what we accepted, and only the store knows
+    # what it holds.
     inbox_uri = get_id(box_owner.get("inbox"))
-    inbox_document = await store.get(inbox_uri) if inbox_uri else None
-    seen_items = inbox_document.get("items") if isinstance(inbox_document, Mapping) else None
-    seen: list[Any] = seen_items if isinstance(seen_items, list) else []
-    first_time = str(activity_id) not in seen
+    first_time = not (inbox_uri and await store.contains_item(inbox_uri, str(activity_id)))
     await context.keep(resource)
     await add_collection_item(store, box_owner["inbox"], str(activity_id))
     box_context = FirmBoxContext(
@@ -353,17 +357,90 @@ class ActivityPubService:
         if resource := await dereference(store, target):
             decision = await self._authorizer.is_get_authorized(tenant, principal, resource)
             if decision.authorized:
-                # Filter a collection, if requested.
+                # A filtered collection is served whole: a filter needs every item.
                 if is_collection(resource) and options and "filter" in options:
                     filter = jsonpath.compile(item_filter(options["filter"]))
                     items = await dereference_collection_items(context, resource)
                     filtered_nodes = filter.find(items)
                     set_collection_items(resource, [node.value for node in filtered_nodes])
+                    return await serialize(context, resource)
+                if is_collection(resource):
+                    return await self._collection_response(
+                        context, resource, str(resource_uri), options
+                    )
                 return await serialize(context, resource)
             else:
                 raise NotAuthorizedException(decision.reason or "Not authorized")
         else:
             raise NotFoundException(resource_uri)
+
+    async def _collection_response(
+        self,
+        context: FirmContext,
+        collection: JSONObject,
+        request_uri: str,
+        options: Mapping[str, Any] | None,
+    ) -> JSONObject:
+        """A collection as the wire wants it: inline when small, a header or a page otherwise.
+
+        A collection of at most one page's worth of items is served exactly as before, so no
+        client that worked yesterday sees a different shape today. Anything larger needs a
+        page URL to be read at all, which is what makes a bare GET cheap.
+        """
+        store = context.tenant.public_store
+        collection_uri = get_id(collection) or strip_query(request_uri)
+        try:
+            limit = page_size(options)
+        except ValueError as e:
+            raise InvalidRequestException(str(e)) from None
+        number = page_number(options)
+        cursor = option_value(options, "cursor")
+        total = await store.count_items(collection_uri)
+        if number is None and cursor is None:
+            if total <= limit:
+                return await serialize(context, collection)
+            served = await serialize(
+                context, self._collection_header(collection, collection_uri, total, limit)
+            )
+            # The placeholder array kept serialization out of the item list; the header
+            # carries links instead of items.
+            served.pop("items", None)
+            served.pop("orderedItems", None)
+            return served
+        if cursor is not None:
+            page = await store.page_items(collection_uri, cursor, limit=limit)
+        else:
+            start = self._page_start(number, total, limit)
+            page = await store.page_items(collection_uri, start=start, limit=limit)
+        return await serialize(
+            context,
+            build_page_document(collection, page, request_uri=request_uri, limit=limit),
+        )
+
+    @staticmethod
+    def _page_start(number: int | None, total: int, limit: int) -> int:
+        """The newest-first index a page number starts at."""
+        if number is None or number == 1:
+            return 0
+        if number == LAST:
+            return max(total - limit, 0)
+        return max((number - 1) * limit, 0)
+
+    @staticmethod
+    def _collection_header(
+        collection: JSONObject, collection_uri: str, total: int, limit: int
+    ) -> JSONObject:
+        """The collection without its items, pointing at its first and last pages."""
+        header: JSONObject = {
+            key: value for key, value in collection.items() if key not in ("items", "orderedItems")
+        }
+        header["totalItems"] = total
+        header["first"] = page_uri(collection_uri, page="true", limit=limit)
+        header["last"] = page_uri(collection_uri, page="last", limit=limit)
+        # An empty array keeps serialization from walking the collection it was told to
+        # leave out; the key is removed from the served document below.
+        header["items"] = []
+        return header
 
     async def process_post(
         self,

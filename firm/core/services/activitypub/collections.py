@@ -1,9 +1,16 @@
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Mapping, cast
+from urllib.parse import urlencode
 
-from firm.core.interfaces import JSONObject, ResourceStore
+from firm.core.interfaces import (
+    DEFAULT_COLLECTION_PAGE_SIZE,
+    MAX_COLLECTION_PAGE_SIZE,
+    CollectionPage,
+    JSONObject,
+    ResourceStore,
+)
 from firm.core.services.activitypub.exceptions import InvalidResourceException
-from firm.core.util import get_id
+from firm.core.util import get_id, is_ordered_collection, strip_query
 
 if TYPE_CHECKING:
     from firm.core.services.activitypub.support import FirmContext
@@ -118,3 +125,97 @@ async def dereference_collection_items(
         else:
             return dereferenced_items
     raise InvalidResourceException("Collection items must be a list")
+
+
+LAST = -1
+"""What ``page_number`` returns for ``?page=last``."""
+
+
+def option_value(options: Mapping[str, Any] | None, key: str) -> str | None:
+    """One query-string value, whether the framework hands over a string or a list."""
+    if not options:
+        return None
+    value = options.get(key)
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return str(value[0]) if value else None
+    return str(value)
+
+
+def page_size(options: Mapping[str, Any] | None) -> int:
+    """The requested page size, clamped to what the store will serve."""
+    raw = option_value(options, "limit")
+    if raw is None:
+        return DEFAULT_COLLECTION_PAGE_SIZE
+    try:
+        size = int(raw)
+    except ValueError:
+        raise ValueError(f"Malformed limit: {raw}") from None
+    if size < 1:
+        raise ValueError("limit must be at least 1")
+    return min(size, MAX_COLLECTION_PAGE_SIZE)
+
+
+def page_number(options: Mapping[str, Any] | None) -> int | None:
+    """The requested page: 1 for ``?page=true``, LAST for ``?page=last``, None if unasked."""
+    raw = option_value(options, "page")
+    if raw is None:
+        return None
+    if raw == "true":
+        return 1
+    if raw == "last":
+        return LAST
+    try:
+        number = int(raw)
+    except ValueError:
+        return None
+    return number if number >= 1 else None
+
+
+def page_uri(
+    uri: str,
+    *,
+    page: str | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> str:
+    """A link back into the same collection, carrying only the parameters that matter."""
+    base = strip_query(uri)
+    params: list[tuple[str, str]] = []
+    if page is not None:
+        params.append(("page", page))
+    if cursor is not None:
+        params.append(("cursor", cursor))
+    if limit is not None and limit != DEFAULT_COLLECTION_PAGE_SIZE:
+        params.append(("limit", str(limit)))
+    return f"{base}?{urlencode(params)}" if params else base
+
+
+def build_page_document(
+    collection: JSONObject,
+    page: CollectionPage,
+    *,
+    request_uri: str,
+    limit: int,
+) -> JSONObject:
+    """One collection page as AS2: a CollectionPage with links to its neighbours.
+
+    Items stay URIs here; ``serialize`` dereferences them with the same drop rules the
+    inline path uses, so a page and a whole collection cannot disagree about what may be
+    shown.
+    """
+    collection_uri = get_id(collection) or strip_query(request_uri)
+    document: JSONObject = {
+        "id": request_uri,
+        "type": "OrderedCollectionPage" if is_ordered_collection(collection) else "CollectionPage",
+        "partOf": collection_uri,
+        "totalItems": page.total,
+        "startIndex": page.start_index,
+        "items": list(page.items),
+    }
+    if page.cursor is not None:
+        document["next"] = page_uri(collection_uri, cursor=page.cursor, limit=limit)
+    if page.prev_cursor is not None:
+        document["prev"] = page_uri(collection_uri, cursor=page.prev_cursor, limit=limit)
+    return document

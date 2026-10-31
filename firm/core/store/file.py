@@ -88,9 +88,12 @@ class FileResourceStore(ResourceStoreBase):  # type: ignore
         collection_uri: str,
         cursor: str | None = None,
         *,
+        start: int | None = None,
         limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
     ) -> CollectionPage:
-        return await file_collections.page_items(self, collection_uri, cursor, limit=limit)
+        return await file_collections.page_items(
+            self, collection_uri, cursor, start=start, limit=limit
+        )
 
     async def close(self) -> None:
         pass

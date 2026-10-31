@@ -15,6 +15,8 @@ from firm.core.interfaces import (
     CollectionPage,
     JSONObject,
     UnknownCollectionError,
+    decode_start,
+    encode_start,
 )
 
 
@@ -106,6 +108,7 @@ async def page_items(
     collection_uri: str,
     cursor: str | None = None,
     *,
+    start: int | None = None,
     limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
 ) -> CollectionPage:
     if limit < 1:
@@ -114,20 +117,37 @@ async def page_items(
     document = await store.get(collection_uri)
     if not document:
         return CollectionPage()
+    if cursor is not None and start is not None:
+        raise ValueError("cursor and start are mutually exclusive")
     items = items_of(document)
     total = len(items)
-    start = 0
+    origin = 0
     if cursor is not None:
-        index, cursor_item = decode_cursor(cursor)
-        if cursor_item and cursor_item in items:
-            start = items.index(cursor_item) + 1
+        token_start = decode_start(cursor)
+        if token_start is not None:
+            origin = min(token_start, total)
         else:
-            # The cursor's item is gone; the slot it held now holds its successor.
-            start = min(max(index, 0), total)
-    window = items[start : start + limit]
+            index, cursor_item = decode_cursor(cursor)
+            if cursor_item and cursor_item in items:
+                origin = min(items.index(cursor_item) + 1, total)
+            else:
+                # The cursor's item is gone; the slot it held now holds its successor.
+                origin = min(max(index, 0), total)
+    elif start is not None:
+        if start < 0:
+            raise ValueError("start must not be negative")
+        origin = min(start, total)
+    window = items[origin : origin + limit]
     page = tuple(item for item in window if isinstance(item, str))
     next_cursor: str | None = None
-    if window and start + len(window) < total:
+    if window and origin + len(window) < total:
         last = window[-1]
-        next_cursor = encode_cursor(start + len(window) - 1, last if isinstance(last, str) else "")
-    return CollectionPage(items=page, cursor=next_cursor, total=total, start_index=start)
+        next_cursor = encode_cursor(origin + len(window) - 1, last if isinstance(last, str) else "")
+    prev_cursor = encode_start(max(origin - limit, 0)) if origin > 0 else None
+    return CollectionPage(
+        items=page,
+        cursor=next_cursor,
+        prev_cursor=prev_cursor,
+        total=total,
+        start_index=origin,
+    )
