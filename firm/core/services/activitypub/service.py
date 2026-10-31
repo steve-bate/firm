@@ -9,7 +9,6 @@ from firm.core.interfaces import (
     APActor,
     AuthorizationService,
     DeliveryService,
-    Identity,
     JSONObject,
     NoOpValidator,
     ResourceStore,
@@ -158,11 +157,6 @@ async def _activity_query(principal, store, filter: jsonpath.JSONPathQuery | Non
     if filter:
         activities = [node.value for node in filter.find(activities)]
     return activities
-
-
-def _assert_authorized_actor(principal: Identity | None, actor_uri):
-    if principal is None or actor_uri != principal.uri:
-        raise NotAuthorizedException()
 
 
 def _addressed_to_box_owner(activity: JSONObject, box_owner: APActor) -> JSONObject:

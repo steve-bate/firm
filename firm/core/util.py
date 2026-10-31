@@ -3,7 +3,6 @@ import logging
 import os
 import tomllib
 from typing import Any, Iterable, Mapping
-from urllib.parse import urlparse
 
 from firm.core.interfaces import JSON, APActor, JSONObject, ResourceStore, Tenant, Url
 
@@ -208,12 +207,6 @@ def _package_version(package_name) -> str | None:
 
 def get_version(package_name, default_version="0.0.0-dev") -> str:
     return _package_version(package_name) or _get_version_from_pyproject() or default_version
-
-
-def get_prefix_uri(uri: str, scheme_override: str | None = None) -> str:
-    """Get the instance "prefix" for the uri"""
-    url = urlparse(uri)
-    return f"{scheme_override or url.scheme}://{url.netloc}"
 
 
 def is_collection(obj: JSONObject) -> bool:

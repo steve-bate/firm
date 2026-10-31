@@ -1,18 +1,11 @@
-from typing import Any, AsyncIterable, Generator, Iterable, MutableMapping, cast
+from typing import Any, AsyncIterable, Generator, Iterable, MutableMapping
 
 import httpx
-from starlette.authentication import (
-    AuthCredentials,
-    AuthenticationBackend,
-    BaseUser,
-    UnauthenticatedUser,
-)
 from starlette.requests import HTTPConnection, Request
 from starlette.responses import Response
 
 from firm.core.interfaces import (
     DEFAULT_HTTP_TIMEOUT,
-    Authenticator,
     HttpApplication,
     HttpMethod,
     HttpRequest,
@@ -116,28 +109,6 @@ class HttpxRequestAdapter(HttpRequest):
         return self._request.url.params.multi_items()
 
 
-class User(BaseUser):
-    def __init__(self, identity: Identity):
-        self._identity = identity
-
-    @property
-    def is_authenticated(self) -> bool:
-        return True
-
-    @property
-    def display_name(self) -> str:
-        return cast(str, self._identity.actor.get("preferredUsername", "Anonymous"))
-
-    @property
-    def identity(self) -> str:
-        return self._identity.uri
-
-    # awkward naming given starlette property name
-    @property
-    def firm_identity(self) -> Identity:
-        return self._identity
-
-
 class HttpConnectionAdapter(HttpRequest):
     def __init__(
         self,
@@ -220,20 +191,6 @@ class HttpConnectionAdapter(HttpRequest):
     @property
     def connection(self):
         return self._conn
-
-
-class AuthenticationBackendAdapter(AuthenticationBackend):
-    def __init__(self, authenticator: Authenticator) -> None:
-        super().__init__()
-        self._authenticator = authenticator
-
-    async def authenticate(self, request: HTTPConnection) -> tuple[AuthCredentials, BaseUser]:
-        identity = await self._authenticator.authenticate(
-            HttpConnectionAdapter(request)
-        )  # Call the authenticate method
-        if identity:
-            return AuthCredentials(["authenticated"]), User(identity)
-        return AuthCredentials(["unauthenticated"]), UnauthenticatedUser()
 
 
 class HttpxTransport(HttpTransport):

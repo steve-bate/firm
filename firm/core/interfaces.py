@@ -510,27 +510,6 @@ class PlainTextResponse(HttpResponse):
         return self._content
 
 
-class JsonResponse(HttpResponse):
-    def __init__(
-        self,
-        data: JSONObject,
-        status_code: int = 200,
-        headers: dict[str, str] = {},
-        reason_phrase: str | None = None,
-    ):
-        super().__init__(
-            status_code,
-            headers=headers,
-            media_type=headers.get("Content-Type") or "application/json",
-            reason_phrase=reason_phrase,
-        )
-        self._data = data
-
-    @property
-    def body(self) -> bytes:
-        return json.dumps(self._data).encode()
-
-
 class AuthenticationError(Exception):
     def __init__(self, message: str):
         super().__init__(message)
@@ -596,10 +575,6 @@ class DeliveryReport:
 
     delivered: tuple[str, ...] = ()
     failed: tuple[DeliveryFailure, ...] = ()
-
-    @property
-    def ok(self) -> bool:
-        return not self.failed
 
 
 class DeliveryService(Protocol):

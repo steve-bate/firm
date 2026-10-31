@@ -1,6 +1,6 @@
 import importlib.resources as pkg_resources
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Callable, Iterable
 from urllib.parse import urlparse
 
 import referencing
@@ -58,9 +58,3 @@ def create_validator(
         registry=registry_callback(referencing.Registry(retrieve=schema_retriever)),
         format_checker=Draft202012Validator.FORMAT_CHECKER,
     )
-
-
-def validate_activity(activity: dict[str, Any], validator: Validator) -> dict[str, Any]:
-    """Validates an activity and returns it, if valid."""
-    validator.validate(activity)
-    return activity

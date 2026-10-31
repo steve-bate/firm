@@ -32,10 +32,6 @@ class ResourceResolver:
         """Every tenant this server serves, by prefix."""
         return self._tenants
 
-    @property
-    def can_fetch(self) -> bool:
-        return self._remote is not None
-
     def owner(self, uri: str) -> Tenant | None:
         """The local tenant whose prefix owns this URI, longest match first.
 
