@@ -3,7 +3,13 @@ import os
 from abc import ABC, abstractmethod
 from typing import cast
 
-from firm.core.interfaces import JSONObject, QueryCriteria
+from firm.core.interfaces import (
+    DEFAULT_COLLECTION_PAGE_SIZE,
+    CollectionPage,
+    JSONObject,
+    QueryCriteria,
+)
+from firm.core.store import collection_items
 
 
 class ResourceStoreBase(ABC):
@@ -24,6 +30,31 @@ class ResourceStoreBase(ABC):
 
     @abstractmethod
     async def query(self, criteria: QueryCriteria) -> list[JSONObject]: ...
+
+    async def append_item(self, collection_uri: str, item_uri: str) -> int:
+        return await collection_items.append_item(self, collection_uri, item_uri)
+
+    async def remove_item(self, collection_uri: str, item_uri: str) -> int:
+        return await collection_items.remove_item(self, collection_uri, item_uri)
+
+    async def contains_item(self, collection_uri: str, item_uri: str) -> bool:
+        return await collection_items.contains_item(self, collection_uri, item_uri)
+
+    async def count_items(self, collection_uri: str) -> int:
+        return await collection_items.count_items(self, collection_uri)
+
+    async def page_items(
+        self,
+        collection_uri: str,
+        cursor: str | None = None,
+        *,
+        limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
+    ) -> CollectionPage:
+        return await collection_items.page_items(self, collection_uri, cursor, limit=limit)
+
+    async def close(self) -> None:
+        """Release anything the store holds open. The default holds nothing."""
+        return None
 
     async def query_one(self, criteria: QueryCriteria) -> JSONObject | None:
         matches = await self.query(criteria)

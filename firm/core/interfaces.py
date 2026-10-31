@@ -110,14 +110,6 @@ class UnknownCollectionError(ValueError):
 
 
 @dataclass(frozen=True)
-class AppendOutcome:
-    """What one append did: whether the item was new, and the collection's size."""
-
-    added: bool
-    count: int
-
-
-@dataclass(frozen=True)
 class CollectionPage:
     """One page of a collection's item list, newest first.
 
@@ -153,6 +145,45 @@ class ResourceStore(Protocol):
 
     async def close(self) -> None:
         """Close any resources used by the store (e.g., database connections)"""
+        ...
+
+    async def append_item(self, collection_uri: str, item_uri: str) -> int:
+        """Add item_uri as the collection's newest item; return the item count.
+
+        Items are not required to be unique: appending an item the collection already
+        holds adds a second entry, because uniqueness is the caller's policy, not storage's.
+        Raises ``UnknownCollectionError`` for a collection that does not exist.
+        """
+        ...
+
+    async def remove_item(self, collection_uri: str, item_uri: str) -> int:
+        """Remove item_uri if the collection holds it; return the item count.
+
+        Removing an absent item writes nothing. Raises ``UnknownCollectionError`` for a
+        collection that does not exist.
+        """
+        ...
+
+    async def contains_item(self, collection_uri: str, item_uri: str) -> bool:
+        """Whether the collection holds item_uri. An unknown collection holds none."""
+        ...
+
+    async def count_items(self, collection_uri: str) -> int:
+        """How many items the collection holds. An unknown collection has none."""
+        ...
+
+    async def page_items(
+        self,
+        collection_uri: str,
+        cursor: str | None = None,
+        *,
+        limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
+    ) -> CollectionPage:
+        """Up to ``limit`` item URIs, newest first, starting after ``cursor``.
+
+        ``cursor=None`` starts at the newest item. The returned page's cursor is ``None``
+        when the walk is exhausted. An unknown collection is an empty page.
+        """
         ...
 
 
