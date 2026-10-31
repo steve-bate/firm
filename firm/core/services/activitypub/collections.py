@@ -3,7 +3,6 @@ from typing import TYPE_CHECKING, cast
 
 from firm.core.interfaces import JSONObject, ResourceStore
 from firm.core.services.activitypub.exceptions import InvalidResourceException
-from firm.core.util import dereference
 
 if TYPE_CHECKING:
     from firm.core.services.activitypub.support import FirmContext
@@ -11,47 +10,22 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-async def add_collection_item(
-    store: ResourceStore,
-    collection_uri: str,
-    item_uri: str,
-    prepend=True,
-    allow_dups=False,
-):
-    collection = await dereference(store, collection_uri)
-    if not collection:
-        raise ValueError(f"Unknown collection: {collection_uri}")
-    # For storage, only 'items' is used
-    # Serialization will serialized as orderedItems if needed
-    items_key = "items"
-    if items := cast(list, collection.get(items_key)):
-        if isinstance(items, list):
-            if not allow_dups and item_uri in items:
-                return
-            if prepend:
-                items.insert(0, item_uri)
-            else:
-                items.append(item_uri)
-    else:
-        items = [item_uri]
-        collection[items_key] = items
-    collection["totalItems"] = len(items)
-    await store.put(collection)
+async def add_collection_item(store: ResourceStore, collection_uri: str, item_uri: str) -> int:
+    """Add item_uri to collection_uri as its newest item; return the new count.
+
+    The item is added once: the store appends whatever it is given, duplicates included —
+    AS2 puts no uniqueness rule on collection items — so a caller that wants a set asks the
+    store whether it already holds the item, which is what every current caller wants.
+    Raises ``UnknownCollectionError`` for a collection that does not exist.
+    """
+    if await store.contains_item(collection_uri, item_uri):
+        return await store.count_items(collection_uri)
+    return await store.append_item(collection_uri, item_uri)
 
 
-async def remove_collection_item(store: ResourceStore, collection_uri: str, item_uri: str):
-    collection = await dereference(store, collection_uri)
-    if not collection:
-        raise ValueError(f"Unknown collection: {collection_uri}")
-    # For storage, only 'items' is used
-    # Serialization will serialized as orderedItems if needed
-    items_key = "items"
-    items = collection.get(items_key)
-    if isinstance(items, list):
-        if item_uri in items:
-            items.remove(item_uri)
-        collection["totalItems"] = len(items)
-    await store.put(collection)
+async def remove_collection_item(store: ResourceStore, collection_uri: str, item_uri: str) -> int:
+    """Remove item_uri from collection_uri if the collection holds it; return the count."""
+    return await store.remove_item(collection_uri, item_uri)
 
 
 RELATIONSHIP_COLLECTIONS = frozenset({"followers", "following", "liked"})

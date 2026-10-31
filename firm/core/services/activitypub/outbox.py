@@ -275,8 +275,6 @@ async def _process_outbox_remove(context: FirmBoxContext, activity: JSONObject) 
         raise InvalidResourceException("Invalid target collection")
     if "id" not in target:
         raise InvalidResourceException("Target collection has no ID")
-    if "items" not in target and "orderedItems" not in target:
-        raise InvalidResourceException("Target collection has no items property")
     if "object" not in activity:
         raise InvalidRequestException("Missing object in Remove")
     object_ = activity["object"]
@@ -284,22 +282,12 @@ async def _process_outbox_remove(context: FirmBoxContext, activity: JSONObject) 
         object_ = await context.dereference(object_)
     if not object_ or not isinstance(object_, Mapping):
         raise InvalidRequestException("Invalid object to remove")
-        # Remove the object from the collection
     if "id" not in object_:
         raise InvalidResourceException("Object has no ID")
-    if "items" in target:
-        if resource_id(object_) in cast(list, target["items"]):
-            cast(list, target["items"]).remove(resource_id(object_))
-    elif "orderedItems" in target:
-        if resource_id(object_) in cast(list, target["orderedItems"]):
-            cast(list, target["orderedItems"]).remove(resource_id(object_))
-    else:
-        raise InvalidResourceException("Target collection has no items")
-    target["totalItems"] = len(cast(list, target.get("items", []))) + len(
-        cast(list, target.get("orderedItems", []))
-    )
     store = context.tenant.public_store
-    await store.put(target)
+    # Only the store knows what the collection holds: removing an item it does not hold is
+    # a no-op, not an error.
+    await store.remove_item(resource_id(target), resource_id(object_))
     activity["target"] = resource_id(target)
     activity["object"] = resource_id(object_)
     # Save the activity
@@ -307,9 +295,6 @@ async def _process_outbox_remove(context: FirmBoxContext, activity: JSONObject) 
 
 
 async def _process_outbox_add(context: FirmBoxContext, activity: JSONObject) -> None:
-    # Get the target collection
-    # insert the object into the collection at the front
-    # save the collection
     target = activity.get("target")
     if isinstance(target, str):
         target = await context.dereference(target)
@@ -318,11 +303,7 @@ async def _process_outbox_add(context: FirmBoxContext, activity: JSONObject) -> 
     if "id" not in target:
         raise InvalidRequestException("Target collection has no ID")
     if "items" not in target and "orderedItems" not in target:
-        if is_type(target, "Collection"):
-            target["items"] = []
-        elif is_type(target, "OrderedCollection"):
-            target["orderedItems"] = []
-        else:
+        if not is_type_any(target, ("Collection", "OrderedCollection")):
             raise InvalidResourceException("Target collection has no items property")
     if "object" not in activity:
         raise InvalidRequestException("Missing object in Add")
@@ -331,23 +312,13 @@ async def _process_outbox_add(context: FirmBoxContext, activity: JSONObject) -> 
         object_ = await context.dereference(object_)
     if not object_ or not isinstance(object_, Mapping):
         raise InvalidRequestException("Invalid object to add")
-    # Add the object to the collection
     if "id" not in object_:
         raise InvalidResourceException("Object has no ID")
     if "attributedTo" not in object_:
         object_["attributedTo"] = activity.get("actor", context.tenant.prefix)
     store = context.tenant.public_store
     await store.put(object_)
-    # Add the object to the collection
-    # TODO find a way to make the typing cleaner
-    if "items" in target:
-        cast(list, target["items"]).append(resource_id(object_))
-    elif "orderedItems" in target:
-        cast(list, target["orderedItems"]).insert(0, resource_id(object_))
-    target["totalItems"] = len(cast(list, target.get("items", []))) + len(
-        cast(list, target.get("orderedItems", []))
-    )
-    await store.put(target)
+    await store.append_item(resource_id(target), resource_id(object_))
     activity["target"] = resource_id(target)
     activity["object"] = resource_id(object_)
     # Save the activity
