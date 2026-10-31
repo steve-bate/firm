@@ -101,6 +101,8 @@ def init_tenant(config: ServerConfig, tenant_uri: str) -> Tenant:
     endpoints: JSONObject = {
         "sharedInbox": shared_inbox_uri,
     }
+    if config.search.enabled:
+        endpoints["search"] = f"{tenant_uri}/search"
     return Tenant(tenant_uri, public_store, private_store, files, endpoints)
 
 

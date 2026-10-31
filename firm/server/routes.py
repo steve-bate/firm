@@ -1,14 +1,12 @@
 import asyncio
 import datetime
-import json
 import logging
-import re
 import time
 import uuid
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
-from typing import Awaitable, Callable, cast
+from typing import Awaitable, Callable
 
 import mimeparse
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -18,6 +16,8 @@ from jsonschema.exceptions import ValidationError
 from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.delivery.queue import Delivery, DeliveryState
 from firm.core.interfaces import (
+    DEFAULT_SEARCH_PAGE_SIZE,
+    MAX_SEARCH_PAGE_SIZE,
     DeliveryService,
     Identity,
     JSONObject,
@@ -26,6 +26,7 @@ from firm.core.interfaces import (
     Validator,
     get_query_params,
 )
+from firm.core.services.activitypub.collections import option_value
 from firm.core.services.activitypub.exceptions import (
     InvalidRequestException,
     InvalidResourceTypeException,
@@ -43,16 +44,11 @@ from firm.core.services.nodeinfo import (
     nodeinfo_version,
 )
 from firm.core.services.webfinger import InvalidResourceUri, ResourceNotFound, webfinger
-from firm.core.store.file import FileResourceStore
-from firm.core.util import (
-    AS2_CONTENT_TYPES,
-    is_accessible,
-)
+from firm.core.util import AS2_CONTENT_TYPES
 from firm.jsonschema.validation import create_validator
 from firm.oauth2.router import create_oauth2_router
-from firm.search.transform.json import JsonMatcher
 from firm.server.auth import get_principal, require_admin
-from firm.server.config import ServerConfig, StorageKind
+from firm.server.config import ServerConfig
 from firm.server.delivery import FirmDeliveryService
 from firm.server.html.endpoint import html_endpoint, html_static_endpoint
 from firm.streaming.endpoint import sse_client_page_endpoint
@@ -140,101 +136,62 @@ log = logging.getLogger(__name__)
 #     return _search
 
 
-@dataclass
-class SearchTerm:
-    operator: str | None
-    value: str
+def _search_window(options: dict[str, list[str]], default: int) -> tuple[int, int]:
+    """The ``start``/``limit`` a search asks for, clamped to what a store will serve."""
+    start = 0
+    if raw_start := option_value(options, "start"):
+        try:
+            start = max(int(raw_start), 0)
+        except ValueError:
+            raise ValueError(f"Malformed start: {raw_start}") from None
+    limit = default
+    if raw_limit := option_value(options, "limit"):
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            raise ValueError(f"Malformed limit: {raw_limit}") from None
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+    return start, min(limit, MAX_SEARCH_PAGE_SIZE)
 
 
-async def _filesystem_search_endpoint(request: Request) -> Response:
-    tenant = request.state.tenant
-
-    query = request.query_params.get("q", [""])[0].strip()
-
-    term_pattern = r'(?:(\w+):)?(?:"([^"]+)"|(\S+))'
-    terms = []
-    for match in re.finditer(term_pattern, query):
-        op, quoted, word = match.groups()
-        terms.append(SearchTerm(op, (quoted if quoted is not None else word).lower()))
-
-    prefix = str(request.base_url).rstrip("/")
-
-    matches: dict[str, dict] = {
-        "actors": {},
-        "objects": {},
-    }
-
-    for term in terms:
-        if term.operator is None or term.operator == "actor":
-            actors = await tenant.public_store.query(
-                {
-                    "type": "Person",
-                }
-            )
-            actor_matches = matches["actors"]
-            for actor in actors:
-                for p in ["name", "preferredUsername", "summary"]:
-                    if term.value in cast(str, actor.get(p, "")).lower():
-                        actor_matches[actor["id"]] = actor
-                        if len(actor_matches) >= 20:
-                            break
-        if term.operator is None or term.operator == "object":
-            # TODO Search - extend 'object' operator to support more types
-            objects = await tenant.public_store.query(
-                {
-                    "type": "Note",
-                }
-            )
-            object_matches = matches["objects"]
-            for obj in objects:
-                for p in ["name", "summary", "content"]:
-                    if term.value in cast(str, obj.get(p, "")).lower():
-                        object_matches[obj["id"]] = obj
-                        if len(object_matches) >= 20:
-                            break
-
-    return JSONResponse(
-        {
-            "@context": "https://www.w3.org/ns/activitystreams",
-            "type": "OrderedCollection",
-            "id": f"{prefix}/search?q={query}",
-            "totalItems": len(matches["actors"]) + len(matches["objects"]),
-            "orderedItems": list(matches["actors"].values()) + list(matches["objects"].values()),
-        },
-        headers={"Access-Control-Allow-Origin": "*"},
-    )
-
-
-async def _filesystem_fulltext_search_endpoint(
+async def search_endpoint(
     request: Request, principal: Identity = Depends(get_principal)
 ) -> Response:
-    matches = []
+    """Search this tenant's public documents, as the requesting principal may see them."""
+    if principal is None:
+        raise HTTPException(HTTPStatus.UNAUTHORIZED, detail="Authentication required")
 
     tenant: Tenant = request.state.tenant
-    if isinstance(tenant.public_store, FileResourceStore):
-        query = request.query_params.get("q", [""]).strip()
-        matcher = JsonMatcher(query, text_fields=["summary", "content"])
+    config: ServerConfig = request.app.state.config
+    query = option_value(request.query_params, "q") or ""
+    try:
+        start, limit = _search_window(request.query_params, DEFAULT_SEARCH_PAGE_SIZE)
+    except ValueError as e:
+        raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e)) from None
 
-        file_store = cast(FileResourceStore, tenant.public_store)
-        for base, _, files in file_store.store_path.walk():
-            for file in files:
-                f = base / file
-                doc = json.load(f.open())
-                if is_accessible(principal.uri if principal else None, doc):
-                    if matcher.is_match(doc):
-                        matches.append(doc)
-
-    # TODO Need to process docs for transport (embed, filter, etc.)
+    page = await tenant.public_store.search(
+        query, text_fields=config.search.text_fields, start=start, limit=limit
+    )
+    authorizer = request.app.state.authorizer
+    documents = [
+        document
+        for document in page.documents
+        if (await authorizer.is_get_authorized(tenant, principal, document)).authorized
+    ]
 
     return JSONResponse(
         {
             "@context": "https://www.w3.org/ns/activitystreams",
             "type": "OrderedCollection",
             "id": f"{tenant.prefix}/search?q={query}",
-            "totalItems": len(matches),
-            "orderedItems": matches,
+            "totalItems": page.total,
+            "orderedItems": documents,
         },
-        headers={"Access-Control-Allow-Origin": "*"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Content-Type": "application/activity+json",
+        },
     )
 
 
@@ -491,9 +448,8 @@ def create_router(
 
     router.include_router(create_oauth2_router())
 
-    if config.store.kind == StorageKind.FILESYSTEM:
-        log.info("Registering file system search")
-        router.add_api_route("/search", _filesystem_fulltext_search_endpoint, methods=["GET"])
+    if config.search.enabled:
+        router.add_api_route("/search", search_endpoint, methods=["GET"])
 
     router.add_api_route("/sse/client", sse_client_page_endpoint, methods=["GET"])
     router.include_router(create_sse_router())

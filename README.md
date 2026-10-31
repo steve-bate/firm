@@ -61,6 +61,10 @@ These are current features, unless tagged otherwise.
   * FIRM storage implementation that uses a RDF graph store ([rdflib](https://rdflib.readthedocs.io/en/stable/index.html), [oxigraph](https://github.com/oxigraph/oxigraph))
   * SPARQL endpoint integration (using [rdflib_endpoint](https://github.com/vemonet/rdflib-endpoint))
   * Full-text search (FTS) over selected triples ([sqlite3 FTS](https://sqlite.org/fts5.html))
+* Document search at `GET /search` (authenticated, AS2 `OrderedCollection`)
+  * Query syntax: terms, phrases, `field:value`, AND/OR/NOT, regular expressions
+  * Every store answers it; sqlite compiles the query to SQL, the filesystem walks its partition
+  * On by default, disabled with `search.enabled: false`
 * ActivityPub C2S Proxy Endpoint
 * Uses [FastAPI](https://fastapi.tiangolo.com/) and [uvicorn](https://www.uvicorn.org/)
 * Allows per-tenant customization

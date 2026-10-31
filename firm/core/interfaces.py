@@ -100,6 +100,12 @@ QueryCriteria: TypeAlias = JSONObject
 DEFAULT_COLLECTION_PAGE_SIZE = 20
 MAX_COLLECTION_PAGE_SIZE = 100
 
+DEFAULT_SEARCH_PAGE_SIZE = 20
+MAX_SEARCH_PAGE_SIZE = 100
+
+DEFAULT_TEXT_FIELDS: tuple[str, ...] = ("summary", "content")
+"""The document fields a bare search term is looked for in."""
+
 
 class UnknownCollectionError(ValueError):
     """A collection that the store does not hold.
@@ -148,6 +154,23 @@ class CollectionPage:
     items: tuple[str, ...] = ()
     cursor: str | None = None
     prev_cursor: str | None = None
+    total: int = 0
+    start_index: int = 0
+
+
+@dataclass(frozen=True)
+class SearchPage:
+    """One page of search results, best matches first.
+
+    ``documents`` are the matching resources themselves, not their URIs: a search answers
+    with a window of the documents it matched, and every backend matches on content, so
+    fetching them again by id would be a second read of what the store already had.
+    ``total`` is how many documents matched — the wire's ``totalItems``, and by AS2
+    convention a best effort: it counts matches, before the caller drops the ones the
+    principal may not see. ``start_index`` is the position of the first document returned.
+    """
+
+    documents: tuple[JSONObject, ...] = ()
     total: int = 0
     start_index: int = 0
 
@@ -213,6 +236,25 @@ class ResourceStore(Protocol):
         mutually exclusive. The returned page's cursor is ``None`` when the walk is
         exhausted, and its ``prev_cursor`` names the window before this one. An unknown
         collection is an empty page.
+        """
+        ...
+
+    async def search(
+        self,
+        query: str,
+        *,
+        text_fields: Sequence[str] = DEFAULT_TEXT_FIELDS,
+        start: int = 0,
+        limit: int = DEFAULT_SEARCH_PAGE_SIZE,
+    ) -> SearchPage:
+        """Up to ``limit`` documents matching ``query``, starting at match ``start``.
+
+        ``query`` is the search syntax ``firm.search.parser`` accepts — bare terms,
+        quoted phrases, ``field:value`` facets and AND/OR/NOT — and each backend answers
+        it as well as its layout allows; a backend that cannot push the query down still
+        matches it, slowly. ``text_fields`` names the document fields an unfielded term is
+        looked for in. The returned page's ``total`` counts matches, not the subset the
+        caller may be allowed to see.
         """
         ...
 

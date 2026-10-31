@@ -42,10 +42,10 @@ def _node_to_sql(node: Dict[str, Any], text_facet_names: List[str]) -> Tuple[str
     ntype = node["type"]
 
     if ntype == "term":
-        return _term_to_sql(node["value"])
+        return _term_to_sql(node["value"], text_facet_names)
 
     if ntype == "phrase":
-        return _phrase_to_sql(node["value"])
+        return _phrase_to_sql(node["value"], text_facet_names)
 
     if ntype == "regex":
         return _regex_to_sql(node["value"], text_facet_names)
@@ -66,33 +66,33 @@ def _node_to_sql(node: Dict[str, Any], text_facet_names: List[str]) -> Tuple[str
     raise ValueError(f"Unknown AST node type: {ntype}")
 
 
-def _term_to_sql(value: str) -> Tuple[str, List[Any]]:
+def _term_to_sql(value: str, text_facet_names: List[str]) -> Tuple[str, List[Any]]:
     """
-    Default text term: search in main text fields from JSON, e.g.
+    Default text term: search in the text facets named by the caller, e.g.
     $.content and $.summary.
     """
     pattern, _ = _wildcard_to_like(value)
-    sql = (
-        "("
-        "json_extract(document, '$.content') LIKE ? "
-        "OR json_extract(document, '$.summary') LIKE ?"
-        ")"
-    )
-    return sql, [pattern, pattern]
+    return _text_facet_match(text_facet_names, "LIKE", pattern)
 
 
-def _phrase_to_sql(value: str) -> Tuple[str, List[Any]]:
+def _phrase_to_sql(value: str, text_facet_names: List[str]) -> Tuple[str, List[Any]]:
     """
     Phrase is treated similarly to term here, just LIKE '%phrase%'.
     """
-    pattern = _phrase_to_like(value)
-    sql = (
-        "("
-        "json_extract(document, '$.content') LIKE ? "
-        "OR json_extract(document, '$.summary') LIKE ?"
-        ")"
-    )
-    return sql, [pattern, pattern]
+    return _text_facet_match(text_facet_names, "LIKE", _phrase_to_like(value))
+
+
+def _text_facet_match(
+    text_facet_names: List[str], comparator: str, pattern: str
+) -> Tuple[str, List[Any]]:
+    """A clause matching ``pattern`` against every text facet, OR'ed together."""
+    if not text_facet_names:
+        raise ValueError("text_facet_names must contain at least one facet")
+    clauses = [
+        f"json_extract(document, '{_facet_to_json_path(facet)}') {comparator} ?"
+        for facet in text_facet_names
+    ]
+    return f"({' OR '.join(clauses)})", [pattern] * len(clauses)
 
 
 def _regex_to_sql(value: str, text_facet_names: List[str]) -> Tuple[str, List[Any]]:

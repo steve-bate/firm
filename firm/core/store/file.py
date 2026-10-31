@@ -1,6 +1,7 @@
 import glob
 import json
 import logging
+from collections.abc import Sequence
 from functools import lru_cache
 from os import PathLike
 from pathlib import Path
@@ -8,13 +9,17 @@ from typing import Any, cast
 
 from firm.core.interfaces import (
     DEFAULT_COLLECTION_PAGE_SIZE,
+    DEFAULT_SEARCH_PAGE_SIZE,
+    DEFAULT_TEXT_FIELDS,
     CollectionPage,
     JSONObject,
     QueryCriteria,
+    SearchPage,
 )
 from firm.core.store import file_collections
 from firm.core.store.base import ResourceStoreBase
 from firm.core.store.naming import uri_hash
+from firm.search.transform.json import JsonMatcher
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +75,34 @@ class FileResourceStore(ResourceStoreBase):  # type: ignore
                 if self.is_match(data, criteria):
                     matches.append(data)
         return matches
+
+    async def search(
+        self,
+        query: str,
+        *,
+        text_fields: Sequence[str] = DEFAULT_TEXT_FIELDS,
+        start: int = 0,
+        limit: int = DEFAULT_SEARCH_PAGE_SIZE,
+    ) -> SearchPage:
+        """Match every document in this partition, keeping only the window asked for.
+
+        The walk is the same one ``query`` does, but documents outside the window are
+        dropped as they are read instead of being held, so a search over a large partition
+        costs one document at a time. Filenames are sorted so a window is stable across
+        calls.
+        """
+        matcher = JsonMatcher(query, text_fields=list(text_fields))
+        matched = 0
+        documents: list[JSONObject] = []
+        for filename in sorted(glob.glob(f"{self._partition_path}/*.json")):
+            with open(filename) as fp:
+                document = json.load(fp)
+            if not matcher.is_match(document):
+                continue
+            if start <= matched < start + limit:
+                documents.append(document)
+            matched += 1
+        return SearchPage(documents=tuple(documents), total=matched, start_index=start)
 
     async def append_item(self, collection_uri: str, item_uri: str) -> int:
         return await file_collections.append_item(self, collection_uri, item_uri)

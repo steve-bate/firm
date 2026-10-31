@@ -52,6 +52,19 @@ class SqliteStoreConfig:
 
 
 @dataclass(frozen=True)
+class SearchConfig:
+    """Full-text search over a tenant's public documents.
+
+    On by default because every store can answer a search, however slowly; switch it off
+    when the store is large enough that a walk per request is not worth offering, or when
+    the endpoint should not be advertised at all.
+    """
+
+    enabled: bool = True
+    text_fields: list[str] = field(default_factory=lambda: ["summary", "content"])
+
+
+@dataclass(frozen=True)
 class ValidationConfig:
     root_schema: str = "schema:activities"
     schema_dirs: list[str] = field(default_factory=list)
@@ -109,6 +122,7 @@ class ServerConfig:
     # TODO files: str  # Storage for non-data files (media, etc.)
     store: FileStoreConfig | RdfStoreConfig | MemoryStoreConfig | SqliteStoreConfig
     validation: ValidationConfig = ValidationConfig()
+    search: SearchConfig = field(default_factory=SearchConfig)
     shared_inbox_path: str = "shared"
     remote_fetch: RemoteFetchConfig = field(default_factory=RemoteFetchConfig)
     delivery: DeliveryConfig = field(default_factory=DeliveryConfig)

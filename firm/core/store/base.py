@@ -1,15 +1,19 @@
 import json
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import cast
 
 from firm.core.interfaces import (
     DEFAULT_COLLECTION_PAGE_SIZE,
+    DEFAULT_SEARCH_PAGE_SIZE,
+    DEFAULT_TEXT_FIELDS,
     CollectionPage,
     JSONObject,
     QueryCriteria,
+    SearchPage,
 )
-from firm.core.store import collection_items
+from firm.core.store import collection_items, search
 
 
 class ResourceStoreBase(ABC):
@@ -54,6 +58,16 @@ class ResourceStoreBase(ABC):
         return await collection_items.page_items(
             self, collection_uri, cursor, start=start, limit=limit
         )
+
+    async def search(
+        self,
+        query: str,
+        *,
+        text_fields: Sequence[str] = DEFAULT_TEXT_FIELDS,
+        start: int = 0,
+        limit: int = DEFAULT_SEARCH_PAGE_SIZE,
+    ) -> SearchPage:
+        return await search.search(self, query, text_fields=text_fields, start=start, limit=limit)
 
     async def close(self) -> None:
         """Release anything the store holds open. The default holds nothing."""

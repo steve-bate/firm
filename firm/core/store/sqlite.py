@@ -1,27 +1,48 @@
 import json
+import re
 import sqlite3
+from collections.abc import Sequence
 from contextlib import closing
 from typing import Any, cast
 
 from firm.core.interfaces import (
     DEFAULT_COLLECTION_PAGE_SIZE,
+    DEFAULT_SEARCH_PAGE_SIZE,
+    DEFAULT_TEXT_FIELDS,
     MAX_COLLECTION_PAGE_SIZE,
     CollectionPage,
     JSONObject,
     QueryCriteria,
+    SearchPage,
     UnknownCollectionError,
     decode_start,
     encode_start,
 )
 from firm.core.store.base import ResourceStoreBase
+from firm.search.parser import parse_query
+from firm.search.transform.sql import ast_to_sql
 
 ITEMS_KEYS = ("items", "orderedItems")
+
+TYPE_COLUMN = """COALESCE(
+                (SELECT value FROM json_each(object, '$.type')
+                 WHERE json_each.type = 'text' ORDER BY json_each.key LIMIT 1),
+                json_extract(object, '$.type')
+            ) AS type"""
+
+
+def _regexp(pattern: str, value: Any) -> int:
+    """SQLite has no REGEXP operator; the search SQL calls this one."""
+    if value is None:
+        return 0
+    return 1 if re.search(pattern, str(value)) else 0
 
 
 class SqliteResourceStore(ResourceStoreBase):
     def __init__(self, name: str, db: str):
         self.name = name
         self.connection = sqlite3.connect(db)
+        self.connection.create_function("regexp", 2, _regexp)
         self._initialize_table()
 
     def commit(self) -> None:
@@ -185,6 +206,42 @@ class SqliteResourceStore(ResourceStoreBase):
                 (collection_uri, self._next_position(collection_uri), item_uri),
             )
         return await self._sync_total(collection_uri, document)
+
+    async def search(
+        self,
+        query: str,
+        *,
+        text_fields: Sequence[str] = DEFAULT_TEXT_FIELDS,
+        start: int = 0,
+        limit: int = DEFAULT_SEARCH_PAGE_SIZE,
+    ) -> SearchPage:
+        """Compile the query to SQL over the partition's documents.
+
+        ``ast_to_sql`` writes clauses against two columns — ``document``, the stored JSON,
+        and ``type``, its first textual type — so each query runs over a CTE that presents
+        the partition in that shape. Ordering is by uri, which makes a window stable.
+        """
+        where, params = ast_to_sql(parse_query(query), text_facet_names=list(text_fields))
+        documents_cte = (
+            "WITH docs AS ("
+            f"SELECT object AS document, {TYPE_COLUMN}, uri AS uri "
+            "FROM objects WHERE partition = ?"
+            ")"
+        )
+        with closing(self.connection.cursor()) as cursor:
+            (total,) = cursor.execute(
+                f"{documents_cte} SELECT count(*) FROM docs WHERE {where}",
+                [self.name, *params],
+            ).fetchone()
+            rows = cursor.execute(
+                f"{documents_cte} SELECT document FROM docs WHERE {where} ORDER BY uri LIMIT ? OFFSET ?",
+                [self.name, *params, limit, start],
+            ).fetchall()
+        return SearchPage(
+            documents=tuple(json.loads(row[0]) for row in rows),
+            total=cast(int, total),
+            start_index=start,
+        )
 
     async def remove_item(self, collection_uri: str, item_uri: str) -> int:
         document = await self._collection(collection_uri)
