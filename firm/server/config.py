@@ -13,6 +13,7 @@ class StorageKind(StrEnum):
     FILESYSTEM = "filesystem"
     RDF = "rdf"
     MEMORY = "memory"  # for testing
+    SQLITE = "sqlite"
 
 
 class CacheKind(StrEnum):
@@ -36,6 +37,18 @@ class RdfStoreConfig:
 class MemoryStoreConfig:
     files: Path
     kind: StorageKind = StorageKind.MEMORY
+
+
+@dataclass(frozen=True)
+class SqliteStoreConfig:
+    """Where the per-tenant databases live.
+
+    Same shape as FileStoreConfig on purpose: the tenant layout is the same, and the
+    ``kind`` value is what chooses between them.
+    """
+
+    base: Path
+    kind: StorageKind = StorageKind.SQLITE
 
 
 @dataclass(frozen=True)
@@ -94,7 +107,7 @@ class TenantConfig:
 class ServerConfig:
     tenants: list[TenantConfig]
     # TODO files: str  # Storage for non-data files (media, etc.)
-    store: FileStoreConfig | RdfStoreConfig | MemoryStoreConfig
+    store: FileStoreConfig | RdfStoreConfig | MemoryStoreConfig | SqliteStoreConfig
     validation: ValidationConfig = ValidationConfig()
     shared_inbox_path: str = "shared"
     remote_fetch: RemoteFetchConfig = field(default_factory=RemoteFetchConfig)

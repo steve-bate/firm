@@ -55,12 +55,31 @@ def init_tenant_file_storage(
     return public_store, private_store, files
 
 
+def init_tenant_sqlite_storage(
+    config: ServerConfig, tenant_uri: str
+) -> tuple[ResourceStore, ResourceStore, Path]:
+    from firm.core.store.sqlite import SqliteResourceStore
+
+    tenant_url = urlparse(tenant_uri)
+    sqlite_config = cast(FileStoreConfig, config.store)
+    storage_prefix = sqlite_config.base / "tenants" / tenant_url.netloc.replace(":", "_")
+    storage_prefix.mkdir(parents=True, exist_ok=True)
+    # One database per partition, as the filesystem store uses one directory per partition:
+    # a reader of the public store never contends with a writer of the private one.
+    public_store = SqliteResourceStore("public", str(storage_prefix / "public.sqlite"))
+    private_store = SqliteResourceStore("private", str(storage_prefix / "private.sqlite"))
+    files = storage_prefix / "files"
+    return public_store, private_store, files
+
+
 def init_tenant_stores(
     config: ServerConfig, tenant_uri: str
 ) -> tuple[ResourceStore, ResourceStore, Path]:
     match config.store.kind:
         case StorageKind.FILESYSTEM:
             return init_tenant_file_storage(config, tenant_uri)
+        case StorageKind.SQLITE:
+            return init_tenant_sqlite_storage(config, tenant_uri)
         case StorageKind.MEMORY:
             from firm.core.store.memory import MemoryResourceStore
 
@@ -72,7 +91,7 @@ def init_tenant_stores(
         case _:
             raise ValueError(
                 f"Unknown storage kind: {config.store.kind}. "
-                "Supported kinds are 'filesystem' and 'rdf'."
+                "Supported kinds are 'filesystem', 'memory', 'sqlite' and 'rdf'."
             )
 
 
