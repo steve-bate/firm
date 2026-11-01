@@ -379,6 +379,95 @@ async def test_dereference_collection_filtered(service: ActivityPubService, tena
     }
 
 
+async def test_a_filter_applies_to_an_ordered_collection(
+    service: ActivityPubService, tenant: Tenant
+):
+    """A filtered read of an OrderedCollection must honour the filter.
+
+    The matches are stored under "items" and serialised as "orderedItems". When the
+    branch wrote the type's wire key instead, the reader missed the matches and every
+    item was served.
+    """
+    resources: list[JSONObject] = [
+        {
+            "id": "http://tenant1.test/collection",
+            "type": "OrderedCollection",
+            "orderedItems": [
+                "http://tenant1.test/obj1",
+                "http://tenant1.test/obj2",
+            ],
+            "totalItems": 2,
+        },
+        {
+            "id": "http://tenant1.test/obj1",
+            "type": "Event",
+            "name": "foo",
+        },
+        {
+            "id": "http://tenant1.test/obj2",
+            "type": "Place",
+            "name": "bar",
+        },
+    ]
+    for r in resources:
+        await tenant.public_store.put(r)
+    collection = await service.process_get(
+        make_context(tenant),
+        StubUrl.parse("http://tenant1.test/collection?filter=%40.type%20%3D%3D%20%27Place%27"),
+        {
+            "filter": "@.type == 'Place'",
+        },
+    )
+    served = cast(list[JSONObject], collection["orderedItems"])
+    assert [item["id"] for item in served] == ["http://tenant1.test/obj2"]
+
+
+@pytest.mark.skip(reason="FEP-C195 root question: is $ the collection or the item list?")
+async def test_a_collection_rooted_filter_reads_the_same_items(
+    service: ActivityPubService, tenant: Tenant
+):
+    """fep-c195's HTTP example roots the path at the collection: `$.items[?(…)]`.
+
+    The filter is applied to the collection items, so this must select the same item as the
+    bare `@.type == …` form. Today it selects nothing, because the path is evaluated with the
+    item list as its root, where `items` is not a member.
+    """
+    resources: list[JSONObject] = [
+        {
+            "id": "http://tenant1.test/collection",
+            "type": "Collection",
+            "items": [
+                "http://tenant1.test/obj1",
+                "http://tenant1.test/obj2",
+            ],
+            "totalItems": 2,
+        },
+        {
+            "id": "http://tenant1.test/obj1",
+            "type": "Event",
+            "name": "foo",
+        },
+        {
+            "id": "http://tenant1.test/obj2",
+            "type": "Place",
+            "name": "bar",
+        },
+    ]
+    for r in resources:
+        await tenant.public_store.put(r)
+    collection = await service.process_get(
+        make_context(tenant),
+        StubUrl.parse(
+            "http://tenant1.test/collection?filter=%24.items%5B%3F%40.type%20%3D%3D%20%27Place%27%5D"
+        ),
+        {
+            "filter": "$.items[?@.type == 'Place']",
+        },
+    )
+    served = cast(list[JSONObject], collection.get("items") or [])
+    assert [item["id"] for item in served] == ["http://tenant1.test/obj2"]
+
+
 async def test_dereference_sharedinbox_filtered(service: ActivityPubService, tenant: Tenant):
     tenant.endpoints["sharedInbox"] = "http://tenant1.test/shared"
 

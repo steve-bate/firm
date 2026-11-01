@@ -19,10 +19,9 @@ from firm.core.interfaces import (
     encode_start,
 )
 from firm.core.store.base import ResourceStoreBase
+from firm.core.util import normalize_collection_items
 from firm.search.parser import parse_query
 from firm.search.transform.sql import ast_to_sql
-
-ITEMS_KEYS = ("items", "orderedItems")
 
 TYPE_COLUMN = """COALESCE(
                 (SELECT value FROM json_each(object, '$.type')
@@ -100,6 +99,7 @@ class SqliteResourceStore(ResourceStoreBase):
 
     async def put(self, resource: JSONObject) -> None:
         """Store an AP Object"""
+        normalize_collection_items(resource)
         uri = str(resource["id"])
         with self.connection:
             self.connection.execute(
@@ -162,12 +162,19 @@ class SqliteResourceStore(ResourceStoreBase):
         return found is not None
 
     async def _migrated(self, document: JSONObject) -> JSONObject:
-        """Import a legacy item array into the table, then drop the key."""
-        key = next((name for name in ITEMS_KEYS if name in document), None)
-        if key is None:
+        """Import a legacy item array into the table, then drop the key.
+
+        The array may sit under "items" (written after normalisation) or under
+        "orderedItems" (written by an older build). Both are read here because this is
+        an ingest point; the document leaves without either key.
+        """
+        legacy = document.get("items")
+        if legacy is None:
+            legacy = document.get("orderedItems")
+        if legacy is None:
             return document
         collection_uri = str(document["id"])
-        items = [str(item) for item in cast(list, document.get(key) or [])]
+        items = [str(item) for item in cast(list, legacy)]
         if items and self._item_count(collection_uri) == 0:
             with self.connection:
                 # A stored document holds its items newest first; positions run the other
@@ -179,7 +186,9 @@ class SqliteResourceStore(ResourceStoreBase):
                         for index, item in enumerate(items)
                     ],
                 )
-        migrated = {name: value for name, value in document.items() if name != key}
+        migrated = {
+            name: value for name, value in document.items() if name not in ("items", "orderedItems")
+        }
         migrated["totalItems"] = self._item_count(collection_uri)
         await self.put(migrated)
         return migrated

@@ -12,7 +12,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from firm.core.interfaces import MAX_COLLECTION_PAGE_SIZE, JSONObject, ResourceStore
-from firm.core.store.collection_items import ITEMS_KEYS
 from firm.core.util import get_id, is_collection
 
 
@@ -76,7 +75,7 @@ def _for_destination(document: JSONObject) -> JSONObject:
     """`document` as the destination stores it: items live in the collection storage."""
     if not is_collection(document):
         return document
-    copied = {key: value for key, value in document.items() if key not in ITEMS_KEYS}
+    copied = {key: value for key, value in document.items() if key != "items"}
     copied["totalItems"] = 0
     return copied
 

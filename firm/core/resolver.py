@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Mapping
 
 from firm.core.interfaces import JSONObject, Tenant
-from firm.core.util import is_urn
+from firm.core.util import is_urn, normalize_collection_items
 
 if TYPE_CHECKING:
     from firm.core.remote.provider import RemoteResourceProvider
@@ -56,7 +56,8 @@ class ResourceResolver:
             return None
         if self._remote is None:
             return None
-        return await self._remote.get(uri)
+        document = await self._remote.get(uri)
+        return normalize_collection_items(document) if document else None
 
     async def remember(self, document: JSONObject) -> None:
         """Keep a document another server sent us, in the remote cache.
@@ -70,7 +71,7 @@ class ResourceResolver:
             return
         if self._remote is None:
             return
-        await self._remote.remember(document)
+        await self._remote.remember(normalize_collection_items(document))
 
     async def invalidate(self, uri: str) -> None:
         """Drop the cached copy of a document another server owns.

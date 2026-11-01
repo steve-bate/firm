@@ -218,7 +218,7 @@ async def _process_inbox_announce(
             "type": "OrderedCollection",
             "attributedTo": announced_object.get("attributedTo", context.box_owner["id"]),
             "totalItems": 0,
-            "orderedItems": [],
+            "items": [],
         }
     else:
         shares_uri = resource_id(announced_object.get("shares"))

@@ -401,7 +401,6 @@ class ActivityPubService:
             # The placeholder array kept serialization out of the item list; the header
             # carries links instead of items.
             served.pop("items", None)
-            served.pop("orderedItems", None)
             return served
         if cursor is not None:
             page = await store.page_items(collection_uri, cursor, limit=limit)
@@ -427,9 +426,7 @@ class ActivityPubService:
         collection: JSONObject, collection_uri: str, total: int, limit: int
     ) -> JSONObject:
         """The collection without its items, pointing at its first and last pages."""
-        header: JSONObject = {
-            key: value for key, value in collection.items() if key not in ("items", "orderedItems")
-        }
+        header: JSONObject = {key: value for key, value in collection.items() if key != "items"}
         header["totalItems"] = total
         header["first"] = page_uri(collection_uri, page="true", limit=limit)
         header["last"] = page_uri(collection_uri, page="last", limit=limit)

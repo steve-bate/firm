@@ -38,6 +38,7 @@ from firm.core.services.activitypub.exceptions import (
 )
 from firm.core.services.activitypub.service import post_to_inbox, resolve_box
 from firm.core.services.activitypub.support import FirmContext
+from firm.core.store.collection_items import items_of
 from firm.core.util import (
     AS2_CONTEXT,
     RECIPIENT_FIELDS,
@@ -231,10 +232,9 @@ class FirmDeliveryService(DeliveryService):
                 if depth >= self._delivery.max_expand_depth:
                     log.warning("Delivery expansion stopped at depth %d: %s", depth, uri)
                     continue
-                if "items" in document or "orderedItems" in document:
-                    items = document.get("items") or document.get("orderedItems") or []
-                    stored: list[JSONObject | str] = (
-                        cast(list[JSONObject | str], items) if isinstance(items, list) else []
+                if "items" in document:
+                    stored: list[JSONObject | str] = cast(
+                        list[JSONObject | str], items_of(document)
                     )
                 else:
                     stored = cast(

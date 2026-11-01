@@ -3,6 +3,7 @@ import uuid
 
 from firm.core.interfaces import JSONObject, QueryCriteria
 from firm.core.store.base import ResourceStoreBase
+from firm.core.util import normalize_collection_items
 
 
 class MemoryResourceStore(ResourceStoreBase):
@@ -17,6 +18,7 @@ class MemoryResourceStore(ResourceStoreBase):
         return uri in self._objects
 
     async def put(self, resource: JSONObject) -> None:
+        normalize_collection_items(resource)
         if "id" not in resource:
             # Assign a URI if one is not provided
             resource_id = f"urn:uuid:{uuid.uuid4()}"

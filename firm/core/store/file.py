@@ -19,6 +19,7 @@ from firm.core.interfaces import (
 from firm.core.store import file_collections
 from firm.core.store.base import ResourceStoreBase
 from firm.core.store.naming import uri_hash
+from firm.core.util import normalize_collection_items
 from firm.search.transform.json import JsonMatcher
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ class FileResourceStore(ResourceStoreBase):  # type: ignore
 
     async def put(self, resource: JSONObject) -> None:
         """Store an AP Object"""
+        normalize_collection_items(resource)
         if "id" not in resource:
             raise ValueError("Resource must have an 'id' property")
         with open(self._filepath(str(resource["id"])), "w") as fp:

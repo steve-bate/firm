@@ -92,3 +92,19 @@ async def test_purge_and_close_delegate_to_the_provider():
     inert = ResourceResolver({})
     assert await inert.purge() == 0
     await inert.close()
+
+
+async def test_fetch_returns_a_document_with_the_internal_item_key():
+    collection = {
+        "id": "http://remote.test/c",
+        "type": "OrderedCollection",
+        "orderedItems": ["a"],
+    }
+    transport = StubTransport({"http://remote.test/c": json_response(collection)})
+    resolver = ResourceResolver({}, _provider(transport))
+
+    fetched = await resolver.fetch("http://remote.test/c")
+
+    assert fetched is not None
+    assert fetched["items"] == ["a"]
+    assert "orderedItems" not in fetched

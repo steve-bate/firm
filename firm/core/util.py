@@ -240,8 +240,22 @@ def get_collection_items(collection: JSONObject) -> list[JSON]:
 
 
 def set_collection_items(collection: JSONObject, items: list[JSON]) -> None:
-    items_key = get_collection_items_key(collection)
-    collection[items_key] = items
+    """Set the collection's item list under the internal storage key."""
+    collection["items"] = items
+
+
+def normalize_collection_items(resource: JSONObject) -> JSONObject:
+    """Rewrite a wire item key to the internal one, in place.
+
+    A document that already uses "items" is untouched. One carrying "orderedItems" is
+    renamed; when both keys are present "items" wins, because that is the key internal
+    code writes. Called wherever a document enters the server: every store's ``put``
+    and the remote fetch paths.
+    """
+    if "orderedItems" in resource:
+        wire_items = resource.pop("orderedItems")
+        resource.setdefault("items", wire_items)
+    return resource
 
 
 def get_list(obj: JSONObject, key: str) -> list[JSON]:

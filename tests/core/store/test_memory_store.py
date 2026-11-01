@@ -30,3 +30,13 @@ async def test_get_hands_back_a_document_the_caller_may_modify() -> None:
     fetched["to"] = []
 
     assert await region.get("test") == {"id": "test", "type": "Something", "to": ["as:Public"]}
+
+
+async def test_put_renames_ordered_items_to_items() -> None:
+    region = MemoryResourceStore()
+    await region.put({"id": "http://t.test/c", "type": "OrderedCollection", "orderedItems": ["a"]})
+
+    stored = await region.get("http://t.test/c")
+    assert stored is not None
+    assert stored["items"] == ["a"]
+    assert "orderedItems" not in stored

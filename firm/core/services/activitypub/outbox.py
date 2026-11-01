@@ -302,7 +302,7 @@ async def _process_outbox_add(context: FirmBoxContext, activity: JSONObject) -> 
         raise InvalidResourceException("Invalid target collection")
     if "id" not in target:
         raise InvalidRequestException("Target collection has no ID")
-    if "items" not in target and "orderedItems" not in target:
+    if "items" not in target:
         if not is_type_any(target, ("Collection", "OrderedCollection")):
             raise InvalidResourceException("Target collection has no items property")
     if "object" not in activity:

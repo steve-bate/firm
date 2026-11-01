@@ -22,7 +22,7 @@ from firm.core.interfaces import (
     decode_start,
     encode_start,
 )
-from firm.core.store.collection_items import ITEMS_KEYS, decode_cursor, encode_cursor
+from firm.core.store.collection_items import decode_cursor, encode_cursor
 from firm.core.store.naming import uri_hash
 
 BLOCK = 128
@@ -168,14 +168,22 @@ async def migrate(
     A document holds its items newest first and the log holds them oldest first, so the
     array is written reversed. A log that already holds lines wins: the collection has been
     migrated, and the document's array is then simply stale.
+
+    The array may sit under "items" (written after normalisation) or under
+    "orderedItems" (written by an older build). Both are read here because this is an
+    ingest point; the document leaves without either key.
     """
-    key = next((name for name in ITEMS_KEYS if name in document), None)
-    if key is None:
+    legacy = document.get("items")
+    if legacy is None:
+        legacy = document.get("orderedItems")
+    if legacy is None:
         return document
-    items = [str(item) for item in cast(list, document.get(key) or [])]
+    items = [str(item) for item in cast(list, legacy)]
     if items and not paths.exists:
         rewrite(paths, list(reversed(items)))
-    migrated = {name: value for name, value in document.items() if name != key}
+    migrated = {
+        name: value for name, value in document.items() if name not in ("items", "orderedItems")
+    }
     migrated["totalItems"] = len(_all_lines(paths))
     await store.put(migrated)
     return migrated
