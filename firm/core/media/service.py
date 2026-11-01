@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from firm.core.interfaces import Identity, JSONObject, Tenant
+from firm.core.services.activitypub.support import generate_id
 from firm.core.services.exception import ServiceException
 from firm.core.util import AS2_CONTEXT
 
@@ -51,9 +52,9 @@ class MediaUploadService:
       to a JSON object.
     * Validate that the request is authenticated.
     * Persist the uploaded bytes under the tenant's per-actor files directory.
-    * Finalise the AS2 object shell: assign a permanent ``id``, set ``url``
-      to the publicly accessible media URL, and ensure ``attributedTo`` is
-      set.
+    * Finalise the AS2 object shell: assign an ``id`` in the actor's object
+      namespace, set ``url`` to the publicly accessible media URL, and ensure
+      ``attributedTo`` is set.
     * Store the finished object in the tenant's public resource store.
     * Return the new object, whose ``id`` the HTTP layer uses as the
       ``Location`` response header value.
@@ -162,7 +163,10 @@ class MediaUploadService:
         if inner.get("type") == "Create" and isinstance(inner.get("object"), dict):
             inner = dict(inner["object"])  # type: ignore[arg-type]
 
-        inner["id"] = f"{tenant.prefix}/actors/{username}/media/{file_id}"
+        # The id belongs in the object namespace, not the media one: the file route
+        # serves bytes only, so an id under it would never reach the object stored
+        # here. ``generate_id`` is the same id shape every other created object gets.
+        inner["id"] = generate_id(principal.uri, inner)
         inner["url"] = media_url
         if "attributedTo" not in inner:
             inner["attributedTo"] = actor_uri

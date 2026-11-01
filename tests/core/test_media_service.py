@@ -87,7 +87,11 @@ async def test_upload_stores_the_bytes_and_finalises_the_object(
     stored = await _upload(service, tenant, principal)
 
     digest = hashlib.sha256(b"png").hexdigest()
-    assert stored["id"] == f"http://tenant1.test/actors/user1/media/{digest}"
+    # The id names the object; only ``url`` names the file. An id under the media
+    # route would be claimed by it and never reach the stored object.
+    object_id = str(stored["id"])
+    assert object_id.startswith("http://tenant1.test/user1/image/")
+    assert object_id != f"http://tenant1.test/actors/user1/media/{digest}"
     assert stored["url"] == f"http://tenant1.test/actors/user1/media/{digest}.png"
     assert stored["attributedTo"] == "http://tenant1.test/user1", "the uploader is attributed"
     assert (Path(tenant.files) / "user1" / "media" / f"{digest}.png").read_bytes() == b"png"
