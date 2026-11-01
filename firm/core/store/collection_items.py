@@ -99,14 +99,19 @@ async def insert_item(
 
 
 async def remove_item(store: CollectionDocumentStore, collection_uri: str, item_uri: str) -> int:
+    """Remove every copy of item_uri; return the item count.
+
+    AS2 puts no uniqueness rule on collection items, so a collection may hold the same URI
+    more than once. Removal means the item is gone, which is what every caller assumes.
+    """
     document = await _require(store, collection_uri)
     items = items_of(document)
-    if item_uri not in items:
+    remaining = [item for item in items if item != item_uri]
+    if len(remaining) == len(items):
         return len(items)
-    items.remove(item_uri)
-    _store_items(document, items)
+    _store_items(document, remaining)
     await store.put(document)
-    return len(items)
+    return len(remaining)
 
 
 async def contains_item(store: CollectionDocumentStore, collection_uri: str, item_uri: str) -> bool:

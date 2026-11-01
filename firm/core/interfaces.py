@@ -211,8 +211,10 @@ class ResourceStore(Protocol):
         ...
 
     async def remove_item(self, collection_uri: str, item_uri: str) -> int:
-        """Remove item_uri if the collection holds it; return the item count.
+        """Remove every copy of item_uri; return the item count.
 
+        AS2 puts no uniqueness rule on collection items, so the collection may hold the URI
+        more than once; removal means the item is gone, which is what every caller assumes.
         Removing an absent item writes nothing. Raises ``UnknownCollectionError`` for a
         collection that does not exist.
         """

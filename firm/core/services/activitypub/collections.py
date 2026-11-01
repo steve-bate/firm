@@ -35,7 +35,7 @@ async def add_collection_item(store: ResourceStore, collection_uri: str, item_ur
 
 
 async def remove_collection_item(store: ResourceStore, collection_uri: str, item_uri: str) -> int:
-    """Remove item_uri from collection_uri if the collection holds it; return the count."""
+    """Remove every copy of item_uri from collection_uri; return the count."""
     return await store.remove_item(collection_uri, item_uri)
 
 

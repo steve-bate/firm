@@ -262,3 +262,14 @@ async def test_insert_into_an_unordered_collection_adds_the_item(store):
     assert await store.insert_item(OTHER, "b", offset=0) == 2
     page = await store.page_items(OTHER, limit=10)
     assert sorted(page.items) == ["a", "b"]
+
+
+async def test_remove_drops_every_copy(store):
+    """Removal means the item is gone; duplicates do not survive it."""
+    await _seeded(store, "a", "b")
+    assert await store.insert_item(COLLECTION, "a") == 3
+    assert (await store.page_items(COLLECTION)).items == ("a", "b", "a")
+
+    assert await store.remove_item(COLLECTION, "a") == 1
+    assert (await store.page_items(COLLECTION)).items == ("b",)
+    assert await store.contains_item(COLLECTION, "a") is False
