@@ -4,8 +4,6 @@ import time
 from typing import Any, AsyncIterable, Mapping, MutableMapping, cast
 from urllib.parse import urlparse
 
-from anyio import Path
-
 from firm.core.delivery.queue import Delivery, MemoryDeliveryQueue
 from firm.core.interfaces import (
     DEFAULT_HTTP_TIMEOUT,
@@ -34,7 +32,6 @@ from firm.core.remote.provider import RemoteResourceProvider
 from firm.core.resolver import ResourceResolver
 from firm.core.services.activitypub.support import FirmContext
 from firm.core.store.memory import MemoryResourceStore
-from firm.server.config import MemoryStoreConfig, ServerConfig
 
 
 class StubUrl:
@@ -271,11 +268,6 @@ class StubState(HttpApplicationState):
     def tenants(self) -> Mapping[str, Tenant]:
         """Mapping of tenant URIs to Tenant objects."""
         return {}
-
-    @property
-    def config(self) -> ServerConfig:
-        """Application configuration settings."""
-        return ServerConfig([], store=MemoryStoreConfig(files=Path("/tmp")))
 
 
 class StubApplication(HttpApplication):

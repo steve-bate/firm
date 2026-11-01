@@ -20,8 +20,6 @@ from typing import (
 )
 from urllib.parse import parse_qs, urlparse
 
-from firm.server.config import ServerConfig
-
 # https://github.com/python/typing/issues/182#issuecomment-1320974824
 
 JSONObject: TypeAlias = MutableMapping[str, "JSON"]
@@ -322,11 +320,6 @@ class HttpApplicationState(Protocol):
     @property
     def tenants(self) -> Mapping[str, Tenant]:
         """Mapping of tenant URIs to Tenant objects."""
-        ...
-
-    @property
-    def config(self) -> ServerConfig:
-        """The server configuration."""
         ...
 
 
