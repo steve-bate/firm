@@ -55,7 +55,7 @@ from firm.streaming.endpoint import sse_client_page_endpoint
 from firm.streaming.sse.notifier import StreamEvent, StreamNotifier, get_notifier
 from firm.streaming.sse.router import create_sse_router
 
-from ..core.media.endpoints import create_media_upload_router
+from .media import create_media_upload_router
 from .proxy import proxy
 
 log = logging.getLogger(__name__)

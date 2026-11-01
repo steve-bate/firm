@@ -2,11 +2,12 @@
 FastAPI router for the ActivityPub MediaUpload protocol.
 https://www.w3.org/wiki/SocialCG/ActivityPub/MediaUpload
 
-HTTP-independent business logic lives in ``firm.core.services.media_upload``.
+This module is the HTTP adapter and nothing else: it takes the request's form
+parts apart and maps the service's outcomes to status codes. What an upload
+must contain, and which paths are servable, is decided in
+``firm.core.media.service``.
 """
 
-import json
-import logging
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 
@@ -16,13 +17,13 @@ from starlette.responses import FileResponse, Response
 
 from firm.core.interfaces import Principal
 from firm.core.media.service import (
+    InvalidMediaPathException,
     InvalidMediaUploadException,
+    MediaNotFoundException,
     MediaUploadService,
     NotAuthorizedException,
 )
 from firm.server.auth import get_principal
-
-log = logging.getLogger(__name__)
 
 _UPLOAD_PATH = "/media/upload"
 _SERVE_PATH = "/actors/{username}/media/{filename}"
@@ -74,46 +75,42 @@ def create_media_upload_router() -> APIRouter:
         file_field = form.get("file")
         object_field = form.get("object")
 
-        if file_field is None or object_field is None:
-            raise HTTPException(
-                HTTPStatus.BAD_REQUEST, "Both 'file' and 'object' form fields are required"
-            )
-
-        # file_field is an UploadFile from FastAPI/Starlette
-        file_data: bytes = await file_field.read()  # type: ignore[union-attr]
-        content_type: str = getattr(file_field, "content_type", None) or "application/octet-stream"
-        filename: str = getattr(file_field, "filename", None) or "upload"
-
-        # object_field may be a plain string or an UploadFile (when the part
-        # carries its own Content-Type header, Starlette wraps it in UploadFile).
+        # The object part arrives as text, or as an UploadFile when the client
+        # gives the part its own Content-Type header.
+        object_text: str | None
         if isinstance(object_field, str):
-            raw_object = object_field
+            object_text = object_field
+        elif object_field is None:
+            object_text = None
         else:
-            raw_object = (await object_field.read()).decode()  # type: ignore[union-attr]
+            object_text = (await object_field.read()).decode()
 
-        try:
-            object_shell = json.loads(raw_object)
-        except (json.JSONDecodeError, ValueError):
-            raise HTTPException(HTTPStatus.BAD_REQUEST, "The 'object' field must be valid JSON")
+        file_data: bytes | None
+        if file_field is None:
+            file_data = None
+        elif isinstance(file_field, str):
+            file_data = file_field.encode()
+        else:
+            file_data = await file_field.read()
 
         try:
             media_object = await service.process_upload(
                 tenant=request.state.tenant,
                 principal=principal,
-                object_shell=object_shell,
+                object_text=object_text,
                 file_data=file_data,
-                content_type=content_type,
-                filename=filename,
+                content_type=getattr(file_field, "content_type", None)
+                or "application/octet-stream",
+                filename=getattr(file_field, "filename", None) or "upload",
             )
         except NotAuthorizedException as e:
             raise HTTPException(HTTPStatus.FORBIDDEN, detail=str(e))
         except InvalidMediaUploadException as e:
             raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
 
-        print(json.dumps(media_object, indent=2))
         return JSONResponse(
             status_code=HTTPStatus.CREATED.value,
-            headers={"Location": media_object["id"]},
+            headers={"Location": str(media_object["id"])},
             content=media_object,
         )
 
@@ -121,28 +118,16 @@ def create_media_upload_router() -> APIRouter:
     async def serve_media(request: Request, username: str, filename: str) -> Response:
         """Serve a previously uploaded media file.
 
-        Path traversal is prevented by accepting only the bare filename
-        (no directory separators or parent-directory segments).
+        The service accepts only a bare username and filename, and refuses any
+        path that resolves outside the tenant's files directory — which is what
+        a symlink pointing elsewhere would otherwise get past.
         """
-        # Reject any attempt to escape the actor's files directory.
-        safe_filename = filename.replace("\\", "/")
-        if ".." in safe_filename or "/" in safe_filename:
-            raise HTTPException(HTTPStatus.BAD_REQUEST, "Invalid filename")
-        safe_username = username.replace("\\", "/")
-        if ".." in safe_username or "/" in safe_username:
-            raise HTTPException(HTTPStatus.BAD_REQUEST, "Invalid username")
-
-        tenant = request.state.tenant
-        file_path = (tenant.files / safe_username / "media" / safe_filename).resolve()
-
-        # Ensure the resolved path is still inside the tenant files directory.
         try:
-            file_path.relative_to(tenant.files.resolve())
-        except ValueError:
-            raise HTTPException(HTTPStatus.BAD_REQUEST, "Invalid path")
-
-        if not file_path.is_file():
-            raise HTTPException(HTTPStatus.NOT_FOUND, "File not found")
+            file_path = service.resolve_media_path(request.state.tenant, username, filename)
+        except InvalidMediaPathException as e:
+            raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
+        except MediaNotFoundException as e:
+            raise HTTPException(HTTPStatus.NOT_FOUND, detail=str(e))
 
         return FileResponse(file_path)
 
