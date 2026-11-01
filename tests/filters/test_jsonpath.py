@@ -20,7 +20,7 @@ COLLECTION = {
     "id": "https://example.social/users/alice/outbox",
     "type": "OrderedCollection",
     "totalItems": 11,
-    "orderedItems": [
+    "items": [
         {
             "@context": "https://www.w3.org/ns/activitystreams",
             "id": "https://example.social/activities/1",

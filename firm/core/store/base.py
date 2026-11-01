@@ -35,8 +35,8 @@ class ResourceStoreBase(ABC):
     @abstractmethod
     async def query(self, criteria: QueryCriteria) -> list[JSONObject]: ...
 
-    async def append_item(self, collection_uri: str, item_uri: str) -> int:
-        return await collection_items.append_item(self, collection_uri, item_uri)
+    async def insert_item(self, collection_uri: str, item_uri: str, *, offset: int = 0) -> int:
+        return await collection_items.insert_item(self, collection_uri, item_uri, offset=offset)
 
     async def remove_item(self, collection_uri: str, item_uri: str) -> int:
         return await collection_items.remove_item(self, collection_uri, item_uri)

@@ -194,12 +194,19 @@ class ResourceStore(Protocol):
         """Close any resources used by the store (e.g., database connections)"""
         ...
 
-    async def append_item(self, collection_uri: str, item_uri: str) -> int:
-        """Add item_uri as the collection's newest item; return the item count.
+    async def insert_item(self, collection_uri: str, item_uri: str, *, offset: int = 0) -> int:
+        """Insert item_uri into the collection at ``offset``; return the item count.
 
-        Items are not required to be unique: appending an item the collection already
-        holds adds a second entry, because uniqueness is the caller's policy, not storage's.
-        Raises ``UnknownCollectionError`` for a collection that does not exist.
+        For an ``OrderedCollection`` the offset is honoured: ``0`` is the front of the
+        served order, ``-1`` the end, and ``n`` the position before the item currently
+        served at index ``n``. A ``Collection`` has no order, so the offset is ignored
+        and the item takes whatever slot the store finds cheapest; no page order is
+        promised for one.
+
+        Items are not required to be unique: inserting an item the collection already
+        holds adds a second entry, because uniqueness is the caller's policy, not
+        storage's. Raises ``UnknownCollectionError`` for a collection that does not
+        exist.
         """
         ...
 

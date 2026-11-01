@@ -1,8 +1,8 @@
 """Collection item lists, stored inside the collection document.
 
-The item list of an ActivityPub collection is a JSON array of URIs, newest first. This module
-implements the collection methods on ResourceStore for the stores that keep that array in the
-collection document.
+A collection's item array is held under "items". For an OrderedCollection the array order is
+the collection's order; for a Collection the order carries no meaning. This module implements
+the collection methods on ResourceStore for the stores that keep that array in the document.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from firm.core.interfaces import (
     decode_start,
     encode_start,
 )
+from firm.core.util import is_ordered_collection
 
 
 class CollectionDocumentStore(Protocol):
@@ -28,24 +29,27 @@ class CollectionDocumentStore(Protocol):
     async def put(self, resource: JSONObject) -> None: ...
 
 
-# "items" is what this module writes; "orderedItems" is the key older documents use.
-ITEMS_KEYS = ("items", "orderedItems")
+ITEMS = "items"
 
 
 def items_of(document: JSONObject) -> list[Any]:
     """The collection's item list, or an empty list when it holds none."""
-    for key in ITEMS_KEYS:
-        value = document.get(key)
-        if isinstance(value, list):
-            return value
-    return []
+    items = document.get(ITEMS)
+    return items if isinstance(items, list) else []
 
 
-def items_key_of(document: JSONObject) -> str:
-    """The key the item list is written back to, preserving the document's own key."""
-    if "items" not in document and "orderedItems" in document:
-        return "orderedItems"
-    return "items"
+def insertion_index(count: int, offset: int) -> int:
+    """The array index an ordered collection's `offset` names.
+
+    0 is the front, -1 the end, and n is before the item currently at index n. This is the
+    only definition of an offset in the codebase; every store calls it, and only for a
+    collection whose order is meaningful.
+    """
+    if offset < -1:
+        raise ValueError("offset must be 0, -1, or a non-negative index")
+    if offset == -1:
+        return count
+    return min(offset, count)
 
 
 def encode_cursor(index: int, item: str) -> str:
@@ -69,14 +73,26 @@ async def _require(store: CollectionDocumentStore, collection_uri: str) -> JSONO
 
 
 def _store_items(document: JSONObject, items: list[Any]) -> None:
-    document[items_key_of(document)] = items
+    document[ITEMS] = items
     document["totalItems"] = len(items)
 
 
-async def append_item(store: CollectionDocumentStore, collection_uri: str, item_uri: str) -> int:
+async def insert_item(
+    store: CollectionDocumentStore,
+    collection_uri: str,
+    item_uri: str,
+    *,
+    offset: int = 0,
+) -> int:
     document = await _require(store, collection_uri)
     items = items_of(document)
-    items.insert(0, item_uri)
+    if is_ordered_collection(document):
+        index = insertion_index(len(items), offset)
+    else:
+        # A Collection has no order, so the offset is ignored and the item takes the
+        # cheapest slot this storage offers: the end of the array.
+        index = len(items)
+    items.insert(index, item_uri)
     _store_items(document, items)
     await store.put(document)
     return len(items)

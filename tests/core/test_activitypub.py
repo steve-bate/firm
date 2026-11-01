@@ -1658,9 +1658,38 @@ async def test_a_migrated_collection_is_served_with_its_items(tmp_path):
 
     newer_uri = f"{prefix}/note/2"
     await store.put({"id": newer_uri, "type": "Note", "attributedTo": f"{prefix}/user1"})
-    await store.append_item(collection_uri, newer_uri)
+    await store.insert_item(collection_uri, newer_uri)
 
     served = await serialize(make_context(tenant), await store.get(collection_uri))
 
     assert [item["id"] for item in served["orderedItems"]] == [newer_uri, item_uri]
     assert "items" not in await store.get(collection_uri), "the array is gone from the document"
+
+
+async def test_serialization_uses_the_wire_item_key(service: ActivityPubService, tenant: Tenant):
+    """An OrderedCollection is served as orderedItems; a Collection as items."""
+    await tenant.public_store.put({"id": "http://tenant1.test/obj", "type": "Note"})
+    documents: list[JSONObject] = [
+        {
+            "id": "http://tenant1.test/ordered",
+            "type": "OrderedCollection",
+            "items": ["http://tenant1.test/obj"],
+        },
+        {
+            "id": "http://tenant1.test/plain",
+            "type": "Collection",
+            "items": ["http://tenant1.test/obj"],
+        },
+    ]
+    for document in documents:
+        await tenant.public_store.put(document)
+    ordered = await service.process_get(
+        make_context(tenant), StubUrl.parse("http://tenant1.test/ordered"), {}
+    )
+    plain = await service.process_get(
+        make_context(tenant), StubUrl.parse("http://tenant1.test/plain"), {}
+    )
+    ordered_items = cast(list[JSONObject], ordered["orderedItems"])
+    plain_items = cast(list[JSONObject], plain["items"])
+    assert [item["id"] for item in ordered_items] == ["http://tenant1.test/obj"]
+    assert [item["id"] for item in plain_items] == ["http://tenant1.test/obj"]

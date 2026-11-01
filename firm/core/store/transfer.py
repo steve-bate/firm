@@ -1,7 +1,7 @@
 """Copy one store's documents and collection items into another store.
 
 The copy uses only the ``ResourceStore`` API, so any pair of backends works: the source is read
-with ``query`` and ``page_items``, the destination written with ``put`` and ``append_item``.
+with ``query`` and ``page_items``, the destination written with ``put`` and ``insert_item``.
 Collections arrive migrated: the item array stays behind, the items go into the destination's
 collection storage, and the document's ``totalItems`` is left at zero for the appends to count
 up, which is the line index the file store expects.
@@ -53,7 +53,7 @@ async def copy_store(
     for collection_uri in collection_uris:
         oldest_first = await _items_oldest_first(source, collection_uri)
         for item_uri in oldest_first:
-            await destination.append_item(collection_uri, item_uri)
+            await destination.insert_item(collection_uri, item_uri)
         items += len(oldest_first)
     return CopyReport(len(documents), len(collection_uris), items)
 

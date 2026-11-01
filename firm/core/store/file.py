@@ -106,8 +106,8 @@ class FileResourceStore(ResourceStoreBase):  # type: ignore
             matched += 1
         return SearchPage(documents=tuple(documents), total=matched, start_index=start)
 
-    async def append_item(self, collection_uri: str, item_uri: str) -> int:
-        return await file_collections.append_item(self, collection_uri, item_uri)
+    async def insert_item(self, collection_uri: str, item_uri: str, *, offset: int = 0) -> int:
+        return await file_collections.insert_item(self, collection_uri, item_uri, offset=offset)
 
     async def remove_item(self, collection_uri: str, item_uri: str) -> int:
         return await file_collections.remove_item(self, collection_uri, item_uri)

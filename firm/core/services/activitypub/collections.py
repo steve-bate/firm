@@ -19,16 +19,19 @@ log = logging.getLogger(__name__)
 
 
 async def add_collection_item(store: ResourceStore, collection_uri: str, item_uri: str) -> int:
-    """Add item_uri to collection_uri as its newest item; return the new count.
+    """Insert item_uri into collection_uri; return the new count.
 
-    The item is added once: the store appends whatever it is given, duplicates included —
+    The item goes in at ``offset``: 0 (the default) is the front, -1 the end. A relationship
+    collection is a set, so its callers leave the default.
+
+    The item is added once: the store inserts whatever it is given, duplicates included —
     AS2 puts no uniqueness rule on collection items — so a caller that wants a set asks the
     store whether it already holds the item, which is what every current caller wants.
     Raises ``UnknownCollectionError`` for a collection that does not exist.
     """
     if await store.contains_item(collection_uri, item_uri):
         return await store.count_items(collection_uri)
-    return await store.append_item(collection_uri, item_uri)
+    return await store.insert_item(collection_uri, item_uri)
 
 
 async def remove_collection_item(store: ResourceStore, collection_uri: str, item_uri: str) -> int:

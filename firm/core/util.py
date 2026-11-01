@@ -231,12 +231,9 @@ def get_collection_items_key(collection: JSONObject) -> str:
 
 
 def get_collection_items(collection: JSONObject) -> list[JSON]:
-    items_key = get_collection_items_key(collection)
-    items = collection.get(items_key, [])
-    if isinstance(items, list):
-        return items
-    else:
-        return []
+    """The collection's item list, internally always under "items"."""
+    items = collection.get("items", [])
+    return items if isinstance(items, list) else []
 
 
 def set_collection_items(collection: JSONObject, items: list[JSON]) -> None:

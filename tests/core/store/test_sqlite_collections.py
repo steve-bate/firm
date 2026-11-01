@@ -28,7 +28,7 @@ async def _collection(store, **document):
 async def _seeded(store, *items):
     await _collection(store)
     for item in items:
-        await store.append_item(COLLECTION, item)
+        await store.insert_item(COLLECTION, item)
 
 
 def _rows(store):
@@ -56,7 +56,7 @@ async def test_append_assigns_increasing_positions(store):
 async def test_append_writes_a_second_row_for_a_duplicate(store):
     await _seeded(store, "a")
 
-    count = await store.append_item(COLLECTION, "a")
+    count = await store.insert_item(COLLECTION, "a")
 
     assert count == 2
     assert _rows(store) == [(1, "a"), (2, "a")], "AS2 does not require unique items"
@@ -141,3 +141,30 @@ async def test_the_table_wins_when_both_exist(store):
     assert (await store.page_items(COLLECTION)).items == ("a", "b"), "the rows are served"
     assert _rows(store) == [(1, "b"), (2, "a")], "nothing is re-imported or duplicated"
     assert "items" not in _document(store)
+
+
+async def test_insert_at_the_end_serves_the_item_last(store):
+    await _collection(store, items=["a"])
+    await store.insert_item(COLLECTION, "b", offset=-1)
+    page = await store.page_items(COLLECTION, limit=10)
+    assert page.items == ("a", "b")
+
+
+async def test_insert_at_an_index_places_the_item_before_it(store):
+    await _collection(store, items=["a", "b", "c"])
+    await store.insert_item(COLLECTION, "x", offset=1)
+    page = await store.page_items(COLLECTION, limit=10)
+    assert page.items == ("a", "x", "b", "c")
+
+
+async def test_insert_rejects_an_offset_below_minus_one(store):
+    await _collection(store, items=["a"])
+    with pytest.raises(ValueError):
+        await store.insert_item(COLLECTION, "b", offset=-2)
+
+
+async def test_insert_ignores_the_offset_for_an_unordered_collection(store):
+    await store.put({"id": COLLECTION, "type": "Collection", "items": ["a"]})
+    await store.insert_item(COLLECTION, "b", offset=-1)
+    page = await store.page_items(COLLECTION, limit=10)
+    assert page.items == ("b", "a"), "a Collection has no order, so -1 does not mean the end"

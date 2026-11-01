@@ -20,6 +20,7 @@ from firm.core.store.memory import MemoryResourceStore
 from firm.core.store.sqlite import SqliteResourceStore
 
 COLLECTION = "http://server.test/collection"
+OTHER = "http://server.test/plain"
 
 
 @pytest.fixture(params=["memory", "file", "sqlite"])
@@ -45,14 +46,14 @@ async def _collection(store, *items, key="items"):
 async def _seeded(store, *items):
     await _collection(store)
     for item in items:
-        await store.append_item(COLLECTION, item)
+        await store.insert_item(COLLECTION, item)
 
 
 async def test_append_prepends_and_counts(store):
     await _collection(store)
-    assert await store.append_item(COLLECTION, "a") == 1
-    assert await store.append_item(COLLECTION, "b") == 2
-    assert await store.append_item(COLLECTION, "c") == 3
+    assert await store.insert_item(COLLECTION, "a") == 1
+    assert await store.insert_item(COLLECTION, "b") == 2
+    assert await store.insert_item(COLLECTION, "c") == 3
     assert (await store.page_items(COLLECTION)).items == ("c", "b", "a")
     assert (await store.get(COLLECTION))["totalItems"] == 3, "the wire reads totalItems"
 
@@ -60,13 +61,13 @@ async def test_append_prepends_and_counts(store):
 async def test_append_allows_duplicates(store):
     """AS2 does not require unique items; refusing them is the caller's policy."""
     await _seeded(store, "a")
-    assert await store.append_item(COLLECTION, "a") == 2
+    assert await store.insert_item(COLLECTION, "a") == 2
     assert (await store.page_items(COLLECTION)).items == ("a", "a")
 
 
 async def test_append_to_an_unknown_collection_raises(store):
     with pytest.raises(UnknownCollectionError):
-        await store.append_item("http://server.test/missing", "a")
+        await store.insert_item("http://server.test/missing", "a")
 
 
 async def test_unknown_collection_error_is_a_value_error(store):
@@ -77,7 +78,7 @@ async def test_unknown_collection_error_is_a_value_error(store):
 async def test_page_covers_a_collection_stored_with_ordered_items(store):
     """Documents written by older code use orderedItems as their storage key."""
     await _collection(store, "a", key="orderedItems")
-    await store.append_item(COLLECTION, "b")
+    await store.insert_item(COLLECTION, "b")
     assert (await store.page_items(COLLECTION)).items == ("b", "a")
     assert await store.count_items(COLLECTION) == 2
 
@@ -140,7 +141,7 @@ async def test_page_cursor_survives_an_append(store):
     await _seeded(store, "a", "b", "c", "d", "e", "f")
     first = await store.page_items(COLLECTION, limit=2)
     assert first.items == ("f", "e")
-    await store.append_item(COLLECTION, "g")
+    await store.insert_item(COLLECTION, "g")
     second = await store.page_items(COLLECTION, first.cursor, limit=2)
     assert second.items == ("d", "c"), "the appended item shifts the walk, not repeats it"
 
@@ -228,3 +229,36 @@ async def test_prev_cursor_walks_backwards(store):
     assert back.items == ("e", "d"), "the page before it"
     assert back.start_index == 0
     assert back.prev_cursor is None
+
+
+async def test_insert_defaults_to_the_front(store):
+    await _collection(store, "a", "b")
+    await store.insert_item(COLLECTION, "c")
+    page = await store.page_items(COLLECTION, limit=10)
+    assert page.items == ("c", "a", "b")
+
+
+async def test_insert_at_the_end_places_the_item_last(store):
+    await _collection(store, "a", "b")
+    await store.insert_item(COLLECTION, "c", offset=-1)
+    page = await store.page_items(COLLECTION, limit=10)
+    assert page.items == ("a", "b", "c")
+
+
+async def test_insert_at_an_index_places_the_item_before_it(store):
+    await _collection(store, "a", "b", "c")
+    await store.insert_item(COLLECTION, "x", offset=1)
+    page = await store.page_items(COLLECTION, limit=10)
+    assert page.items == ("a", "x", "b", "c")
+
+
+async def test_insert_into_an_unordered_collection_adds_the_item(store):
+    """A Collection has no order, so any position is acceptable; only membership is asserted.
+
+    The placement differs per backend (the end of an array, the tail of a log, the top of
+    a position column), and the backend-specific test files pin each one.
+    """
+    await store.put({"id": OTHER, "type": "Collection", "items": ["a"], "totalItems": 1})
+    assert await store.insert_item(OTHER, "b", offset=0) == 2
+    page = await store.page_items(OTHER, limit=10)
+    assert sorted(page.items) == ["a", "b"]

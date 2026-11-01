@@ -318,7 +318,8 @@ async def _process_outbox_add(context: FirmBoxContext, activity: JSONObject) -> 
         object_["attributedTo"] = activity.get("actor", context.tenant.prefix)
     store = context.tenant.public_store
     await store.put(object_)
-    await store.append_item(resource_id(target), resource_id(object_))
+    # The outbox is newest first.
+    await store.insert_item(resource_id(target), resource_id(object_))
     activity["target"] = resource_id(target)
     activity["object"] = resource_id(object_)
     # Save the activity

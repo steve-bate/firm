@@ -22,8 +22,13 @@ from firm.core.interfaces import (
     decode_start,
     encode_start,
 )
-from firm.core.store.collection_items import decode_cursor, encode_cursor
+from firm.core.store.collection_items import (
+    decode_cursor,
+    encode_cursor,
+    insertion_index,
+)
 from firm.core.store.naming import uri_hash
+from firm.core.util import is_ordered_collection
 
 BLOCK = 128
 RECORD = 8
@@ -207,11 +212,34 @@ def _total(document: JSONObject) -> int:
     return total if isinstance(total, int) else 0
 
 
-async def append_item(store: FileCollectionStore, collection_uri: str, item_uri: str) -> int:
+async def insert_item(
+    store: FileCollectionStore,
+    collection_uri: str,
+    item_uri: str,
+    *,
+    offset: int = 0,
+) -> int:
+    """Insert an item at ``offset``; the log runs oldest first, pages newest first.
+
+    Offset 0 is one log append, which serves at the front. Offset -1 and any index rewrite
+    the log, because a position other than the front cannot be written in place. A
+    Collection has no order, so its offset is ignored and the cheap append is used.
+    """
     document, paths = await _prepare(store, collection_uri, required=True)
     assert document is not None
     total = _total(document)
-    append_line(paths, item_uri, total)
+    if is_ordered_collection(document):
+        index = insertion_index(total, offset)
+    else:
+        # A Collection has no order: the cheapest slot is a plain log append, which
+        # serves at the front.
+        index = 0
+    if index == 0:
+        append_line(paths, item_uri, total)
+    else:
+        lines = _all_lines(paths)
+        line = len(lines) - index
+        rewrite(paths, lines[:line] + [item_uri] + lines[line:])
     members(paths).add(_digest(item_uri))
     document["totalItems"] = total + 1
     await store.put(document)

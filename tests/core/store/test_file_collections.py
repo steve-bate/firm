@@ -34,7 +34,7 @@ async def _collection(store, uri: str = COLLECTION) -> None:
 async def _seeded(store, *items, uri: str = COLLECTION) -> None:
     await _collection(store, uri)
     for item in items:
-        await file_collections.append_item(store, uri, item)
+        await file_collections.insert_item(store, uri, item)
 
 
 def _paths(store, uri: str = COLLECTION):
@@ -43,7 +43,7 @@ def _paths(store, uri: str = COLLECTION):
 
 async def test_append_writes_one_log_line(store):
     await _collection(store)
-    await file_collections.append_item(store, COLLECTION, "a")
+    await file_collections.insert_item(store, COLLECTION, "a")
 
     paths = _paths(store)
     assert paths.log.read_text() == "a\n"
@@ -53,7 +53,7 @@ async def test_append_writes_one_log_line(store):
 async def test_append_writes_an_index_record_each_block(store):
     await _collection(store)
     for n in range(file_collections.BLOCK + 1):
-        await file_collections.append_item(store, COLLECTION, f"item-{n}")
+        await file_collections.insert_item(store, COLLECTION, f"item-{n}")
 
     paths = _paths(store)
     assert paths.index.stat().st_size == 16, "two blocks started: lines 0 and 128"
@@ -62,13 +62,13 @@ async def test_append_writes_an_index_record_each_block(store):
 async def test_append_writes_a_second_line_for_a_duplicate(store):
     await _seeded(store, "a")
 
-    assert await file_collections.append_item(store, COLLECTION, "a") == 2
+    assert await file_collections.insert_item(store, COLLECTION, "a") == 2
     assert _paths(store).log.read_text() == "a\na\n"
 
 
 async def test_append_to_an_unknown_collection_raises(store):
     with pytest.raises(UnknownCollectionError):
-        await file_collections.append_item(store, "http://server.test/missing", "a")
+        await file_collections.insert_item(store, "http://server.test/missing", "a")
 
 
 async def test_count_comes_from_the_document(store):
@@ -144,7 +144,7 @@ async def test_cursor_survives_an_append(store):
     await _seeded(store, *["a", "b", "c", "d", "e", "f"])
     first = await file_collections.page_items(store, COLLECTION, limit=2)
 
-    await file_collections.append_item(store, COLLECTION, "g")
+    await file_collections.insert_item(store, COLLECTION, "g")
     second = await file_collections.page_items(store, COLLECTION, first.cursor, limit=2)
 
     assert first.items == ("f", "e")
@@ -210,7 +210,7 @@ async def test_a_torn_final_line_is_ignored(store):
 async def test_store_methods_use_the_log(store):
     await _collection(store)
 
-    await store.append_item(COLLECTION, "a")
+    await store.insert_item(COLLECTION, "a")
 
     assert (await store.page_items(COLLECTION)).items == ("a",)
     document = await store.get(COLLECTION)
@@ -286,3 +286,28 @@ async def test_two_collections_do_not_share_files(store):
     assert len({first.log, first.index, second.log, second.index}) == 4
     assert (await file_collections.page_items(store, COLLECTION)).items == ("a",)
     assert (await file_collections.page_items(store, OTHER)).items == ("b",)
+
+
+async def test_insert_at_the_end_serves_the_item_last(store):
+    await _collection(store)
+    await file_collections.insert_item(store, COLLECTION, "a")
+    await file_collections.insert_item(store, COLLECTION, "b", offset=-1)
+    page = await file_collections.page_items(store, COLLECTION, limit=10)
+    assert page.items == ("a", "b")
+
+
+async def test_insert_at_an_index_places_the_item_before_it(store):
+    await _collection(store)
+    await file_collections.insert_item(store, COLLECTION, "a")
+    await file_collections.insert_item(store, COLLECTION, "b")
+    await file_collections.insert_item(store, COLLECTION, "x", offset=1)
+    page = await file_collections.page_items(store, COLLECTION, limit=10)
+    assert page.items == ("b", "x", "a")
+
+
+async def test_insert_ignores_the_offset_for_an_unordered_collection(store):
+    await store.put({"id": COLLECTION, "type": "Collection", "items": [], "totalItems": 0})
+    await file_collections.insert_item(store, COLLECTION, "a")
+    await file_collections.insert_item(store, COLLECTION, "b", offset=-1)
+    page = await file_collections.page_items(store, COLLECTION, limit=10)
+    assert page.items == ("b", "a"), "a Collection has no order, so -1 does not mean the end"

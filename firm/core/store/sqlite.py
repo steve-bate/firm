@@ -19,7 +19,8 @@ from firm.core.interfaces import (
     encode_start,
 )
 from firm.core.store.base import ResourceStoreBase
-from firm.core.util import normalize_collection_items
+from firm.core.store.collection_items import insertion_index
+from firm.core.util import is_ordered_collection, normalize_collection_items
 from firm.search.parser import parse_query
 from firm.search.transform.sql import ast_to_sql
 
@@ -204,17 +205,58 @@ class SqliteResourceStore(ResourceStoreBase):
             await self.put(document)
         return count
 
-    async def append_item(self, collection_uri: str, item_uri: str) -> int:
+    async def insert_item(self, collection_uri: str, item_uri: str, *, offset: int = 0) -> int:
+        """Insert an item at ``offset``; positions ascend towards newer items.
+
+        Offset 0 takes a position above every other (one INSERT), offset -1 one below every
+        other (one INSERT), and any other offset renumbers the collection. A Collection has
+        no order, so its offset is ignored and the cheap INSERT is used.
+        """
         document = await self._collection(collection_uri)
         if document is None:
             raise UnknownCollectionError(f"Unknown collection: {collection_uri}")
+        if not is_ordered_collection(document) or offset == 0:
+            self._insert_at(collection_uri, self._next_position(collection_uri), item_uri)
+        elif offset == -1:
+            self._insert_at(collection_uri, self._lowest_position(collection_uri) - 1, item_uri)
+        else:
+            self._insert_at_index(collection_uri, item_uri, offset)
+        return await self._sync_total(collection_uri, document)
+
+    def _lowest_position(self, collection_uri: str) -> int:
+        (low,) = self.connection.execute(
+            "SELECT COALESCE(MIN(position), 1) FROM collection_items WHERE collection = ?",
+            (collection_uri,),
+        ).fetchone()
+        return cast(int, low)
+
+    def _insert_at(self, collection_uri: str, position: int, item_uri: str) -> None:
         with self.connection:
             self.connection.execute(
                 "INSERT INTO collection_items (collection, position, uri) VALUES (?,?,?) "
                 "ON CONFLICT DO NOTHING",
-                (collection_uri, self._next_position(collection_uri), item_uri),
+                (collection_uri, position, item_uri),
             )
-        return await self._sync_total(collection_uri, document)
+
+    def _insert_at_index(self, collection_uri: str, item_uri: str, offset: int) -> None:
+        """Renumber the collection so the item lands before served index ``offset``."""
+        rows = self.connection.execute(
+            "SELECT uri, position FROM collection_items WHERE collection = ? "
+            "ORDER BY position DESC",
+            (collection_uri,),
+        ).fetchall()
+        uris = [str(row[0]) for row in rows]
+        index = insertion_index(len(uris), offset)
+        uris.insert(index, item_uri)
+        top = max((int(row[1]) for row in rows), default=0)
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM collection_items WHERE collection = ?", (collection_uri,)
+            )
+            self.connection.executemany(
+                "INSERT INTO collection_items (collection, position, uri) VALUES (?,?,?)",
+                [(collection_uri, top - i, uri) for i, uri in enumerate(uris)],
+            )
 
     async def search(
         self,

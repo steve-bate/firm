@@ -79,8 +79,8 @@ async def test_the_copied_collection_document_holds_no_items(stores):
 async def test_it_copies_a_collection_that_is_already_migrated(stores):
     source, destination = stores
     await source.put({"id": COLLECTION, "type": "OrderedCollection", "totalItems": 0})
-    await source.append_item(COLLECTION, "a")
-    await source.append_item(COLLECTION, "b")
+    await source.insert_item(COLLECTION, "a")
+    await source.insert_item(COLLECTION, "b")
 
     await copy_store(source, destination)
 
@@ -133,7 +133,7 @@ async def test_force_replaces_what_the_destination_holds(stores):
 
     # The source moves on, then the copy is repeated over the older destination.
     await source.put({"id": NOTE, "type": "Note", "content": "second"})
-    await source.append_item(COLLECTION, "c")
+    await source.insert_item(COLLECTION, "c")
 
     await copy_store(source, destination, force=True)
 
