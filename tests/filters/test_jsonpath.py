@@ -1,8 +1,9 @@
 import jsonpath_rfc9535 as jsonpath
+import pytest
 
 from firm.core.interfaces import JSON, JSONObject
-from firm.core.services.activitypub.service import item_filter
 from firm.core.util import get_collection_items
+from firm.search.transform.jsonpath import JsonPathMatcher, item_filter
 
 
 def collection_filter(
@@ -327,3 +328,28 @@ class TestFep6606Compatibility:
         values = collection_filter("[?@.content]", COLLECTION)
         for value in values:
             assert value.get("content") is not None
+
+
+def test_json_path_matcher_matches_one_document():
+    matcher = JsonPathMatcher("@.type == 'Place'")
+    place = {"id": "http://x.test/1", "type": "Place"}
+
+    assert matcher.values(place) == [place]
+    assert matcher.is_match(place)
+    assert not matcher.is_match({"id": "http://x.test/2", "type": "Event"})
+
+
+def test_json_path_matcher_projects_values_from_one_document():
+    matcher = JsonPathMatcher("[?@.object[*].attachment[?@.type == 'Video']].id")
+    item = {
+        "id": "http://x.test/1",
+        "type": "Create",
+        "object": [{"id": "http://x.test/n1", "attachment": [{"type": "Video"}]}],
+    }
+
+    assert matcher.values(item) == ["http://x.test/1"]
+
+
+def test_json_path_matcher_reports_a_parse_failure_as_an_invalid_filter():
+    with pytest.raises(ValueError, match="Invalid JSONPath filter"):
+        JsonPathMatcher("@.type ==")

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import (
     Any,
     AsyncIterable,
+    Awaitable,
+    Callable,
     Iterable,
     Literal,
     Mapping,
@@ -157,6 +159,28 @@ class CollectionPage:
 
 
 @dataclass(frozen=True)
+class FilterPage:
+    """One page of a filtered collection read: the selected values, in collection order.
+
+    ``entries`` are what the expression selected from each matching candidate — the item
+    itself, or the value it projects (``[?@.x].id`` selects ids, so an entry can be a
+    string). A candidate the expression selects nothing from is not a match, and the store
+    already resolved the ones that are, so returning a URI here would throw that work away.
+    ``cursor`` names the collection position *after* the last candidate examined — a match's
+    position is only known by scanning — and is ``None`` when the walk is exhausted.
+    ``scanned`` is how many candidates this page examined: the per-request budget's evidence.
+    ``total`` is the collection's item count; a match count would require scanning it all.
+    ``start_index`` is the collection position the walk resumed at — the wire's ``startIndex``.
+    """
+
+    entries: tuple[JSON, ...] = ()
+    cursor: str | None = None
+    total: int = 0
+    start_index: int = 0
+    scanned: int = 0
+
+
+@dataclass(frozen=True)
 class SearchPage:
     """One page of search results, best matches first.
 
@@ -243,6 +267,34 @@ class ResourceStore(Protocol):
         mutually exclusive. The returned page's cursor is ``None`` when the walk is
         exhausted, and its ``prev_cursor`` names the window before this one. An unknown
         collection is an empty page.
+        """
+        ...
+
+    async def filter_items(
+        self,
+        collection_uri: str,
+        expression: str,
+        cursor: str | None = None,
+        *,
+        limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
+        max_scan: int = MAX_COLLECTION_PAGE_SIZE,
+        resolve: Callable[[str], Awaitable[JSONObject | None]] | None = None,
+    ) -> FilterPage:
+        """Up to ``limit`` selected values from ``expression``, starting after ``cursor``.
+
+        ``expression`` is an RFC 9535 item filter; ``item_filter`` normalises it. It is
+        evaluated per item, so it may select the item itself or a projection of it, and
+        ``entries`` holds whatever it selected. A predicate needs the item's body and the
+        store holds only URIs, so ``resolve`` supplies it and returns ``None`` for an item
+        that is unresolvable or that the caller may not see. A backend holding the bodies
+        itself may ignore ``resolve``.
+
+        The scan stops at ``max_scan`` candidates examined, or after the candidate that brings
+        ``entries`` to ``limit`` — a candidate's selected values are never split, so a page can
+        exceed ``limit`` by one candidate's projection, and can be short or empty when the
+        budget runs out first. The returned cursor resumes after the last candidate examined
+        and is ``None`` when the walk is exhausted. ``total`` is the collection's item count.
+        An unknown collection is an empty, exhausted page.
         """
         ...
 

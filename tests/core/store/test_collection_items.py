@@ -13,6 +13,7 @@ import pytest
 from firm.core.interfaces import (
     MAX_COLLECTION_PAGE_SIZE,
     CollectionPage,
+    JSONObject,
     UnknownCollectionError,
 )
 from firm.core.store.file import FileResourceStore
@@ -273,3 +274,68 @@ async def test_remove_drops_every_copy(store):
     assert await store.remove_item(COLLECTION, "a") == 1
     assert (await store.page_items(COLLECTION)).items == ("b",)
     assert await store.contains_item(COLLECTION, "a") is False
+
+
+async def _resolver(documents: dict[str, JSONObject]):
+    async def resolve(uri: str) -> JSONObject | None:
+        return documents.get(uri)
+
+    return resolve
+
+
+async def test_filter_items_returns_the_selected_values(store):
+    place = {"id": f"{COLLECTION}/place", "type": "Place"}
+    event = {"id": f"{COLLECTION}/event", "type": "Event"}
+    await _collection(store, place["id"], event["id"])
+
+    page = await store.filter_items(
+        COLLECTION,
+        "@.type == 'Place'",
+        resolve=await _resolver({place["id"]: place, event["id"]: event}),
+    )
+
+    assert page.entries == (place,)
+    assert page.scanned == 2
+    assert page.total == 2
+    assert page.cursor is None
+
+
+async def test_filter_items_stops_at_the_scan_budget(store):
+    documents = {
+        f"{COLLECTION}/{index}": {"id": f"{COLLECTION}/{index}", "type": "Note"}
+        for index in range(30)
+    }
+    await _collection(store, *documents)
+
+    page = await store.filter_items(
+        COLLECTION, "@.type == 'Nothing'", limit=5, max_scan=7, resolve=await _resolver(documents)
+    )
+
+    assert page.entries == ()
+    assert page.scanned == 7
+    assert page.cursor is not None
+
+
+async def test_filter_items_resumes_without_examining_an_item_twice(store):
+    documents = {
+        f"{COLLECTION}/{index}": {"id": f"{COLLECTION}/{index}", "type": "Note"}
+        for index in range(10)
+    }
+    await _collection(store, *documents)
+    seen: list[str] = []
+
+    async def resolve(uri: str) -> JSONObject | None:
+        seen.append(uri)
+        return documents.get(uri)
+
+    cursor = None
+    while True:
+        page = await store.filter_items(
+            COLLECTION, "@.type == 'Note'", cursor, limit=2, max_scan=3, resolve=resolve
+        )
+        cursor = page.cursor
+        if cursor is None:
+            break
+
+    assert len(seen) == len(set(seen))
+    assert set(seen) == set(documents)

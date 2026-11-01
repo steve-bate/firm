@@ -7,6 +7,7 @@ import pytest
 from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.interfaces import (
     FIRM_NS,
+    MAX_COLLECTION_PAGE_SIZE,
     APActor,
     DeliveryFailure,
     Identity,
@@ -360,23 +361,74 @@ async def test_dereference_collection_filtered(service: ActivityPubService, tena
         await tenant.public_store.put(r)
     collection = await service.process_get(
         make_context(tenant),
-        StubUrl.parse("http://tenant1.test/collection"),
+        StubUrl.parse("http://tenant1.test/collection?filter=%40.type%20%3D%3D%20%27Place%27"),
         {
             "filter": "$[?@.type == 'Place']",
         },
     )
-    assert collection == {
-        "@context": "https://www.w3.org/ns/activitystreams",
-        "id": "http://tenant1.test/collection",
-        "type": "Collection",
-        "items": [
+    assert collection["type"] == "CollectionPage"
+    assert collection["partOf"] == "http://tenant1.test/collection"
+    assert collection["startIndex"] == 0
+    assert collection["totalItems"] == 2
+    served = cast(list[JSONObject], collection["items"])
+    assert [item["id"] for item in served] == ["http://tenant1.test/obj2"]
+    assert "next" not in collection
+
+
+async def test_a_filtered_page_with_no_matches_still_says_where_to_continue(
+    service: ActivityPubService, tenant: Tenant
+):
+    # More candidates than the scan budget (MAX_COLLECTION_PAGE_SIZE), and no matches: the
+    # page comes back empty but the walk is unfinished, so it must carry `next`.
+    count = MAX_COLLECTION_PAGE_SIZE + 20
+    items = [f"http://tenant1.test/obj{index}" for index in range(count)]
+    resources: list[JSONObject] = [
+        {"id": "http://tenant1.test/collection", "type": "Collection", "items": items}
+    ]
+    resources.extend(
+        {"id": uri, "type": "Note", "name": f"n{index}"} for index, uri in enumerate(items)
+    )
+    await setup_resources(tenant.public_store, resources)
+
+    collection = await service.process_get(
+        make_context(tenant),
+        StubUrl.parse("http://tenant1.test/collection?filter=%40.type%20%3D%3D%20%27Nope%27"),
+        {"filter": "$[?@.type == 'Nope']"},
+    )
+
+    assert collection.get("items", []) == []
+    assert collection["startIndex"] == 0
+    assert collection["totalItems"] == count
+    next_link = str(collection["next"])
+    assert "cursor=" in next_link
+    assert "filter=" in next_link
+
+
+async def test_a_projected_filter_serves_the_selected_values(
+    service: ActivityPubService, tenant: Tenant
+):
+    await setup_resources(
+        tenant.public_store,
+        [
             {
-                "id": "http://tenant1.test/obj2",
-                "type": "Place",
-                "name": "bar",
+                "id": "http://tenant1.test/collection",
+                "type": "Collection",
+                "items": ["http://tenant1.test/obj1", "http://tenant1.test/obj2"],
             },
+            {"id": "http://tenant1.test/obj1", "type": "Note", "name": "n1"},
+            {"id": "http://tenant1.test/obj2", "type": "Place", "name": "n2"},
         ],
-    }
+    )
+
+    collection = await service.process_get(
+        make_context(tenant),
+        StubUrl.parse(
+            "http://tenant1.test/collection?filter=%5B%3F%40.type%20%3D%3D%20%27Note%27%5D.id"
+        ),
+        {"filter": "[?@.type == 'Note'].id"},
+    )
+
+    assert collection["items"] == ["http://tenant1.test/obj1"]
 
 
 async def test_a_filter_applies_to_an_ordered_collection(
@@ -419,52 +471,6 @@ async def test_a_filter_applies_to_an_ordered_collection(
         },
     )
     served = cast(list[JSONObject], collection["orderedItems"])
-    assert [item["id"] for item in served] == ["http://tenant1.test/obj2"]
-
-
-@pytest.mark.skip(reason="FEP-C195 root question: is $ the collection or the item list?")
-async def test_a_collection_rooted_filter_reads_the_same_items(
-    service: ActivityPubService, tenant: Tenant
-):
-    """fep-c195's HTTP example roots the path at the collection: `$.items[?(…)]`.
-
-    The filter is applied to the collection items, so this must select the same item as the
-    bare `@.type == …` form. Today it selects nothing, because the path is evaluated with the
-    item list as its root, where `items` is not a member.
-    """
-    resources: list[JSONObject] = [
-        {
-            "id": "http://tenant1.test/collection",
-            "type": "Collection",
-            "items": [
-                "http://tenant1.test/obj1",
-                "http://tenant1.test/obj2",
-            ],
-            "totalItems": 2,
-        },
-        {
-            "id": "http://tenant1.test/obj1",
-            "type": "Event",
-            "name": "foo",
-        },
-        {
-            "id": "http://tenant1.test/obj2",
-            "type": "Place",
-            "name": "bar",
-        },
-    ]
-    for r in resources:
-        await tenant.public_store.put(r)
-    collection = await service.process_get(
-        make_context(tenant),
-        StubUrl.parse(
-            "http://tenant1.test/collection?filter=%24.items%5B%3F%40.type%20%3D%3D%20%27Place%27%5D"
-        ),
-        {
-            "filter": "$.items[?@.type == 'Place']",
-        },
-    )
-    served = cast(list[JSONObject], collection.get("items") or [])
     assert [item["id"] for item in served] == ["http://tenant1.test/obj2"]
 
 
@@ -1693,3 +1699,48 @@ async def test_serialization_uses_the_wire_item_key(service: ActivityPubService,
     plain_items = cast(list[JSONObject], plain["items"])
     assert [item["id"] for item in ordered_items] == ["http://tenant1.test/obj"]
     assert [item["id"] for item in plain_items] == ["http://tenant1.test/obj"]
+
+
+async def test_a_filtered_page_fetches_no_more_than_its_scan_budget(tenant: Tenant):
+    """#25: one filtered request resolves at most its scan budget of items."""
+    remote = "http://remote.test"
+    uris = [f"{remote}/note/{index}" for index in range(10)]
+    collection_uri = "http://tenant1.test/collection"
+    await tenant.public_store.put(
+        {"id": collection_uri, "type": "OrderedCollection", "items": uris, "totalItems": len(uris)}
+    )
+    transport = StubTransport({uri: json_response({"id": uri, "type": "Note"}) for uri in uris})
+    provider = RemoteResourceProvider(
+        MemoryRemoteCache(), transport, policy=FetchPolicy(allow_private_addresses=True)
+    )
+    context = make_context(tenant, remote=provider)
+
+    page = await tenant.public_store.filter_items(
+        collection_uri,
+        "@.type == 'Note'",
+        limit=5,
+        max_scan=3,
+        resolve=lambda uri: context.dereference(uri),
+    )
+
+    assert page.scanned == 3
+    assert len(transport.requests) == 3
+    assert page.cursor is not None
+
+
+async def test_the_scan_budget_is_the_same_without_a_principal(tenant: Tenant):
+    uris = [f"http://remote.test/note/{index}" for index in range(10)]
+    collection_uri = "http://tenant1.test/two/collection"
+    await tenant.public_store.put(
+        {"id": collection_uri, "type": "OrderedCollection", "items": uris, "totalItems": 10}
+    )
+
+    async def resolve(uri: str) -> JSONObject | None:
+        return {"id": uri, "type": "Note"}
+
+    anonymous = await tenant.public_store.filter_items(
+        collection_uri, "@.type == 'Note'", limit=5, max_scan=4, resolve=resolve
+    )
+
+    assert anonymous.scanned == 4
+    assert len(anonymous.entries) == 4

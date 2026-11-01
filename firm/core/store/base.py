@@ -1,19 +1,21 @@
 import json
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import cast
 
 from firm.core.interfaces import (
     DEFAULT_COLLECTION_PAGE_SIZE,
     DEFAULT_SEARCH_PAGE_SIZE,
     DEFAULT_TEXT_FIELDS,
+    MAX_COLLECTION_PAGE_SIZE,
     CollectionPage,
+    FilterPage,
     JSONObject,
     QueryCriteria,
     SearchPage,
 )
-from firm.core.store import collection_items, search
+from firm.core.store import collection_items, filtering, search
 
 
 class ResourceStoreBase(ABC):
@@ -57,6 +59,26 @@ class ResourceStoreBase(ABC):
     ) -> CollectionPage:
         return await collection_items.page_items(
             self, collection_uri, cursor, start=start, limit=limit
+        )
+
+    async def filter_items(
+        self,
+        collection_uri: str,
+        expression: str,
+        cursor: str | None = None,
+        *,
+        limit: int = DEFAULT_COLLECTION_PAGE_SIZE,
+        max_scan: int = MAX_COLLECTION_PAGE_SIZE,
+        resolve: Callable[[str], Awaitable[JSONObject | None]] | None = None,
+    ) -> FilterPage:
+        return await filtering.filter_items(
+            self,
+            collection_uri,
+            expression,
+            cursor,
+            limit=limit,
+            max_scan=max_scan,
+            resolve=resolve,
         )
 
     async def search(

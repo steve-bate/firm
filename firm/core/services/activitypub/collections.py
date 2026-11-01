@@ -6,11 +6,18 @@ from firm.core.interfaces import (
     DEFAULT_COLLECTION_PAGE_SIZE,
     MAX_COLLECTION_PAGE_SIZE,
     CollectionPage,
+    FilterPage,
     JSONObject,
     ResourceStore,
 )
 from firm.core.services.activitypub.exceptions import InvalidResourceException
-from firm.core.util import get_id, is_ordered_collection, strip_query
+from firm.core.util import (
+    AS2_CONTEXT,
+    get_collection_items_key,
+    get_id,
+    is_ordered_collection,
+    strip_query,
+)
 
 if TYPE_CHECKING:
     from firm.core.services.activitypub.support import FirmContext
@@ -181,15 +188,22 @@ def page_uri(
     *,
     page: str | None = None,
     cursor: str | None = None,
+    expression: str | None = None,
     limit: int | None = None,
 ) -> str:
-    """A link back into the same collection, carrying only the parameters that matter."""
+    """A link back into the same collection, carrying only the parameters that matter.
+
+    ``expression`` is the request's ``?filter=`` text: a filtered walk's ``next`` link must
+    keep it, or following the link would drop back to an unfiltered read.
+    """
     base = strip_query(uri)
     params: list[tuple[str, str]] = []
     if page is not None:
         params.append(("page", page))
     if cursor is not None:
         params.append(("cursor", cursor))
+    if expression is not None:
+        params.append(("filter", expression))
     if limit is not None and limit != DEFAULT_COLLECTION_PAGE_SIZE:
         params.append(("limit", str(limit)))
     return f"{base}?{urlencode(params)}" if params else base
@@ -221,4 +235,35 @@ def build_page_document(
         document["next"] = page_uri(collection_uri, cursor=page.cursor, limit=limit)
     if page.prev_cursor is not None:
         document["prev"] = page_uri(collection_uri, cursor=page.prev_cursor, limit=limit)
+    return document
+
+
+def build_match_page_document(
+    collection: JSONObject,
+    page: FilterPage,
+    *,
+    request_uri: str,
+    limit: int,
+    expression: str | None = None,
+) -> JSONObject:
+    """One page of a filtered read: the selected values, and where the walk resumes.
+
+    The document is finished as built and must not pass through ``serialize``: a projection
+    selects values, and serialization dereferences any string item, which would turn a
+    projected ``id`` back into the object it names.
+    """
+    collection_uri = get_id(collection) or strip_query(request_uri)
+    document: JSONObject = {
+        "@context": AS2_CONTEXT,
+        "id": request_uri,
+        "type": "OrderedCollectionPage" if is_ordered_collection(collection) else "CollectionPage",
+        "partOf": collection_uri,
+        "totalItems": page.total,
+        "startIndex": page.start_index,
+        get_collection_items_key(collection): list(page.entries),
+    }
+    if page.cursor is not None:
+        document["next"] = page_uri(
+            collection_uri, cursor=page.cursor, expression=expression, limit=limit
+        )
     return document

@@ -46,7 +46,8 @@ These are current features, unless tagged otherwise.
 - Extensible NodeInfo (Tenant-specific Metadata)
 - [JSON Schema](https://json-schema.org/)-based validation (WIP)
 - Event streaming Support (SSE, [FEP-3ab2](https://codeberg.org/fediverse/fep/src/branch/main/fep/3ab2/fep-3ab2.md))
-- Collection filtering using [JSONPath](https://www.rfc-editor.org/rfc/rfc9535) (RFC 9535)
+- Collection filtering using [JSONPath](https://www.rfc-editor.org/rfc/rfc9535) (RFC 9535), served
+  as pages (`?filter=…&cursor=…`); a request scans at most one page of candidates
 
 ## Server
 

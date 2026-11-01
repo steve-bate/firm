@@ -18,8 +18,8 @@ from firm.core.interfaces import (
 from firm.core.services.activitypub.collections import (
     LAST,
     add_collection_item,
+    build_match_page_document,
     build_page_document,
-    dereference_collection_items,
     option_value,
     page_number,
     page_size,
@@ -47,18 +47,26 @@ from firm.core.util import (
     is_activity,
     is_collection,
     is_public,
-    set_collection_items,
     strip_query,
 )
+from firm.search.transform.jsonpath import item_filter
 
 log = logging.getLogger(__name__)
 
 
-def item_filter(expr: str) -> str:
-    expr = (
-        expr if expr.startswith("$") else f"$[?{expr}]" if not expr.startswith("[") else f"${expr}"
+async def _authorized_item(context: FirmContext, uri: str) -> JSONObject | None:
+    """The item's document when this request may see it, else None."""
+    resolved = await context.dereference(uri)
+    if resolved is None:
+        log.warning("Not serving unresolvable collection item: %s", uri)
+        return None
+    decision = await context.authorizer.is_get_authorized(
+        context.tenant, context.principal, resolved
     )
-    return expr
+    if not decision.authorized:
+        log.info("Not serving unauthorized collection item: %s (%s)", uri, decision.reason)
+        return None
+    return resolved
 
 
 # How far into a nested object the "is this ours?" walk may look. Local copy of the
@@ -351,15 +359,10 @@ class ActivityPubService:
         if resource := await dereference(store, target):
             decision = await self._authorizer.is_get_authorized(tenant, principal, resource)
             if decision.authorized:
-                # A filtered collection is resolved whole but served matched: a predicate
-                # cannot be evaluated without the item's body, so every item is fetched
-                # before the match set is known, and nothing bounds that fan-out.
                 if is_collection(resource) and options and "filter" in options:
-                    filter = jsonpath.compile(item_filter(options["filter"]))
-                    items = await dereference_collection_items(context, resource)
-                    filtered_nodes = filter.find(items)
-                    set_collection_items(resource, [node.value for node in filtered_nodes])
-                    return await serialize(context, resource)
+                    return await self._filtered_collection_response(
+                        context, resource, str(resource_uri), options
+                    )
                 if is_collection(resource):
                     return await self._collection_response(
                         context, resource, str(resource_uri), options
@@ -369,6 +372,49 @@ class ActivityPubService:
                 raise NotAuthorizedException(decision.reason or "Not authorized")
         else:
             raise NotFoundException(resource_uri)
+
+    async def _filtered_collection_response(
+        self,
+        context: FirmContext,
+        collection: JSONObject,
+        request_uri: str,
+        options: Mapping[str, Any] | None,
+    ) -> JSONObject:
+        """A filtered read as a page of the values the filter selected.
+
+        The cursor names a collection position, not a match: a predicate needs each
+        candidate's body, so matches are only known by scanning. The scan stops after the
+        candidate that brings the page to ``limit`` entries or at the store's ``max_scan``
+        candidates, so a page can be short — and an empty page still carries ``next``.
+
+        The built page is returned as-is, not passed through ``serialize``: a projection
+        selects values, and serialization would dereference a string entry such as a
+        projected ``id`` back into the object it names.
+        """
+        store = context.tenant.public_store
+        collection_uri = get_id(collection) or strip_query(request_uri)
+        expression = option_value(options, "filter")
+        if not expression:
+            raise InvalidRequestException("A filter expression is required")
+        try:
+            limit = page_size(options)
+        except ValueError as e:
+            raise InvalidRequestException(str(e)) from None
+        try:
+            page = await store.filter_items(
+                collection_uri,
+                expression,
+                option_value(options, "cursor"),
+                limit=limit,
+                resolve=lambda uri: _authorized_item(context, uri),
+            )
+        except ValueError as e:
+            # A cursor the store cannot read, or an expression the parser rejects: fep-c195
+            # requires either to be a client error rather than a 500.
+            raise InvalidRequestException(str(e)) from None
+        return build_match_page_document(
+            collection, page, request_uri=request_uri, limit=limit, expression=expression
+        )
 
     async def _collection_response(
         self,

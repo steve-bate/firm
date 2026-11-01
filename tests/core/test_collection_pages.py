@@ -6,9 +6,11 @@ from firm.core.interfaces import (
     DEFAULT_COLLECTION_PAGE_SIZE,
     MAX_COLLECTION_PAGE_SIZE,
     CollectionPage,
+    FilterPage,
 )
 from firm.core.services.activitypub.collections import (
     LAST,
+    build_match_page_document,
     build_page_document,
     option_value,
     page_number,
@@ -127,3 +129,53 @@ def test_build_page_document_omits_a_missing_neighbour():
     assert document["type"] == "CollectionPage"
     assert "next" not in document
     assert "prev" not in document
+
+
+def test_a_filtered_next_link_carries_the_expression():
+    link = page_uri(COLLECTION, cursor="start:20", expression="@.type == 'Note'", limit=5)
+
+    assert "cursor=start%3A20" in link
+    assert "filter=%40.type+%3D%3D+%27Note%27" in link
+    assert "limit=5" in link
+
+
+def test_a_filtered_page_document_reports_its_entries_and_its_next_link():
+    collection = {"id": COLLECTION, "type": "OrderedCollection"}
+    page = FilterPage(
+        entries=({"id": "http://tenant1.test/note/1", "type": "Note"},),
+        cursor="start:4",
+        total=10,
+        start_index=2,
+        scanned=2,
+    )
+
+    document = build_match_page_document(
+        collection, page, request_uri=f"{COLLECTION}?filter=%40.type+%3D%3D+%27Note%27", limit=2
+    )
+
+    assert document["type"] == "OrderedCollectionPage"
+    assert document["partOf"] == COLLECTION
+    assert document["totalItems"] == 10
+    assert document["startIndex"] == 2
+    assert document["@context"] == "https://www.w3.org/ns/activitystreams"
+    assert [item["id"] for item in document["orderedItems"]] == ["http://tenant1.test/note/1"]
+    assert "cursor=start%3A4" in document["next"]
+
+
+def test_a_projected_value_is_served_as_written():
+    collection = {"id": COLLECTION, "type": "OrderedCollection"}
+    page = FilterPage(entries=("http://tenant1.test/note/1",), total=1, scanned=1)
+
+    document = build_match_page_document(collection, page, request_uri=COLLECTION, limit=20)
+
+    assert document["orderedItems"] == ["http://tenant1.test/note/1"]
+
+
+def test_an_exhausted_filtered_page_has_no_next_link():
+    collection = {"id": COLLECTION, "type": "OrderedCollection"}
+    page = FilterPage(entries=(), total=1, start_index=1, scanned=1)
+
+    document = build_match_page_document(collection, page, request_uri=COLLECTION, limit=20)
+
+    assert document["orderedItems"] == []
+    assert "next" not in document
