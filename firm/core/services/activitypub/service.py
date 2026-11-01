@@ -351,7 +351,9 @@ class ActivityPubService:
         if resource := await dereference(store, target):
             decision = await self._authorizer.is_get_authorized(tenant, principal, resource)
             if decision.authorized:
-                # A filtered collection is served whole: a filter needs every item.
+                # A filtered collection is resolved whole but served matched: a predicate
+                # cannot be evaluated without the item's body, so every item is fetched
+                # before the match set is known, and nothing bounds that fan-out.
                 if is_collection(resource) and options and "filter" in options:
                     filter = jsonpath.compile(item_filter(options["filter"]))
                     items = await dereference_collection_items(context, resource)
