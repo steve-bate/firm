@@ -15,7 +15,6 @@ from firm.core.delivery.queue import (
 )
 from firm.core.interfaces import (
     FIRM_NS,
-    JSON,
     APActor,
     AuthorizationService,
     DeliveryFailure,
@@ -46,6 +45,7 @@ from firm.core.util import (
     get_types,
     is_collection,
     is_public,
+    strip_firm_properties,
 )
 from firm.server.adapters import HttpxTransport
 from firm.server.config import ServerConfig
@@ -61,23 +61,6 @@ def _get_uris(items: list[JSONObject | str]) -> list[str]:
         elif isinstance(item, dict) and "id" in item:
             uris.append(cast(str, item["id"]))
     return uris
-
-
-def strip_firm_properties(value: JSON, predicate: Callable[[str], bool]) -> JSON:
-    """A copy of ``value`` with every mapping key the predicate accepts removed.
-
-    Pure: the caller's document and everything it embeds stay as they were, so a
-    delivery cannot rewrite what the store holds.
-    """
-    if isinstance(value, Mapping):
-        return {
-            key: strip_firm_properties(item, predicate)
-            for key, item in value.items()
-            if not predicate(str(key))
-        }
-    if isinstance(value, list):
-        return [strip_firm_properties(item, predicate) for item in value]
-    return value
 
 
 def _inbox_of(document: JSONObject, *, local: bool) -> str | None:

@@ -47,6 +47,7 @@ from firm.core.util import (
     is_activity,
     is_collection,
     is_public,
+    strip_firm_properties,
     strip_query,
 )
 from firm.search.transform.jsonpath import item_filter
@@ -212,10 +213,16 @@ async def post_to_inbox(
     validator: Validator,
     delivery_service: DeliveryService,
 ) -> None:
-    """An activity arrives at an inbox on this instance: authorize, keep, record, apply.
+    """An activity arrives at an inbox on this instance: drop our own namespace,
+    authorize, keep, record, apply.
 
     This is what an inbox POST does once the box is known, with no socket involved.
     """
+    # ``firm:`` is the namespace this server authors: a copy of one of those keys in a
+    # received document is the sender's claim, so no step below may read or keep it.
+    resource = cast(
+        JSONObject, strip_firm_properties(resource, lambda key: key.startswith("firm:"))
+    )
     tenant = context.tenant
     principal = context.principal
     store = tenant.public_store

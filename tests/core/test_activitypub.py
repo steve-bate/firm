@@ -1744,3 +1744,160 @@ async def test_the_scan_budget_is_the_same_without_a_principal(tenant: Tenant):
 
     assert anonymous.scanned == 4
     assert len(anonymous.entries) == 4
+
+
+async def test_a_received_activity_is_stored_without_firm_properties(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    """#28: a document we keep carries no ``firm:`` key the sender chose to send."""
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    context = make_context(tenant, principal=remote_identity, remote=_provider(StubTransport({})))
+    toot_context: JSONObject = {"toot": "http://joinmastodon.org/ns#"}
+
+    await service.process_post(
+        context,
+        StubUrl.parse("http://tenant1.test/inbox"),
+        {
+            "id": "http://tenant1.test/activities/1",
+            "type": "Create",
+            "actor": "http://tenant1.test/user2",
+            "@context": ["https://www.w3.org/ns/activitystreams", toot_context],
+            "to": ["http://tenant1.test/user2"],
+            "cc": [],
+            FIRM_NS.role.value: "admin",
+            "toot:discoverable": True,
+            "object": {
+                "id": "http://tenant1.test/user2/note/1",
+                "type": "Note",
+                "_misskey_quote": "http://remote.test/notes/1",
+                FIRM_NS.privateKey.value: "leak",
+            },
+        },
+    )
+
+    stored = await tenant.public_store.get("http://tenant1.test/activities/1")
+    assert stored is not None
+    assert FIRM_NS.role.value not in stored, "a received firm: key is not kept"
+    assert stored["@context"] == ["https://www.w3.org/ns/activitystreams", toot_context]
+    assert stored["to"] == ["http://tenant1.test/user2"]
+    assert stored["cc"] == []
+    assert stored["toot:discoverable"] is True, "a vendor prefix survives"
+
+    note = await tenant.public_store.get("http://tenant1.test/user2/note/1")
+    assert note is not None
+    assert FIRM_NS.privateKey.value not in note, "nor one inside the embedded object"
+    assert note["_misskey_quote"] == "http://remote.test/notes/1"
+
+
+async def test_a_received_foreign_activity_is_cached_without_firm_properties(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    """#28: the remote cache holds the peer's copy, and that copy is stripped too."""
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    context = make_context(tenant, principal=remote_identity, remote=_provider(StubTransport({})))
+
+    await service.process_post(
+        context,
+        StubUrl.parse("http://tenant1.test/inbox"),
+        {
+            "id": "http://remote.test/create11",
+            "type": "Create",
+            "actor": "http://remote.test/user1",
+            "to": ["http://tenant1.test/user2"],
+            FIRM_NS.collections.value: "http://remote.test/collections",
+            "object": {
+                "id": "http://remote.test/note/11",
+                "type": "Note",
+                FIRM_NS.blockedActor.value: "http://remote.test/user2",
+            },
+        },
+    )
+
+    assert (
+        await tenant.public_store.get("http://remote.test/create11") is None
+    ), "a foreign activity belongs in the remote cache"
+
+    cached = await context.dereference("http://remote.test/create11")
+    assert cached is not None
+    assert FIRM_NS.collections.value not in cached, "the cached activity is stripped"
+    assert cached["object"] == "http://remote.test/note/11"
+
+    note = await context.dereference("http://remote.test/note/11")
+    assert note is not None
+    assert FIRM_NS.blockedActor.value not in note, "and so is the object it embedded"
+
+
+async def test_an_inbox_handler_sees_the_activity_without_firm_properties(tenant: Tenant):
+    """#28: the document ``process_inbox`` acts on is stripped, not only the stored copy."""
+    owner = f"{tenant.prefix}/user1"
+    followers = f"{owner}/followers"
+    await tenant.public_store.put(
+        {
+            "id": owner,
+            "type": "Person",
+            "inbox": f"{owner}/inbox",
+            "outbox": f"{owner}/outbox",
+            "followers": followers,
+        }
+    )
+    for box in (f"{owner}/inbox", f"{owner}/outbox", followers):
+        await tenant.public_store.put(
+            {"id": box, "type": "OrderedCollection", "attributedTo": owner, "items": []}
+        )
+    box_owner = cast(APActor, await tenant.public_store.get(owner))
+    delivery = StubDeliveryService()
+
+    await _arrive(
+        tenant,
+        cast(JSONObject, box_owner),
+        {
+            "id": REMOTE_REPLY_ID,
+            "type": "Follow",
+            "actor": REMOTE_AUTHOR,
+            "object": owner,
+            FIRM_NS.role.value: "admin",
+        },
+        delivery,
+    )
+
+    accept = next(activity for activity in delivery.activities if activity.get("type") == "Accept")
+    seen = cast(JSONObject, accept["object"])
+    assert seen["id"] == REMOTE_REPLY_ID, "the handler embeds the activity it acted on"
+    assert FIRM_NS.role.value not in seen, "the handler never saw our namespace"
+    assert seen["object"] == owner
+
+    follow_box = await tenant.public_store.get(followers)
+    assert follow_box is not None
+    assert REMOTE_AUTHOR in cast(list[str], follow_box["items"]), "the follow ran"

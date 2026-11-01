@@ -2,7 +2,7 @@ import importlib.metadata
 import logging
 import os
 import tomllib
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from firm.core.interfaces import JSON, APActor, JSONObject, ResourceStore, Tenant, Url
 
@@ -63,6 +63,24 @@ def is_activity(resource: JSONObject) -> bool:
 def strip_query(uri: str) -> str:
     """The identity of a resource URI: no query string, no fragment."""
     return uri.split("?", 1)[0].split("#", 1)[0]
+
+
+def strip_firm_properties(value: JSON, predicate: Callable[[str], bool]) -> JSON:
+    """A copy of ``value`` with every mapping key the predicate accepts removed.
+
+    Pure: the caller's document and everything it embeds stay as they were, so
+    stripping what is stored or delivered cannot rewrite the document the caller
+    holds.
+    """
+    if isinstance(value, Mapping):
+        return {
+            key: strip_firm_properties(item, predicate)
+            for key, item in value.items()
+            if not predicate(str(key))
+        }
+    if isinstance(value, list):
+        return [strip_firm_properties(item, predicate) for item in value]
+    return value
 
 
 def is_urn(uri: str) -> bool:
