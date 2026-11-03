@@ -358,6 +358,16 @@ def test_shared_inbox_post_reaches_the_named_inbox(client, remote_principal):
     assert asyncio.run(tenant.public_store.count_items(f"{other}/inbox")) == 0
 
 
+def test_shared_inbox_get_is_not_served(client):
+    """The endpoint takes delivery only: a read of it is a 404, not a collection."""
+    response = client.get(
+        f"{TENANT_PREFIX}/shared",
+        headers={"Accept": "application/activity+json"},
+    )
+
+    assert response.status_code == 404
+
+
 async def test_http_transport_get(httpx_mock: HTTPXMock):
     httpx_mock.add_response(
         method="GET",

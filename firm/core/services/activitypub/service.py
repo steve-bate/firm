@@ -1,9 +1,6 @@
 import copy
 import logging
 from typing import Any, Mapping, cast
-from urllib.parse import parse_qs
-
-import jsonpath_rfc9535 as jsonpath  # type: ignore
 
 from firm.core.interfaces import (
     APActor,
@@ -44,8 +41,6 @@ from firm.core.util import (
     get_id,
     get_list,
     has_value,
-    is_accessible,
-    is_activity,
     is_actor_object,
     is_collection,
     is_local_uri,
@@ -53,7 +48,6 @@ from firm.core.util import (
     strip_firm_properties,
     strip_query,
 )
-from firm.search.transform.jsonpath import item_filter
 
 log = logging.getLogger(__name__)
 
@@ -151,24 +145,6 @@ async def _forward_to_local_addressees(
     await delivery_service.deliver(
         context.tenant, context.resolver.tenants, activity, local_only=True
     )
-
-
-def _get_query_param(params: Mapping[str, list[str]], key: str, default_value: str) -> str:
-    values = params.get(key)
-    if not values or len(values) == 0:
-        return default_value
-    return values[0]
-
-
-async def _activity_query(principal, store, filter: jsonpath.JSONPathQuery | None = None):
-    activities = [
-        activity
-        for activity in await store.query({})
-        if is_activity(activity) and is_accessible(principal.uri if principal else None, activity)
-    ]
-    if filter:
-        activities = [node.value for node in filter.find(activities)]
-    return activities
 
 
 def _addressed_to_box_owner(activity: JSONObject, box_owner: APActor) -> JSONObject:
@@ -355,73 +331,6 @@ class ActivityPubService:
         self._delivery_service = delivery_service
         self._validator = validator
 
-    async def _get_shared_inbox(
-        self,
-        context: FirmContext,
-        resource_uri: Url,
-        options: Mapping[str, Any] | None,
-    ) -> JSONObject:
-        """Handle requests to the shared inbox."""
-        # if request.auth is None:
-        #     raise NotAuthorizedException("Shared inbox requires authentication")
-        tenant = context.tenant
-        principal = context.principal
-        store = tenant.public_store
-        default_page_Size = 20
-        # TODO Implement pagination
-        # This is brute force and limited for now, but we can optimize later
-        # It's primarily here for Flowz demonstration purposes
-        query_params = parse_qs(resource_uri.query)
-        path_parts = resource_uri.path.split("/")
-        federated = len(path_parts) == 3 and path_parts[-1] == "federated"
-        offset_param = _get_query_param(query_params, "offset", "")
-        limit = int(_get_query_param(query_params, "limit", str(default_page_Size)))
-        # strip query and fragment
-        box_id = f"{resource_uri.scheme}://{resource_uri.netloc}{resource_uri.path}"
-        if offset_param == "":
-            return {
-                "@context": "https://www.w3.org/ns/activitystreams",
-                "id": box_id,
-                "type": "OrderedCollection",
-                "first": f"{box_id}?offset=0",
-            }
-        else:
-            filter = jsonpath.compile(
-                item_filter(str(options.get("filter"))) if options and "filter" in options else None
-            )
-            offset = int(offset_param)
-            all_public_activities: list[JSONObject] = []
-            if federated:
-                # This is obviously not scalable, but for demonstration purposes
-                for other in context.tenants.values():
-                    other_store = other.public_store
-                    all_public_activities.extend(
-                        cast(list, await _activity_query(principal, other_store, filter))
-                    )
-            else:
-                all_public_activities.extend(
-                    cast(list, await _activity_query(principal, store, filter))
-                )
-
-            items = all_public_activities[offset:limit]
-
-            page: JSONObject = {
-                "@context": "https://www.w3.org/ns/activitystreams",
-                "id": f"{box_id}?offset={offset_param}",
-                "type": "CollectionPage",
-                "totalItems": len(items),
-                "items": items,
-            }
-
-            if offset > 0:
-                page["first"] = f"{box_id}?offset=0"
-            if offset >= limit:
-                page["prev"] = f"{box_id}?offset={max(0, offset - limit)}"
-            if len(items) > 0 and (offset + limit < len(all_public_activities)):
-                page["next"] = f"{box_id}?offset={int(offset) + limit}"
-
-            return await serialize(context, page)
-
     async def process_get(
         self,
         context: FirmContext,
@@ -441,10 +350,9 @@ class ActivityPubService:
             if tenant.endpoints:
                 doc["endpoints"] = tenant.endpoints
             return doc
-        # Return a tenant's shared inbox resources
-        if tenant.shared_inbox_uri and target.startswith(tenant.shared_inbox_uri):
-            return await self._get_shared_inbox(context, resource_uri, options)
-        # Return the specified resource
+        # The shared inbox is a delivery endpoint only: a POST to it is fanned out to
+        # the local actors the activity names (AP 7.1.3). No collection is published at
+        # that URI, so a GET there reaches the resource lookup and answers 404.
         store = tenant.public_store
         if resource := await dereference(store, target):
             decision = await self._authorizer.is_get_authorized(tenant, principal, resource)

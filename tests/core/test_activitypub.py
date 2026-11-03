@@ -476,52 +476,28 @@ async def test_a_filter_applies_to_an_ordered_collection(
     assert [item["id"] for item in served] == ["http://tenant1.test/obj2"]
 
 
-async def test_dereference_sharedinbox_filtered(service: ActivityPubService, tenant: Tenant):
+async def test_shared_inbox_read_is_not_served(service: ActivityPubService, tenant: Tenant):
+    """A GET of the advertised shared inbox is not a resource read.
+
+    The endpoint takes delivery only, so nothing is stored at its URI: a peer that
+    follows up its POST with a read gets a 404 rather than a paged collection.
+    """
     tenant.endpoints["sharedInbox"] = "http://tenant1.test/shared"
 
-    resources: list[JSONObject] = [
+    await tenant.public_store.put(
         {
             "id": "http://tenant1.test/obj1",
             "type": "Create",
             "to": ["as:Public"],
             "actor": "http://remote.test/user1",
             "object": "http://tenant1.test/obj1",
-            "name": "foo",
-        },
-        {
-            "id": "http://tenant1.test/obj2",
-            "type": "Update",
-            "to": ["as:Public"],
-            "actor": "http://remote.test/user1",
-            "object": "http://tenant1.test/obj1",
-            "name": "bar",
-        },
-    ]
-    for r in resources:
-        await tenant.public_store.put(r)
-    collection = await service.process_get(
-        make_context(tenant),
-        StubUrl.parse("http://tenant1.test/shared?offset=0"),
-        {
-            "filter": "$[?@.name == 'bar']",
-        },
+        }
     )
-    assert collection == {
-        "@context": "https://www.w3.org/ns/activitystreams",
-        "id": "http://tenant1.test/shared?offset=0",
-        "type": "CollectionPage",
-        "totalItems": 1,
-        "items": [
-            {
-                "id": "http://tenant1.test/obj2",
-                "type": "Update",
-                "to": ["as:Public"],
-                "actor": "http://remote.test/user1",
-                "object": "http://tenant1.test/obj1",
-                "name": "bar",
-            },
-        ],
-    }
+    with pytest.raises(NotFoundException):
+        await service.process_get(
+            make_context(tenant),
+            StubUrl.parse("http://tenant1.test/shared?offset=0"),
+        )
 
 
 async def test_inbox_no_auth(service: ActivityPubService, tenant: Tenant):
