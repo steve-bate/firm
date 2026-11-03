@@ -1,4 +1,5 @@
 import base64
+from hashlib import sha256
 
 import pytest
 
@@ -6,9 +7,18 @@ from firm.core.auth.bearer_token import BearerTokenAuthenticator
 from firm.core.auth.chained import AuthenticatorChain
 from firm.core.auth.http_basic import BasicHttpAuthenticator, hash_password
 from firm.core.auth.http_signature import HttpSigAuthenticator, HttpSignatureAuth
+from firm.core.auth.keys import create_key_pair
 from firm.core.interfaces import FIRM_NS, JSONObject, Tenant
+from firm.core.remote.cache import MemoryRemoteCache
+from firm.core.remote.provider import FetchPolicy, RemoteResourceProvider
+from firm.core.resolver import ResourceResolver
 from firm.core.store.memory import MemoryResourceStore
-from tests.support import StubHttpRequest, StubIdentity
+from tests.support import (
+    StubHttpRequest,
+    StubIdentity,
+    StubTransport,
+    json_response,
+)
 
 PRIVATE_KEY = """-----BEGIN PRIVATE KEY-----
 MIIJQQIBADANBgkqhkiG9w0BAQEFAASCCSswggknAgEAAoICAQC3stI3C9K+MwxO
@@ -79,6 +89,46 @@ pQE7GFSqaM79AL240M5yhoYhFLVGtqeg/vfEb/V1+hqdmTJmvANAvkrlmoxfcxdx
 cF38UF2egml5YnqtcLl3/ukCAwEAAQ==
 -----END PUBLIC KEY-----
 """
+
+
+REMOTE_ACTOR = "http://remote.test/users/bob"
+REMOTE_KEY_ID = f"{REMOTE_ACTOR}#main-key"
+
+
+def _provider(transport: StubTransport) -> RemoteResourceProvider:
+    return RemoteResourceProvider(
+        MemoryRemoteCache(), transport, policy=FetchPolicy(allow_private_addresses=True)
+    )
+
+
+def _remote_actor(key_pair, actor_uri: str = REMOTE_ACTOR) -> JSONObject:
+    return {
+        "id": actor_uri,
+        "type": "Person",
+        "publicKey": {
+            "id": f"{actor_uri}#main-key",
+            "owner": actor_uri,
+            "publicKeyPem": key_pair.public,
+        },
+    }
+
+
+def _signed_request(
+    tenant: Tenant, key_id: str, private_key: str, body: bytes = b""
+) -> StubHttpRequest:
+    """A request signed the way an outbound firm request is: host, date, and digest."""
+    headers = {"host": "tenant1.test", "date": "Tue, 03 Nov 2026 12:00:00 GMT"}
+    if body:
+        headers["digest"] = "SHA-256=" + base64.b64encode(sha256(body).digest()).decode()
+    request = StubHttpRequest(
+        "POST" if body else "GET",
+        "http://tenant1.test/",
+        headers=headers,
+        body=body,
+        tenant=tenant,
+    )
+    HttpSignatureAuth(key_id, private_key).sign(request)
+    return request
 
 
 @pytest.fixture
@@ -165,6 +215,162 @@ async def test_httpsig_no_sig():
     verifier = HttpSigAuthenticator()
     principal = await verifier.authenticate(request)
     assert principal is None  # Unauthorized
+
+
+async def test_httpsig_remote_actor_verifies_from_the_provider(tenant: Tenant):
+    key_pair = create_key_pair()
+    transport = StubTransport({REMOTE_ACTOR: json_response(_remote_actor(key_pair))})
+    resolver = ResourceResolver({tenant.prefix: tenant}, _provider(transport))
+    request = _signed_request(tenant, REMOTE_KEY_ID, key_pair.private, b'{"hello": "world"}')
+
+    principal = await HttpSigAuthenticator(resolver=resolver).authenticate(request)
+
+    assert principal is not None
+    assert principal.actor["id"] == REMOTE_ACTOR
+    assert transport.urls == [REMOTE_ACTOR], "fetched from the host that owns the key"
+    assert await tenant.public_store.get(REMOTE_ACTOR) is None, "cached, never tenant-stored"
+
+
+async def test_httpsig_remote_key_is_fetched_once(tenant: Tenant):
+    key_pair = create_key_pair()
+    transport = StubTransport({REMOTE_ACTOR: json_response(_remote_actor(key_pair))})
+    resolver = ResourceResolver({tenant.prefix: tenant}, _provider(transport))
+    verifier = HttpSigAuthenticator(resolver=resolver)
+
+    for _ in range(2):
+        request = _signed_request(tenant, REMOTE_KEY_ID, key_pair.private)
+        assert await verifier.authenticate(request) is not None
+
+    assert transport.urls == [REMOTE_ACTOR], "the second POST is served from the cache"
+
+
+async def test_httpsig_local_actor_verifies_without_a_fetch(tenant: Tenant):
+    key_pair = create_key_pair()
+    key_id = f"{tenant.prefix}/user#main-key"
+    actor_uri = f"{tenant.prefix}/user"
+    await tenant.public_store.put(
+        {"id": key_id, "owner": actor_uri, "publicKeyPem": key_pair.public}
+    )
+    await tenant.public_store.put({"id": actor_uri, "type": "Person"})
+    transport = StubTransport({})
+    resolver = ResourceResolver({tenant.prefix: tenant}, _provider(transport))
+
+    principal = await HttpSigAuthenticator(resolver=resolver).authenticate(
+        _signed_request(tenant, key_id, key_pair.private)
+    )
+
+    assert principal is not None and principal.actor["id"] == actor_uri
+    assert transport.urls == [], "a local actor costs no network call"
+
+
+async def test_httpsig_actor_in_another_tenant_verifies_without_copy(tenant: Tenant, tmp_path):
+    other = Tenant("http://tenant2.test", MemoryResourceStore(), MemoryResourceStore(), tmp_path)
+    key_pair = create_key_pair()
+    actor_uri = "http://tenant2.test/users/carol"
+    key_id = f"{actor_uri}#main-key"
+    await other.public_store.put(
+        {"id": key_id, "owner": actor_uri, "publicKeyPem": key_pair.public}
+    )
+    await other.public_store.put({"id": actor_uri, "type": "Person"})
+    resolver = ResourceResolver({tenant.prefix: tenant, other.prefix: other})
+
+    principal = await HttpSigAuthenticator(resolver=resolver).authenticate(
+        _signed_request(tenant, key_id, key_pair.private)
+    )
+
+    assert principal is not None and principal.actor["id"] == actor_uri
+    assert await tenant.public_store.get(actor_uri) is None, "not copied into the receiver"
+
+
+async def test_httpsig_malformed_signature_is_unauthenticated(tenant: Tenant):
+    request = StubHttpRequest(
+        "GET", "http://tenant1.test/", headers={"Signature": "nonsense"}, tenant=tenant
+    )
+
+    assert await HttpSigAuthenticator().authenticate(request) is None
+
+
+async def test_httpsig_unparseable_key_is_unauthenticated(tenant: Tenant):
+    key_pair = create_key_pair()
+    actor_uri = f"{tenant.prefix}/broken"
+    key_id = f"{actor_uri}#main-key"
+    await tenant.public_store.put(
+        {"id": key_id, "owner": actor_uri, "publicKeyPem": "not a PEM key"}
+    )
+    await tenant.public_store.put({"id": actor_uri, "type": "Person"})
+
+    principal = await HttpSigAuthenticator().authenticate(
+        _signed_request(tenant, key_id, key_pair.private)
+    )
+
+    assert principal is None
+
+
+async def test_httpsig_remote_key_cannot_claim_an_unrelated_owner(tenant: Tenant):
+    key_pair = create_key_pair()
+    local_actor = f"{tenant.prefix}/local-actor"
+    await tenant.public_store.put({"id": local_actor, "type": "Person"})
+    key_id = "http://evil.test/keys/1"
+    key_document: JSONObject = {
+        "id": key_id,
+        "owner": local_actor,
+        "publicKeyPem": key_pair.public,
+    }
+    transport = StubTransport({key_id: json_response(key_document)})
+    resolver = ResourceResolver({tenant.prefix: tenant}, _provider(transport))
+
+    principal = await HttpSigAuthenticator(resolver=resolver).authenticate(
+        _signed_request(tenant, key_id, key_pair.private)
+    )
+
+    assert principal is None, "a foreign key may not claim a local actor"
+
+
+async def test_httpsig_digest_must_match_the_body(tenant: Tenant):
+    key_pair = create_key_pair()
+    actor_uri = f"{tenant.prefix}/dana"
+    key_id = f"{actor_uri}#main-key"
+    await tenant.public_store.put(
+        {"id": key_id, "owner": actor_uri, "publicKeyPem": key_pair.public}
+    )
+    await tenant.public_store.put({"id": actor_uri, "type": "Person"})
+    signed = _signed_request(tenant, key_id, key_pair.private, b'{"a": 1}')
+    tampered = StubHttpRequest(
+        "POST",
+        "http://tenant1.test/",
+        headers=dict(signed.headers),
+        body=b'{"a": 2}',
+        tenant=tenant,
+    )
+
+    assert await HttpSigAuthenticator().authenticate(tampered) is None
+
+
+async def test_httpsig_digest_must_be_in_the_signed_headers(tenant: Tenant):
+    key_pair = create_key_pair()
+    actor_uri = f"{tenant.prefix}/dana"
+    key_id = f"{actor_uri}#main-key"
+    await tenant.public_store.put(
+        {"id": key_id, "owner": actor_uri, "publicKeyPem": key_pair.public}
+    )
+    await tenant.public_store.put({"id": actor_uri, "type": "Person"})
+    body = b'{"a": 1}'
+    request = StubHttpRequest(
+        "POST",
+        "http://tenant1.test/",
+        headers={
+            "host": "tenant1.test",
+            "date": "Tue, 03 Nov 2026 12:00:00 GMT",
+            "digest": "SHA-256=" + base64.b64encode(sha256(body).digest()).decode(),
+        },
+        body=body,
+        tenant=tenant,
+    )
+    HttpSignatureAuth(key_id, key_pair.private, headers=["(request-target)", "host", "date"]).sign(
+        request
+    )
+
+    assert await HttpSigAuthenticator().authenticate(request) is None
 
 
 async def test_bearer_token(tenant: Tenant):

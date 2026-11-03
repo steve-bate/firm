@@ -231,6 +231,12 @@ async def post_to_inbox(
     tenant = context.tenant
     principal = context.principal
     store = tenant.public_store
+    signer_uri = principal.uri if principal is not None else None
+    activity_actor = get_id(resource.get("actor"))
+    if signer_uri is not None and activity_actor is not None and signer_uri != activity_actor:
+        # A relay forward is the one legitimate case where these differ; firm has no
+        # relay support yet (#29), so a mismatch here is an impersonation attempt.
+        raise NotAuthorizedException("Signature key owner does not match the activity actor")
     decision = await context.authorizer.is_post_authorized(tenant, principal, "inbox", box_uri)
     if not decision.authorized:
         raise NotAuthorizedException(decision.reason)

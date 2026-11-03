@@ -9,18 +9,18 @@ from firm.core.interfaces import FIRM_NS, Identity, Principal
 from firm.oauth2.middleware import OAuth2BearerTokenAuthenticator
 from firm.server.adapters import HttpConnectionAdapter
 
-_auth_chain = AuthenticatorChain(
-    [
-        OAuth2BearerTokenAuthenticator(),
-        BearerTokenAuthenticator(),
-        HttpSigAuthenticator(),
-        BasicHttpAuthenticator(),
-    ]
-)
-
 
 async def get_principal(request: Request) -> Identity | None:
-    return await _auth_chain.authenticate(HttpConnectionAdapter(request))
+    """Authenticate one request, with remote keys resolvable through the app's resolver."""
+    chain = AuthenticatorChain(
+        [
+            OAuth2BearerTokenAuthenticator(),
+            BearerTokenAuthenticator(),
+            HttpSigAuthenticator(resolver=request.app.state.resolver),
+            BasicHttpAuthenticator(),
+        ]
+    )
+    return await chain.authenticate(HttpConnectionAdapter(request))
 
 
 async def require_admin(

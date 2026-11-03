@@ -145,12 +145,14 @@ class HttpConnectionAdapter(HttpRequest):
         """Asynchronous stream of the request body."""
         raise NotImplementedError()
 
-    def content(self) -> bytes:
-        return self._conn.content
+    def content(self) -> bytes | None:
+        return getattr(self._conn, "_body", None)
 
     async def body(self) -> bytes:
         """Read the entire request body at once as bytes."""
-        return self._conn.content
+        if isinstance(self._conn, Request):
+            return await self._conn.body()
+        return b""
 
     async def json(self) -> Mapping[str, Any]:
         """Parse the request body as JSON."""

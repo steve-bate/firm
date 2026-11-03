@@ -2004,8 +2004,13 @@ def _reply(followers: str, note: str, **overrides) -> JSONObject:
     return activity
 
 
-async def _arrive(tenant, box_owner: JSONObject, activity: JSONObject, delivery) -> None:
-    context = make_context(tenant, principal=StubIdentity(REMOTE_AUTHOR, tenant))
+async def _arrive(
+    tenant, box_owner: JSONObject, activity: JSONObject, delivery, principal=None
+) -> None:
+    context = make_context(
+        tenant,
+        principal=principal or StubIdentity(REMOTE_AUTHOR, tenant),
+    )
     await post_to_inbox(
         context,
         cast(APActor, box_owner),
@@ -2067,9 +2072,16 @@ async def test_forwarding_does_not_pick_up_new_addressees(tenant):
 async def test_an_activity_of_ours_is_not_forwarded(tenant):
     box_owner, followers, note = await _box_and_followers(tenant)
     delivery = StubDeliveryService()
-    activity = _reply(followers, note, actor=f"{tenant.prefix}/user1")
+    actor_uri = f"{tenant.prefix}/user1"
+    activity = _reply(followers, note, actor=actor_uri)
 
-    await _arrive(tenant, box_owner, activity, delivery)
+    await _arrive(
+        tenant,
+        box_owner,
+        activity,
+        delivery,
+        principal=StubIdentity(actor_uri, tenant),
+    )
 
     assert delivery.delivered == [], "our own delivery already addressed our addressees"
 
@@ -2197,7 +2209,11 @@ async def test_a_received_activity_is_stored_without_firm_properties(
             },
         ],
     )
-    context = make_context(tenant, principal=remote_identity, remote=_provider(StubTransport({})))
+    context = make_context(
+        tenant,
+        principal=StubIdentity("http://tenant1.test/user2", tenant),
+        remote=_provider(StubTransport({})),
+    )
     toot_context: JSONObject = {"toot": "http://joinmastodon.org/ns#"}
 
     await service.process_post(

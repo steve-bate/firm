@@ -1,7 +1,11 @@
 import asyncio
+import base64
+import json
 import os
 import time
+from hashlib import sha256
 from typing import cast
+from urllib.parse import urlparse
 
 import pytest
 from fastapi import FastAPI, Request
@@ -10,7 +14,7 @@ from starlette.testclient import TestClient
 
 from firm.core.auth.http_signature import HttpSignatureAuth
 from firm.core.auth.keys import create_key_pair
-from firm.core.interfaces import FIRM_NS, APActor, Principal, Tenant
+from firm.core.interfaces import FIRM_NS, APActor, HttpMethod, Principal, Tenant
 from firm.core.remote.cache import CacheEntry, SqliteRemoteCache
 from firm.core.resolver import ResourceResolver
 from firm.core.store.memory import MemoryResourceStore
@@ -18,6 +22,7 @@ from firm.server.adapters import HttpxTransport
 from firm.server.auth import get_principal
 from firm.server.config import (
     FileStoreConfig,
+    MemoryStoreConfig,
     RemoteFetchConfig,
     ServerConfig,
     TenantConfig,
@@ -30,6 +35,7 @@ from firm.server.server import (
     init_remote_provider,
     init_remote_signer,
 )
+from tests.support import StubHttpRequest
 
 TENANT_PREFIX = "https://server.test"
 
@@ -186,6 +192,141 @@ async def _seed_local_actors(tenant: Tenant, *actor_uris: str) -> None:
 
 async def _inbox_holds(tenant: Tenant, actor_uri: str, activity_uri: str) -> bool:
     return await tenant.public_store.contains_item(f"{actor_uri}/inbox", activity_uri)
+
+
+@pytest.fixture
+def signed_client(tmp_path):
+    """A server whose remote provider may fetch private-address hosts (httpx is stubbed)."""
+    config = ServerConfig(
+        [TenantConfig(prefix=TENANT_PREFIX)],
+        MemoryStoreConfig(tmp_path),
+        remote_fetch=RemoteFetchConfig(allow_private_addresses=True),
+    )
+    with TestClient(app_factory(config), base_url=TENANT_PREFIX) as client:
+        yield client
+        clear_app()
+
+
+def _signed_headers(
+    method: HttpMethod, url: str, body: bytes, key_id: str, private_key: str
+) -> dict[str, str]:
+    """Sign the bytes a TestClient will send, with the headers it will carry."""
+    parsed = urlparse(url)
+    digest = "SHA-256=" + base64.b64encode(sha256(body).digest()).decode()
+    request = StubHttpRequest(
+        method,
+        url,
+        headers={
+            "host": parsed.netloc,
+            "date": "Tue, 03 Nov 2026 12:00:00 GMT",
+            "digest": digest,
+        },
+        body=body,
+    )
+    HttpSignatureAuth(key_id, private_key).sign(request)
+    return {
+        "Host": parsed.netloc,
+        "Date": request.headers["date"],
+        "Digest": digest,
+        "Signature": request.headers["Signature"],
+        "Content-Type": "application/activity+json",
+    }
+
+
+def test_inbox_authenticates_a_remote_signature(signed_client, httpx_mock):
+    """A POST signed by a remote actor verifies, and the actor stays in the remote cache."""
+    key_pair = create_key_pair()
+    actor = "https://remote.test/users/bob"
+    httpx_mock.add_response(
+        method="GET",
+        url=actor,
+        json={
+            "id": actor,
+            "type": "Person",
+            "publicKey": {
+                "id": f"{actor}#main-key",
+                "owner": actor,
+                "publicKeyPem": key_pair.public,
+            },
+        },
+        headers={"Content-Type": "application/activity+json"},
+    )
+    tenant = next(iter(signed_client.app.state.tenants.values()))
+    alice = f"{TENANT_PREFIX}/alice"
+    asyncio.run(_seed_local_actors(tenant, alice))
+    activity = {
+        "@context": "https://www.w3.org/ns/activitystreams",
+        "id": "https://remote.test/activities/32",
+        "type": "Create",
+        "actor": actor,
+        "to": [alice],
+        "object": {
+            "id": "https://remote.test/notes/32",
+            "type": "Note",
+            "content": "hello",
+        },
+    }
+    body = json.dumps(activity).encode()
+    headers = _signed_headers(
+        "POST", f"{TENANT_PREFIX}/shared", body, f"{actor}#main-key", key_pair.private
+    )
+
+    response = signed_client.post(f"{TENANT_PREFIX}/shared", content=body, headers=headers)
+
+    assert response.status_code == 202, response.text
+    assert asyncio.run(_inbox_holds(tenant, alice, activity["id"]))
+    assert asyncio.run(tenant.public_store.get(actor)) is None, "not a tenant document"
+    assert asyncio.run(signed_client.app.state.resolver.peek(actor)) is not None, "cached"
+    assert len(httpx_mock.get_requests()) == 1
+
+    replay = signed_client.post(f"{TENANT_PREFIX}/shared", content=body, headers=headers)
+
+    assert replay.status_code == 202
+    assert len(httpx_mock.get_requests()) == 1, "the cached key is not fetched again"
+
+
+def test_inbox_refuses_a_signature_from_an_unrelated_actor(signed_client, httpx_mock):
+    """A valid signature from actor X may not deliver an activity authored by actor Y."""
+    eve_pair = create_key_pair()
+    eve = "https://remote.test/users/eve"
+    httpx_mock.add_response(
+        method="GET",
+        url=eve,
+        json={
+            "id": eve,
+            "type": "Person",
+            "publicKey": {
+                "id": f"{eve}#main-key",
+                "owner": eve,
+                "publicKeyPem": eve_pair.public,
+            },
+        },
+        headers={"Content-Type": "application/activity+json"},
+    )
+    tenant = next(iter(signed_client.app.state.tenants.values()))
+    alice = f"{TENANT_PREFIX}/alice"
+    asyncio.run(_seed_local_actors(tenant, alice))
+    activity = {
+        "@context": "https://www.w3.org/ns/activitystreams",
+        "id": "https://remote.test/activities/33",
+        "type": "Create",
+        "actor": "https://remote.test/users/bob",
+        "to": [alice],
+        "object": {
+            "id": "https://remote.test/notes/33",
+            "type": "Note",
+            "content": "not mine",
+        },
+    }
+    body = json.dumps(activity).encode()
+    headers = _signed_headers(
+        "POST", f"{TENANT_PREFIX}/shared", body, f"{eve}#main-key", eve_pair.private
+    )
+
+    response = signed_client.post(f"{TENANT_PREFIX}/shared", content=body, headers=headers)
+
+    assert response.status_code == 403
+    assert not asyncio.run(_inbox_holds(tenant, alice, activity["id"]))
 
 
 def test_shared_inbox_post_reaches_the_named_inbox(client, remote_principal):
