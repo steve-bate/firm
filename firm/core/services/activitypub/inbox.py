@@ -1,5 +1,7 @@
 import logging
+from datetime import datetime, timezone
 from typing import Mapping
+from urllib.parse import urlparse
 
 from firm.core.interfaces import JSONObject
 from firm.core.services.activitypub.collections import (
@@ -9,9 +11,18 @@ from firm.core.services.activitypub.collections import (
 from firm.core.services.activitypub.exceptions import (
     InvalidRequestException,
     InvalidResourceException,
+    NotAuthorizedException,
 )
 from firm.core.services.activitypub.support import FirmBoxContext, generate_id
-from firm.core.util import get_id, has_value, is_type, resource_get, resource_id
+from firm.core.util import (
+    AS2_ACTOR_TYPES,
+    get_id,
+    has_value,
+    is_type,
+    is_type_any,
+    resource_get,
+    resource_id,
+)
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +48,8 @@ async def process_inbox(
         return await _process_inbox_like(context, activity)
     elif has_value(activity, "type", "Create"):
         return await _process_inbox_create(context, activity)
+    elif has_value(activity, "type", "Update"):
+        return await _process_inbox_update(context, activity)
     elif has_value(activity, "type", "Undo"):
         return await _process_inbox_undo(context, activity)
     elif has_value(activity, "type", "Delete"):
@@ -141,6 +154,90 @@ async def _process_inbox_create(
         activity["object"] = resource_id(activity_object)
         await context.keep(activity_object)
         await context.keep(activity)
+
+
+async def _process_inbox_update(
+    context: FirmBoxContext,
+    activity: JSONObject,
+) -> None:
+    """A remote server has replaced one of its own documents (AP 7.3).
+
+    Server-to-server ``Update`` is a complete replacement, not the client-side partial
+    merge of 6.3.1: the supplied object is stored whole, so a field it omits is gone
+    from our copy. A remote document lives in the remote cache, so the replacement is
+    served from there until the entry expires and the origin is asked again.
+
+    Authorization is the object's own origin: only the server the object ``id`` names
+    may rewrite it, the actor may not differ from the signer, and an actor document is
+    updated only by the actor itself - otherwise a signer on the same origin could swap
+    the ``publicKey`` of an actor it does not own.
+    """
+    supplied = activity.get("object")
+    if not isinstance(supplied, Mapping):
+        # The replacement is the payload; a bare reference leaves nothing to apply.
+        raise InvalidRequestException("Update without an embedded object")
+    object_uri = get_id(supplied)
+    if object_uri is None:
+        raise InvalidRequestException("Update without an object id")
+    actor_uri = get_id(activity.get("actor"))
+    if actor_uri is None:
+        raise InvalidRequestException("Update without an actor")
+    if context.resolver.owner(object_uri) is not None:
+        raise NotAuthorizedException("A locally owned object is not updated by another server")
+    actor_origin = _origin(actor_uri)
+    object_origin = _origin(object_uri)
+    if actor_origin is None or object_origin is None:
+        raise InvalidRequestException("Update actor or object is not an absolute URI")
+    if actor_origin != object_origin:
+        raise NotAuthorizedException("Update origin does not match the object's origin")
+    if context.principal is not None and context.principal.uri != actor_uri:
+        raise NotAuthorizedException("Update actor does not match the signer")
+    if is_type_any(supplied, AS2_ACTOR_TYPES) and object_uri != actor_uri:
+        raise NotAuthorizedException("An actor document is updated only by its actor")
+    # The copy we hold is a cache entry: replace it, or insert one for an object we
+    # never fetched. Comparing the AS2 ``updated`` stamp keeps a redelivered or
+    # out-of-order Update from rolling the copy back.
+    held = await context.resolver.peek(object_uri)
+    if held is not None and _is_older(supplied, held):
+        log.info("Inbox: ignoring an Update older than the copy held for %s", object_uri)
+        return
+    activity["object"] = object_uri
+    await context.keep(supplied)
+    await context.keep(activity)
+
+
+def _origin(uri: str) -> tuple[str, str] | None:
+    """Scheme and authority of a URI: the unit AP 7.3 authorizes an Update by."""
+    parts = urlparse(uri)
+    if not parts.scheme or not parts.hostname:
+        return None
+    return parts.scheme.lower(), parts.netloc.lower()
+
+
+def _updated_at(document: JSONObject) -> datetime | None:
+    """The AS2 ``updated`` stamp, or ``None`` when it is absent or unreadable."""
+    value = document.get("updated")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _is_older(supplied: JSONObject, held: JSONObject) -> bool:
+    """Whether the held copy already supersedes what this Update supplies.
+
+    An unreadable stamp on either side is not evidence of age, so the update is
+    applied: the same document delivered twice must leave the same copy, not be
+    ignored on the second arrival.
+    """
+    supplied_at = _updated_at(supplied)
+    held_at = _updated_at(held)
+    if supplied_at is None or held_at is None:
+        return False
+    return supplied_at < held_at
 
 
 async def _process_inbox_delete(

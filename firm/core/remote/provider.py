@@ -188,6 +188,20 @@ class RemoteResourceProvider:
         """Forget the cached copy. The origin still has the document."""
         await self._cache.delete(cache_key(uri))
 
+    async def peek(self, uri: str) -> JSONObject | None:
+        """The copy this cache holds, with no fetch behind it.
+
+        A caller deciding whether to apply a document another server sent must not
+        turn that decision into a request to the origin. An entry past its TTL still
+        holds the document this server was serving, so freshness is not filtered here;
+        ``get`` is the read that refetches, and this is not it.
+        """
+        key = cache_key(uri)
+        if not key:
+            return None
+        entry = await self._cache.get(key)
+        return entry.document if entry is not None else None
+
     async def remember(self, document: JSONObject) -> None:
         """Cache a document this server was sent, so serving it needs no refetch.
 

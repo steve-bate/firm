@@ -312,6 +312,36 @@ async def test_invalidate_drops_the_cached_copy():
     assert transport.urls == [NOTE_URI, NOTE_URI], "the copy is forgotten, the origin still has it"
 
 
+async def test_peek_returns_the_cached_copy_without_fetching():
+    transport = StubTransport({NOTE_URI: json_response(NOTE)})
+    provider = _provider(transport)
+    await provider.get(NOTE_URI)
+
+    assert await provider.peek(NOTE_URI) == NOTE
+    assert transport.urls == [NOTE_URI], "peek adds no request"
+
+
+async def test_peek_of_a_uri_never_fetched_is_none():
+    transport = StubTransport({NOTE_URI: json_response(NOTE)})
+    provider = _provider(transport)
+
+    assert await provider.peek(NOTE_URI) is None
+    assert transport.urls == [], "asking what we hold is not a fetch"
+
+
+async def test_peek_keeps_the_copy_after_it_expires():
+    """An expired entry still holds the document this server was serving."""
+    transport = StubTransport({NOTE_URI: json_response(NOTE)})
+    clock = Clock()
+    provider = _provider(transport, clock=clock)
+    await provider.get(NOTE_URI)
+    clock.advance(FetchPolicy().ttl + 1)
+
+    assert await provider.peek(NOTE_URI) == NOTE
+    assert await provider.get(NOTE_URI) == NOTE
+    assert transport.urls == [NOTE_URI, NOTE_URI], "get refetches, peek did not"
+
+
 async def test_purge_and_close_delegate_to_the_cache():
     transport = StubTransport({NOTE_URI: json_response(NOTE)})
     cache = MemoryRemoteCache()

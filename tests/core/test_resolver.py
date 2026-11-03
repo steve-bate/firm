@@ -108,3 +108,30 @@ async def test_fetch_returns_a_document_with_the_internal_item_key():
     assert fetched is not None
     assert fetched["items"] == ["a"]
     assert "orderedItems" not in fetched
+
+
+async def test_peek_returns_what_we_hold_without_fetching():
+    transport = StubTransport({NOTE_URI: json_response(NOTE)})
+    resolver = ResourceResolver({}, _provider(transport))
+    await resolver.remember(dict(NOTE))
+
+    assert await resolver.peek(NOTE_URI) == NOTE
+    assert transport.urls == [], "asking what we hold is not a request to the origin"
+
+
+async def test_peek_is_none_before_anything_is_held():
+    transport = StubTransport({NOTE_URI: json_response(NOTE)})
+    resolver = ResourceResolver({}, _provider(transport))
+
+    assert await resolver.peek(NOTE_URI) is None
+    assert transport.urls == []
+
+
+async def test_peek_refuses_a_locally_owned_uri(tmp_path):
+    transport = StubTransport({})
+    resolver = ResourceResolver({A_PREFIX: _tenant(A_PREFIX, tmp_path)}, _provider(transport))
+
+    assert await resolver.peek(f"{A_PREFIX}/obj1") is None
+    assert await resolver.peek(URN) is None
+
+    assert transport.urls == [], "our own documents are never cached here"

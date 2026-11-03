@@ -7,6 +7,7 @@ import pytest
 from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.interfaces import (
     FIRM_NS,
+    JSON,
     MAX_COLLECTION_PAGE_SIZE,
     APActor,
     DeliveryFailure,
@@ -1433,6 +1434,330 @@ async def test_inbox_delete_invalidates_the_cached_copy(
 
     assert await provider.get(note_uri) == note
     assert transport.urls == [note_uri, note_uri], "the delete invalidated the cached copy"
+
+
+REMOTE_UPDATE_ID = "http://remote.test/update8"
+REMOTE_UPDATE_ACTOR = "http://remote.test/user1"
+REMOTE_UPDATED_OBJECT = "http://remote.test/notes/8"
+HELD_OBJECT: JSONObject = {
+    "id": REMOTE_UPDATED_OBJECT,
+    "type": "Note",
+    "name": "test note",
+    "content": "original content",
+    "attributedTo": REMOTE_UPDATE_ACTOR,
+    "updated": "2026-11-01T10:00:00Z",
+}
+
+
+async def _seed_inbox_owner(tenant: Tenant) -> None:
+    """A local actor with an inbox, which is all an inbox POST needs."""
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+                "followers": "http://tenant1.test/user2/followers",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+
+
+def _update(object_document: JSON, **overrides) -> JSONObject:
+    activity: JSONObject = {
+        "id": REMOTE_UPDATE_ID,
+        "type": "Update",
+        "actor": REMOTE_UPDATE_ACTOR,
+        "object": object_document,
+    }
+    activity.update(overrides)
+    return activity
+
+
+async def test_inbox_update_replaces_the_held_object_whole(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await _seed_inbox_owner(tenant)
+    transport = StubTransport({})
+    provider = _provider(transport)
+    await provider.remember(copy.deepcopy(HELD_OBJECT))
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+    replacement: JSONObject = {
+        "id": REMOTE_UPDATED_OBJECT,
+        "type": "Note",
+        "summary": "test summary",
+        "content": "modified content",
+        "attributedTo": REMOTE_UPDATE_ACTOR,
+        "updated": "2026-11-02T10:00:00Z",
+    }
+
+    await service.process_post(
+        context, StubUrl.parse("http://tenant1.test/inbox"), _update(replacement)
+    )
+
+    served = await context.dereference(REMOTE_UPDATED_OBJECT)
+    assert served is not None
+    assert served["content"] == "modified content"
+    assert served["summary"] == "test summary", "the supplied object is stored"
+    assert "name" not in served, "a complete replacement (AP 7.3), not a merge (AP 6.3.1)"
+    assert transport.urls == [], "served at its own id from what the Update supplied"
+
+
+async def test_inbox_update_for_an_object_we_do_not_hold_is_inserted(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await _seed_inbox_owner(tenant)
+    transport = StubTransport({})
+    provider = _provider(transport)
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+    supplied: JSONObject = {
+        "id": REMOTE_UPDATED_OBJECT,
+        "type": "Note",
+        "content": "modified content",
+        "updated": "2026-11-02T10:00:00Z",
+    }
+
+    await service.process_post(
+        context, StubUrl.parse("http://tenant1.test/inbox"), _update(supplied)
+    )
+
+    assert await provider.peek(REMOTE_UPDATED_OBJECT) == supplied, "the update is kept"
+    assert transport.urls == [], "an insert, not a fetch to compare against"
+
+
+async def test_inbox_update_without_an_embedded_object_is_a_bad_request(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await _seed_inbox_owner(tenant)
+    transport = StubTransport({})
+    provider = _provider(transport)
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+
+    with pytest.raises(InvalidRequestException):
+        await service.process_post(
+            context,
+            StubUrl.parse("http://tenant1.test/inbox"),
+            _update(REMOTE_UPDATED_OBJECT),
+        )
+
+    assert await provider.peek(REMOTE_UPDATED_OBJECT) is None, "a reference is not a replacement"
+
+
+async def test_inbox_update_from_another_origin_is_refused(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await _seed_inbox_owner(tenant)
+    transport = StubTransport({})
+    provider = _provider(transport)
+    await provider.remember(copy.deepcopy(HELD_OBJECT))
+    elsewhere = StubIdentity("http://other.test/user1", tenant)
+    context = make_context(tenant, principal=elsewhere, remote=provider)
+
+    with pytest.raises(NotAuthorizedException):
+        await service.process_post(
+            context,
+            StubUrl.parse("http://tenant1.test/inbox"),
+            _update(
+                {"id": REMOTE_UPDATED_OBJECT, "type": "Note", "content": "forged"},
+                actor="http://other.test/user1",
+            ),
+        )
+
+    assert await provider.peek(REMOTE_UPDATED_OBJECT) == HELD_OBJECT, "the copy is untouched"
+    assert transport.urls == []
+
+
+async def test_inbox_update_from_an_actor_other_than_the_signer_is_refused(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await _seed_inbox_owner(tenant)
+    transport = StubTransport({})
+    provider = _provider(transport)
+    await provider.remember(copy.deepcopy(HELD_OBJECT))
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+
+    with pytest.raises(NotAuthorizedException):
+        await service.process_post(
+            context,
+            StubUrl.parse("http://tenant1.test/inbox"),
+            _update(
+                {"id": REMOTE_UPDATED_OBJECT, "type": "Note", "content": "forged"},
+                actor="http://remote.test/user3",
+            ),
+        )
+
+    assert await provider.peek(REMOTE_UPDATED_OBJECT) == HELD_OBJECT
+
+
+async def test_inbox_update_of_a_local_object_is_refused(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await _seed_inbox_owner(tenant)
+    local_uri = "http://tenant1.test/user2/notes/1"
+    document: JSONObject = {"id": local_uri, "type": "Note", "content": "ours"}
+    await tenant.public_store.put(document)
+    transport = StubTransport({})
+    context = make_context(tenant, principal=remote_identity, remote=_provider(transport))
+
+    with pytest.raises(NotAuthorizedException):
+        await service.process_post(
+            context,
+            StubUrl.parse("http://tenant1.test/inbox"),
+            _update({"id": local_uri, "type": "Note", "content": "theirs"}),
+        )
+
+    assert await tenant.public_store.get(local_uri) == document, "another server never rewrites it"
+
+
+async def test_inbox_update_person_replaces_the_actor_document(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await _seed_inbox_owner(tenant)
+    transport = StubTransport({})
+    provider = _provider(transport)
+    await provider.remember(
+        {
+            "id": REMOTE_UPDATE_ACTOR,
+            "type": "Person",
+            "name": "Old name",
+            "publicKey": {
+                "id": f"{REMOTE_UPDATE_ACTOR}#main-key",
+                "owner": REMOTE_UPDATE_ACTOR,
+                "publicKeyPem": "old-key",
+            },
+        }
+    )
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+    renamed: JSONObject = {
+        "id": REMOTE_UPDATE_ACTOR,
+        "type": "Person",
+        "name": "New name",
+        "updated": "2026-11-02T10:00:00Z",
+        "publicKey": {
+            "id": f"{REMOTE_UPDATE_ACTOR}#main-key",
+            "owner": REMOTE_UPDATE_ACTOR,
+            "publicKeyPem": "new-key",
+        },
+    }
+
+    await service.process_post(
+        context, StubUrl.parse("http://tenant1.test/inbox"), _update(renamed)
+    )
+
+    served = await provider.peek(REMOTE_UPDATE_ACTOR)
+    assert served is not None
+    assert served["name"] == "New name"
+    public_key = cast(JSONObject, served["publicKey"])
+    assert public_key["publicKeyPem"] == "new-key", "the owner may rekey itself"
+
+
+async def test_inbox_update_person_from_another_actor_on_the_same_origin_is_refused(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await _seed_inbox_owner(tenant)
+    transport = StubTransport({})
+    provider = _provider(transport)
+    other_actor = "http://remote.test/user9"
+    held: JSONObject = {
+        "id": other_actor,
+        "type": "Person",
+        "publicKey": {
+            "id": f"{other_actor}#main-key",
+            "owner": other_actor,
+            "publicKeyPem": "their-key",
+        },
+    }
+    await provider.remember(copy.deepcopy(held))
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+
+    with pytest.raises(NotAuthorizedException):
+        await service.process_post(
+            context,
+            StubUrl.parse("http://tenant1.test/inbox"),
+            _update(
+                {
+                    "id": other_actor,
+                    "type": "Person",
+                    "publicKey": {
+                        "id": f"{other_actor}#main-key",
+                        "owner": other_actor,
+                        "publicKeyPem": "swapped-key",
+                    },
+                },
+            ),
+        )
+
+    assert await provider.peek(other_actor) == held, "a signer cannot swap another actor's key"
+
+
+async def test_inbox_update_older_than_the_copy_we_hold_is_ignored(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await _seed_inbox_owner(tenant)
+    held = copy.deepcopy(HELD_OBJECT)
+    held["updated"] = "2026-11-02T10:00:00Z"
+    transport = StubTransport({})
+    provider = _provider(transport)
+    await provider.remember(held)
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+
+    await service.process_post(
+        context,
+        StubUrl.parse("http://tenant1.test/inbox"),
+        _update(
+            {
+                "id": REMOTE_UPDATED_OBJECT,
+                "type": "Note",
+                "content": "stale content",
+                "updated": "2026-11-01T10:00:00Z",
+            }
+        ),
+    )
+
+    assert await provider.peek(REMOTE_UPDATED_OBJECT) == held, "an older copy does not roll back"
+
+
+async def test_inbox_update_arriving_twice_leaves_one_listing_and_one_copy(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    tenant = remote_identity.tenant
+    await _seed_inbox_owner(tenant)
+    transport = StubTransport({})
+    provider = _provider(transport)
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+    supplied: JSONObject = {
+        "id": REMOTE_UPDATED_OBJECT,
+        "type": "Note",
+        "content": "modified content",
+        "updated": "2026-11-02T10:00:00Z",
+    }
+    activity = _update(supplied)
+
+    await service.process_post(context, StubUrl.parse("http://tenant1.test/inbox"), activity)
+    await service.process_post(
+        context, StubUrl.parse("http://tenant1.test/inbox"), copy.deepcopy(activity)
+    )
+
+    assert await provider.peek(REMOTE_UPDATED_OBJECT) == supplied
+    inbox = await tenant.public_store.get("http://tenant1.test/inbox")
+    assert inbox and isinstance(inbox["items"], Sequence)
+    assert inbox["items"] == [REMOTE_UPDATE_ID], "a redelivery adds no second listing"
 
 
 async def test_inbox_post_gives_an_unaddressed_activity_its_recipient(

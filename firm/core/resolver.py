@@ -86,6 +86,22 @@ class ResourceResolver:
             return
         await self._remote.invalidate(uri)
 
+    async def peek(self, uri: str) -> JSONObject | None:
+        """The copy this server holds of a document another server owns, or ``None``.
+
+        No fetch: a caller deciding what to do with a document it was sent must not
+        turn that decision into a request to the origin. A locally owned URI is the
+        owner's store's to answer, so it is refused here rather than read from a cache
+        that never holds it.
+        """
+        if self.owner(uri) is not None or is_urn(uri):
+            log.warning("Refusing to peek at a locally owned document: %s", uri)
+            return None
+        if self._remote is None:
+            return None
+        document = await self._remote.peek(uri)
+        return normalize_collection_items(document) if document else None
+
     async def purge(self) -> int:
         """Drop expired cached documents. Returns the number removed."""
         if self._remote is None:
