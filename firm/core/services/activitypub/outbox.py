@@ -22,6 +22,8 @@ from firm.core.services.activitypub.support import (
 from firm.core.util import (
     ACTIVITIES_REQUIRING_OBJECT,
     ACTIVITIES_REQUIRING_TARGET,
+    AS2_ACTOR_TYPES,
+    AS2_CONTEXT,
     get_id,
     get_list,
     get_types,
@@ -33,6 +35,81 @@ from firm.core.util import (
 )
 
 log = logging.getLogger(__name__)
+
+# The AS2 activity types: AP 6.2.1 reaches only non-activities.
+AS2_ACTIVITY_TYPES = frozenset(
+    {
+        "Accept",
+        "Activity",
+        "Add",
+        "Announce",
+        "Arrive",
+        "Block",
+        "Create",
+        "Delete",
+        "Disagree",
+        "Flag",
+        "Follow",
+        "Ignore",
+        "IntransitiveActivity",
+        "Invite",
+        "Join",
+        "Leave",
+        "Like",
+        "Listen",
+        "Move",
+        "Offer",
+        "Question",
+        "Read",
+        "Reject",
+        "Remove",
+        "TentativeAccept",
+        "TentativeReject",
+        "Travel",
+        "Undo",
+        "Update",
+        "View",
+    }
+)
+
+# A link, mention or hashtag is addressed by another property; a collection is not
+# content a Create can introduce.
+AS2_REFERENCE_TYPES = frozenset(
+    {
+        "Collection",
+        "CollectionPage",
+        "Hashtag",
+        "Link",
+        "Mention",
+        "OrderedCollection",
+        "OrderedCollectionPage",
+    }
+)
+
+# A document naming one of these is not introduced by a Create: actors are
+# provisioned rather than created through an outbox, and `Patch` is firm's own
+# activity type. A type the AS2 vocabulary does not define is the caller's own
+# object type, and is wrapped.
+NON_OBJECT_TYPES = AS2_ACTIVITY_TYPES | AS2_ACTOR_TYPES | AS2_REFERENCE_TYPES | frozenset({"Patch"})
+
+
+def _introduces_an_object(document: JSONObject) -> bool:
+    """Whether the outbox POST is an object, which AP 6.2.1 has a Create introduce."""
+    types = get_types(document)
+    return bool(types) and not any(t in NON_OBJECT_TYPES for t in types)
+
+
+def _as_create(document: JSONObject) -> JSONObject:
+    """The Create that introduces a posted object, carrying the object's audiences.
+
+    AP 6.2.1 requires the properties to be copied over; a recipient named in two
+    of them stays in both, as the sender wrote it.
+    """
+    create: JSONObject = {"@context": AS2_CONTEXT, "type": "Create", "object": document}
+    for key in ("to", "bto", "cc", "bcc", "audience"):
+        if key in document:
+            create[key] = document[key]
+    return create
 
 
 def _merge_audiences(activity: JSONObject) -> None:
@@ -81,6 +158,9 @@ async def process_outbox(context: FirmBoxContext, activity: JSONObject) -> str |
             if "target" not in activity:
                 raise InvalidRequestException("Missing target")
     log.info(f"Outbox activity: {activity.get('type')}")
+    posted_object = _introduces_an_object(activity)
+    if posted_object:
+        activity = _as_create(activity)
     actor_uri = resource_id(context.box_owner)
     activity_id = generate_id(actor_uri, activity)
     activity["id"] = activity_id
@@ -90,7 +170,10 @@ async def process_outbox(context: FirmBoxContext, activity: JSONObject) -> str |
     if "attributedTo" not in activity:
         activity["attributedTo"] = actor_uri
     if has_value(activity, "type", "Create"):
-        await _process_outbox_create(context, activity)
+        if posted_object:
+            await _store_create(context, activity)
+        else:
+            await _process_outbox_create(context, activity)
     else:
         try:
             if has_value(activity, "type", "Delete"):
@@ -386,6 +469,10 @@ async def _process_outbox_delete(context, activity):
 
 async def _process_outbox_create(context: FirmBoxContext, activity: JSONObject) -> None:
     _merge_audiences(activity)
+    await _store_create(context, activity)
+
+
+async def _store_create(context: FirmBoxContext, activity: JSONObject) -> None:
     object_ = activity["object"]
     if isinstance(object_, Mapping):
         # Always assign an URI to the object for now.

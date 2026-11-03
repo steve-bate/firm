@@ -34,6 +34,7 @@ from firm.core.services.activitypub.service import (
 )
 from firm.core.store.file import FileResourceStore
 from firm.core.store.memory import MemoryResourceStore
+from firm.core.util import get_list
 from tests.support import (
     CountingStore,
     RecordingAuthorizer,
@@ -1901,3 +1902,180 @@ async def test_an_inbox_handler_sees_the_activity_without_firm_properties(tenant
     follow_box = await tenant.public_store.get(followers)
     assert follow_box is not None
     assert REMOTE_AUTHOR in cast(list[str], follow_box["items"]), "the follow ran"
+
+
+OUTBOX_OWNER = "http://tenant1.test/user1"
+OUTBOX_URI = f"{OUTBOX_OWNER}/outbox"
+STANDARD_OBJECT_TYPES = [
+    "Article",
+    "Audio",
+    "Document",
+    "Event",
+    "Image",
+    "Note",
+    "Page",
+    "Place",
+    "Profile",
+    "Relationship",
+    "Tombstone",
+    "Video",
+]
+
+
+async def _seed_outbox(tenant: Tenant) -> None:
+    await tenant.public_store.put(
+        {
+            "id": OUTBOX_OWNER,
+            "type": "Person",
+            "inbox": f"{OUTBOX_OWNER}/inbox",
+            "outbox": OUTBOX_URI,
+        }
+    )
+    await tenant.public_store.put(
+        {"id": OUTBOX_URI, "type": "OrderedCollection", "attributedTo": OUTBOX_OWNER}
+    )
+
+
+async def test_outbox_post_wraps_a_bare_note_in_a_create(
+    recording_service: tuple[ActivityPubService, StubDeliveryService], tenant: Tenant
+):
+    service, delivery = recording_service
+    await _seed_outbox(tenant)
+    note: JSONObject = {
+        "type": "Note",
+        "content": "hello",
+        "to": ["http://remote.test/user1/followers", "as:Public"],
+        "cc": "http://remote.test/user1",
+        "bto": "http://remote.test/user2",
+        "bcc": ["http://remote.test/user3"],
+        "audience": ["http://remote.test/user4"],
+    }
+
+    location = await service.process_post(
+        make_context(tenant, principal=StubIdentity(OUTBOX_OWNER, tenant)),
+        StubUrl.parse(OUTBOX_URI),
+        note,
+    )
+
+    assert location is not None
+    create = await tenant.public_store.get(location)
+    assert create is not None, "Location names the stored Create"
+    assert create["type"] == "Create"
+    assert create["actor"] == OUTBOX_OWNER
+    stored_note = await tenant.public_store.get(cast(str, create["object"]))
+    assert stored_note is not None, "the Create's object is the Note's own id"
+    assert stored_note["type"] == "Note"
+    assert stored_note["content"] == "hello"
+    assert stored_note["attributedTo"] == OUTBOX_OWNER
+    outbox = await tenant.public_store.get(OUTBOX_URI)
+    assert outbox is not None
+    assert outbox["items"] == [location], "the Create is the outbox entry, not the Note"
+    assert delivery.delivered == [location], "the delivered activity is the Create"
+    for key in ("to", "cc", "bto", "bcc", "audience"):
+        assert sorted(cast(list[str], get_list(create, key))) == sorted(
+            cast(list[str], get_list(note, key))
+        ), f"wrong {key}"
+        assert len(get_list(create, key)) == len(get_list(note, key)), f"duplicated {key}"
+
+
+@pytest.mark.parametrize("object_type", STANDARD_OBJECT_TYPES)
+async def test_outbox_post_wraps_every_standard_object_type(
+    object_type: str, service: ActivityPubService, tenant: Tenant
+):
+    await _seed_outbox(tenant)
+    document: JSONObject = {
+        "type": object_type,
+        "name": "test object",
+        "to": "http://remote.test/user1",
+        "cc": ["http://remote.test/user2", "as:Public"],
+    }
+
+    location = await service.process_post(
+        make_context(tenant, principal=StubIdentity(OUTBOX_OWNER, tenant)),
+        StubUrl.parse(OUTBOX_URI),
+        document,
+    )
+
+    assert location is not None
+    create = await tenant.public_store.get(location)
+    assert create is not None
+    assert create["type"] == "Create"
+    stored = await tenant.public_store.get(cast(str, create["object"]))
+    assert stored is not None
+    assert stored["type"] == object_type
+    assert sorted(cast(list[str], get_list(create, "to"))) == ["http://remote.test/user1"]
+    assert sorted(cast(list[str], get_list(create, "cc"))) == sorted(
+        cast(list[str], document["cc"])
+    )
+
+
+@pytest.mark.parametrize("document_type", ["Question", "Person", "OrderedCollection", "Link"])
+async def test_outbox_post_does_not_wrap_a_non_object_type(
+    document_type: str, service: ActivityPubService, tenant: Tenant
+):
+    await _seed_outbox(tenant)
+    document: JSONObject = {
+        "type": document_type,
+        "name": "not content a Create introduces",
+        "to": ["as:Public"],
+    }
+
+    location = await service.process_post(
+        make_context(tenant, principal=StubIdentity(OUTBOX_OWNER, tenant)),
+        StubUrl.parse(OUTBOX_URI),
+        document,
+    )
+
+    assert location is not None
+    stored = await tenant.public_store.get(location)
+    assert stored is not None
+    assert stored["type"] == document_type, "stored and delivered as itself"
+    outbox = await tenant.public_store.get(OUTBOX_URI)
+    assert outbox is not None
+    assert outbox.get("items", []) == [location], "the document itself is the outbox entry"
+
+
+async def test_outbox_post_does_not_wrap_a_multityped_activity(
+    service: ActivityPubService, tenant: Tenant
+):
+    await _seed_outbox(tenant)
+    document: JSONObject = {"type": ["Note", "Question"], "name": "activity wins"}
+
+    location = await service.process_post(
+        make_context(tenant, principal=StubIdentity(OUTBOX_OWNER, tenant)),
+        StubUrl.parse(OUTBOX_URI),
+        document,
+    )
+
+    assert location is not None
+    stored = await tenant.public_store.get(location)
+    assert stored is not None
+    assert stored["type"] == ["Note", "Question"], "naming an activity type beats the object list"
+
+
+async def test_outbox_post_wraps_an_unknown_object_type(
+    service: ActivityPubService, tenant: Tenant
+):
+    await _seed_outbox(tenant)
+    document: JSONObject = {
+        "type": "Poll",
+        "name": "caller's own vocabulary",
+        "to": ["as:Public"],
+    }
+
+    location = await service.process_post(
+        make_context(tenant, principal=StubIdentity(OUTBOX_OWNER, tenant)),
+        StubUrl.parse(OUTBOX_URI),
+        document,
+    )
+
+    assert location is not None
+    create = await tenant.public_store.get(location)
+    assert create is not None
+    assert create["type"] == "Create", "a type AS2 does not define is an object type"
+    stored = await tenant.public_store.get(cast(str, create["object"]))
+    assert stored is not None
+    assert stored["type"] == "Poll"
+    outbox = await tenant.public_store.get(OUTBOX_URI)
+    assert outbox is not None
+    assert outbox["items"] == [location], "the Create is the outbox entry"
