@@ -1,14 +1,12 @@
 import json
 import os
-import uuid
-from typing import Any, cast
+from typing import cast
 from urllib.parse import urlparse
 
 import click
 from tabulate import tabulate, tabulate_formats
 
 from firm.core.auth.http_basic import hash_password
-from firm.core.auth.keys import create_key_pair
 from firm.core.interfaces import FIRM_NS, JSONObject, ResourceStore, get_uri_prefix
 from firm.core.util import get_id, resource_id
 from firm.server.utils import async_command
@@ -40,116 +38,6 @@ def _property(p):
         "name": name,
         "value": value,
     }
-
-
-@actor.command("create")
-@click.argument("uri")
-@click.argument("name")
-@click.argument("handle")
-@click.option("--role", "roles", multiple=True, default=[])
-@click.option("--description")
-@click.option("--header-image")
-@click.option("--avatar")
-@click.option("--hashtag", "hashtags", multiple=True)
-@click.option("--property", "properties", multiple=True)
-@click.pass_obj
-@async_command
-async def actor_create(
-    ctx: Context,
-    uri: str,
-    name: str,
-    handle: str,
-    roles: list[str],
-    description: str | None,
-    header_image: str | None,
-    avatar: str | None,
-    hashtags: list[str],
-    properties: list[str],
-) -> None:
-    """Create a new actor"""
-    key_pair = create_key_pair()
-    url = urlparse(uri)
-    tenant_prefix = get_uri_prefix(uri)
-    actor_resource: dict[str, Any] = {
-        "@context": "https://www.w3.org/ns/activitystreams",
-        "id": uri,
-        "preferredUsername": handle,
-        "type": "Person",
-        "url": uri,
-        "name": name,
-        "publicKey": {
-            "id": f"{uri}#main-key",
-            "owner": f"{uri}",
-            "publicKeyPem": key_pair.public,
-        },
-        # "subtitle": "Europe's news in English",
-        "inbox": f"{uri}/inbox",
-        "outbox": f"{uri}/outbox",
-        "followers": f"{uri}/followers",
-        "alsoKnownAs": f"acct:{handle}@{url.hostname}",
-    }
-    if description:
-        actor_resource["summary"] = description
-    if header_image:
-        actor_resource["image"] = header_image
-    if avatar:
-        actor_resource["icon"] = avatar
-    if hashtags:
-        actor_resource["tag"] = [
-            {
-                "type": "Hashtag",
-                "href": f"{tenant_prefix}/tag/{h}",
-                "name": f"#{h}",
-            }
-            for h in hashtags
-        ]
-    if properties:
-        actor_resource["attachment"] = [_property(p) for p in properties]
-    resources: list[dict] = [
-        actor_resource,
-        {
-            "@context": "https://www.w3.org/ns/activitystreams",
-            "id": f"{uri}/inbox",
-            "attributedTo": uri,
-            "type": "OrderedCollection",
-            "totalItems": 0,
-        },
-        {
-            "@context": "https://www.w3.org/ns/activitystreams",
-            "id": f"{uri}/outbox",
-            "attributedTo": uri,
-            "type": "OrderedCollection",
-            "totalItems": 0,
-        },
-        {
-            "@context": "https://www.w3.org/ns/activitystreams",
-            "id": f"{uri}/following",
-            "attributedTo": uri,
-            "type": "Collection",
-            "totalItems": 0,
-        },
-        {
-            "@context": "https://www.w3.org/ns/activitystreams",
-            "id": f"{uri}/followers",
-            "attributedTo": uri,
-            "type": "Collection",
-            "totalItems": 0,
-        },
-        {
-            "@context": "https://www.w3.org/ns/activitystreams",
-            "id": f"urn:uuid:{uuid.uuid4()}",
-            "attributedTo": uri,
-            "type": [FIRM_NS.Credentials.value],
-            FIRM_NS.privateKey.value: key_pair.private,
-            FIRM_NS.role.value: roles or None,
-        },
-    ]
-    for r in resources:
-        store = ctx.get_store(r["id"])
-        if await store.is_stored(r["id"]):
-            await store.remove(r["id"])
-        await store.put(r)
-        print(f"Wrote {r['id']}")
 
 
 @actor.command("update")
