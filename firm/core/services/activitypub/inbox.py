@@ -20,6 +20,13 @@ async def process_inbox(
     context: FirmBoxContext,
     activity: JSONObject,
 ):
+    """Apply an inbox activity, dispatching on its type.
+
+    A type with no branch is not a failure (#36). The caller (``post_to_inbox``) has
+    already kept the document and listed it in the owner's inbox, so the arrival is on
+    record and there is simply nothing for this server to apply. Every 5xx is retried
+    by the sender, so an unhandled type that raised would be redelivered forever.
+    """
     if has_value(activity, "type", "Follow"):
         return await _process_inbox_follow(context, activity)
     elif has_value(activity, "type", "Accept"):
@@ -37,7 +44,11 @@ async def process_inbox(
     elif has_value(activity, "type", "Announce"):
         return await _process_inbox_announce(context, activity)
     else:
-        raise NotImplementedError(f"Unsupported activity type: {activity.get('type')}")
+        log.info(
+            "Inbox: no handler for activity type %s; kept without applying",
+            activity.get("type"),
+        )
+        return None
 
 
 async def _process_inbox_follow(

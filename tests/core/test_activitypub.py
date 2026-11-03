@@ -1514,6 +1514,110 @@ async def test_inbox_post_leaves_a_public_activity_unaddressed(
     assert stored["to"] == ["as:Public"], "a public activity needs no implicit recipient"
 
 
+async def test_inbox_unhandled_type_is_kept_without_effects(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    """#36: a type with no inbox branch is accepted and recorded, and nothing is applied."""
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+                "followers": "http://tenant1.test/user2/followers",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+            {
+                "id": "http://tenant1.test/outbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+            {
+                "id": "http://tenant1.test/user2/followers",
+                "type": "Collection",
+                "attributedTo": "http://tenant1.test/user2",
+                "items": [],
+            },
+        ],
+    )
+    delivery = StubDeliveryService()
+    service = ActivityPubService(StubAuthorizationService(), delivery)
+    provider = _provider(StubTransport({}))
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+    flag: JSONObject = {
+        "id": "http://remote.test/flag1",
+        "type": "Flag",
+        "actor": "http://remote.test/user1",
+        "object": ["http://tenant1.test/user2"],
+        "content": "spam",
+    }
+
+    accepted = await service.process_post(context, StubUrl.parse("http://tenant1.test/inbox"), flag)
+
+    assert accepted is None, "a None return is the route's 200, not an escaping exception"
+    inbox = await tenant.public_store.get("http://tenant1.test/inbox")
+    assert inbox and isinstance(inbox["items"], Sequence)
+    assert inbox["items"] == ["http://remote.test/flag1"], "the activity is recorded"
+    assert (
+        await provider.get("http://remote.test/flag1") is not None
+    ), "and its document is kept in the remote cache"
+    assert delivery.activities == [], "no handler ran, so nothing was applied or sent"
+    assert await tenant.public_store.query({"type": "Accept"}) == []
+    followers = await tenant.public_store.get("http://tenant1.test/user2/followers")
+    assert followers is not None
+    assert followers["items"] == []
+
+
+async def test_inbox_unhandled_type_is_accepted_again_on_retry(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    """#36: the status is stable across retries and the inbox keeps one item."""
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    provider = _provider(StubTransport({}))
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+    flag: JSONObject = {
+        "id": "http://remote.test/flag2",
+        "type": "Flag",
+        "actor": "http://remote.test/user1",
+        "object": ["http://tenant1.test/user2"],
+    }
+
+    first = await service.process_post(
+        context, StubUrl.parse("http://tenant1.test/inbox"), copy.deepcopy(flag)
+    )
+    second = await service.process_post(
+        context, StubUrl.parse("http://tenant1.test/inbox"), copy.deepcopy(flag)
+    )
+
+    assert first is None and second is None, "the same type answers 200 both times"
+    inbox = await tenant.public_store.get("http://tenant1.test/inbox")
+    assert inbox and isinstance(inbox["items"], Sequence)
+    assert inbox["items"] == ["http://remote.test/flag2"], "a retry adds no second item"
+
+
 async def test_outbox_send_logs_a_failed_delivery(tenant, caplog):
     outbox = f"{tenant.prefix}/outbox"
     await tenant.public_store.put({"id": outbox, "type": "OrderedCollection", "items": []})
