@@ -36,6 +36,7 @@ from firm.core.services.activitypub.exceptions import (
 )
 from firm.core.services.activitypub.service import (
     ActivityPubService,
+    is_shared_inbox_target,
 )
 from firm.core.services.activitypub.support import FirmContext
 from firm.core.services.nodeinfo import (
@@ -539,8 +540,13 @@ def create_router(
                     return PlainTextResponse(
                         "Created", status_code=HTTPStatus.CREATED, headers=headers
                     )
-                else:
-                    return PlainTextResponse("OK", media_type="text/plain")
+                # AP 7.1: a shared inbox answers 202; a personal inbox keeps its 200.
+                status_code = (
+                    HTTPStatus.ACCEPTED
+                    if is_shared_inbox_target(request.state.tenant, str(request.url))
+                    else HTTPStatus.OK
+                )
+                return PlainTextResponse("OK", status_code=status_code)
             except NotFoundException as e:
                 raise HTTPException(HTTPStatus.NOT_FOUND, detail=str(e))
             except NotAuthorizedException as e:

@@ -2508,3 +2508,180 @@ async def test_outbox_post_wraps_an_unknown_object_type(
     outbox = await tenant.public_store.get(OUTBOX_URI)
     assert outbox is not None
     assert outbox["items"] == [location], "the Create is the outbox entry"
+
+
+# --- Shared inbox (#35) -----------------------------------------------------------
+
+
+async def _inbox_of(actor_uri: str, store: ResourceStore) -> list[object]:
+    """The item list of the actor's personal inbox collection."""
+    inbox = await store.get(f"{actor_uri}/inbox")
+    assert inbox is not None, f"no inbox stored for {actor_uri}"
+    items = inbox["items"]
+    assert isinstance(items, list)
+    return items
+
+
+async def _setup_local_actors(store: ResourceStore, *actor_uris: str) -> None:
+    """Give each actor a document and an empty personal inbox collection."""
+    for actor_uri in actor_uris:
+        await setup_resources(
+            store,
+            [
+                {"id": actor_uri, "type": "Person", "inbox": f"{actor_uri}/inbox"},
+                {
+                    "id": f"{actor_uri}/inbox",
+                    "type": "OrderedCollection",
+                    "attributedTo": actor_uri,
+                    "items": [],
+                },
+            ],
+        )
+
+
+async def test_shared_inbox_post_reaches_the_named_local_actor_only(
+    service: ActivityPubService, tenant: Tenant, remote_identity: StubIdentity
+):
+    """A POST to the configured shared inbox lands in the named inbox and no other.
+
+    The path comes from the tenant's endpoint, not from the literal "/shared", so a
+    tenant with a different shared_inbox_path is served by the same branch.
+    """
+    tenant.endpoints["sharedInbox"] = "http://tenant1.test/hub"
+    addressed, other = "http://tenant1.test/alice", "http://tenant1.test/bob"
+    await _setup_local_actors(tenant.public_store, addressed, other)
+    activity: JSONObject = {
+        "id": "http://remote.test/activities/1",
+        "type": "Create",
+        "actor": remote_identity.uri,
+        "to": [addressed],
+        "object": {"id": "http://remote.test/notes/1", "type": "Note"},
+    }
+
+    await service.process_post(
+        make_context(tenant, principal=remote_identity),
+        StubUrl.parse("http://tenant1.test/hub"),
+        activity,
+    )
+
+    assert await _inbox_of(addressed, tenant.public_store) == ["http://remote.test/activities/1"]
+    assert await _inbox_of(other, tenant.public_store) == []
+
+
+async def test_shared_inbox_accepts_an_activity_for_nobody_local(
+    service: ActivityPubService, tenant: Tenant, remote_identity: StubIdentity
+):
+    """An activity that names no local actor is accepted and written nowhere."""
+    tenant.endpoints["sharedInbox"] = "http://tenant1.test/hub"
+    await _setup_local_actors(tenant.public_store, "http://tenant1.test/alice")
+    activity: JSONObject = {
+        "id": "http://remote.test/activities/2",
+        "type": "Create",
+        "actor": remote_identity.uri,
+        "to": ["https://remote.test/users/stranger"],
+        "object": {"id": "http://remote.test/notes/2", "type": "Note"},
+    }
+
+    await service.process_post(
+        make_context(tenant, principal=remote_identity),
+        StubUrl.parse("http://tenant1.test/hub"),
+        activity,
+    )
+
+    assert await _inbox_of("http://tenant1.test/alice", tenant.public_store) == []
+    assert (
+        await tenant.public_store.get("http://tenant1.test/hub") is None
+    ), "the shared inbox is a route, not a box that accumulates entries"
+
+
+async def test_shared_inbox_post_requires_authentication(
+    service: ActivityPubService, tenant: Tenant
+):
+    """An unauthenticated POST is refused before any box is touched."""
+    tenant.endpoints["sharedInbox"] = "http://tenant1.test/hub"
+
+    with pytest.raises(NotAuthorizedException):
+        await service.process_post(
+            make_context(tenant),
+            StubUrl.parse("http://tenant1.test/hub"),
+            {
+                "id": "http://remote.test/activities/3",
+                "type": "Create",
+                "actor": "http://remote.test/user1",
+            },
+        )
+
+
+async def test_shared_inbox_repost_writes_one_item(
+    service: ActivityPubService, tenant: Tenant, remote_identity: StubIdentity
+):
+    """Redelivery of the same activity adds no second entry to the box."""
+    tenant.endpoints["sharedInbox"] = "http://tenant1.test/hub"
+    addressed = "http://tenant1.test/alice"
+    await _setup_local_actors(tenant.public_store, addressed)
+
+    def activity() -> JSONObject:
+        # A fresh document per POST: applying a Create rewrites the activity's object.
+        return {
+            "id": "http://remote.test/activities/4",
+            "type": "Create",
+            "actor": remote_identity.uri,
+            "to": [addressed],
+            "object": {"id": "http://remote.test/notes/4", "type": "Note"},
+        }
+
+    context = make_context(tenant, principal=remote_identity)
+    await service.process_post(context, StubUrl.parse("http://tenant1.test/hub"), activity())
+    await service.process_post(context, StubUrl.parse("http://tenant1.test/hub"), activity())
+
+    assert await _inbox_of(addressed, tenant.public_store) == ["http://remote.test/activities/4"]
+
+
+async def test_shared_inbox_forwards_to_local_addressees_once(
+    recording_service: tuple[ActivityPubService, StubDeliveryService],
+    tenant: Tenant,
+    remote_identity: StubIdentity,
+):
+    """Two local boxes, one activity: our addressees are handed it once, not twice."""
+    service, delivery = recording_service
+    tenant.endpoints["sharedInbox"] = "http://tenant1.test/hub"
+    alice, bob = "http://tenant1.test/alice", "http://tenant1.test/bob"
+    note = "http://tenant1.test/notes/1"
+    await _setup_local_actors(tenant.public_store, alice, bob)
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": alice,
+                "type": "Person",
+                "inbox": f"{alice}/inbox",
+                "followers": f"{alice}/followers",
+            },
+            {
+                "id": f"{alice}/followers",
+                "type": "Collection",
+                "attributedTo": alice,
+                "items": [bob],
+            },
+            {"id": note, "type": "Note", "attributedTo": alice},
+        ],
+    )
+    activity: JSONObject = {
+        "id": "http://remote.test/activities/5",
+        "type": "Create",
+        "actor": remote_identity.uri,
+        "to": [alice, bob],
+        "cc": [f"{alice}/followers"],
+        "inReplyTo": note,
+        "object": {"id": "http://remote.test/notes/5", "type": "Note", "inReplyTo": note},
+    }
+
+    await service.process_post(
+        make_context(tenant, principal=remote_identity),
+        StubUrl.parse("http://tenant1.test/hub"),
+        activity,
+    )
+
+    assert delivery.delivered == [
+        "http://remote.test/activities/5"
+    ], "forwarded once per activity, not once per box"

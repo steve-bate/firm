@@ -12,6 +12,7 @@ from firm.core.interfaces import (
     JSONObject,
     NoOpValidator,
     ResourceStore,
+    Tenant,
     Url,
     Validator,
 )
@@ -45,7 +46,9 @@ from firm.core.util import (
     has_value,
     is_accessible,
     is_activity,
+    is_actor_object,
     is_collection,
+    is_local_uri,
     is_public,
     strip_firm_properties,
     strip_query,
@@ -212,11 +215,13 @@ async def post_to_inbox(
     box_uri: str,
     validator: Validator,
     delivery_service: DeliveryService,
-) -> None:
+    forward: bool = True,
+) -> bool:
     """An activity arrives at an inbox on this instance: drop our own namespace,
     authorize, keep, record, apply.
 
     This is what an inbox POST does once the box is known, with no socket involved.
+    Returns whether this was the first arrival of this activity for that box.
     """
     # ``firm:`` is the namespace this server authors: a copy of one of those keys in a
     # received document is the sender's claim, so no step below may read or keep it.
@@ -257,6 +262,78 @@ async def post_to_inbox(
         delivery_service=delivery_service,
     )
     await process_inbox(box_context, resource)
+    if first_time and forward:
+        await _forward_to_local_addressees(context, resource, delivery_service)
+    return first_time
+
+
+def is_shared_inbox_target(tenant: Tenant, target_uri: Url | str) -> bool:
+    """Whether a request URI is this tenant's shared inbox.
+
+    The path is the tenant's own (``shared_inbox_path``), never a literal: a deployment
+    that moved it still answers at the address its actors advertise.
+    """
+    shared = tenant.shared_inbox_uri
+    return shared is not None and strip_query(str(target_uri)).startswith(shared)
+
+
+async def _addressed_box_owners(context: FirmContext, activity: JSONObject) -> list[APActor]:
+    """The local actors this activity names in its own addressing (#35).
+
+    Only a URI this tenant already stores can name a local actor, so nothing remote is
+    fetched: a name that does not resolve to a stored actor document is not a recipient.
+    The embedded object's addressing counts too — a delivery names its addressees on
+    whichever document carries them. Addressed collections are not expanded.
+    """
+    documents: list[Mapping[str, Any]] = [activity]
+    embedded = activity.get("object")
+    if isinstance(embedded, Mapping):
+        documents.append(embedded)
+    named: set[str] = set()
+    for document in documents:
+        named |= _target_uris(cast(JSONObject, document), tuple(RECIPIENT_FIELDS))
+    owners: list[APActor] = []
+    for uri in sorted(named):
+        if not is_local_uri(context.tenant, uri):
+            continue
+        candidate = await context.tenant.public_store.get(uri)
+        if candidate is None or not is_actor_object(candidate):
+            continue
+        if not isinstance(candidate.get("inbox"), str):
+            continue
+        owners.append(cast(APActor, candidate))
+    return owners
+
+
+async def post_to_shared_inbox(
+    context: FirmContext,
+    resource: JSONObject,
+    *,
+    box_uri: str,
+    validator: Validator,
+    delivery_service: DeliveryService,
+) -> None:
+    """An activity arrives at the tenant's shared inbox: give it to each named local actor.
+
+    The shared inbox is a route, not a box: it holds nothing itself, so every local actor
+    the activity names receives exactly what its personal inbox would have received.
+    """
+    if context.principal is None:
+        raise NotAuthorizedException("Not authenticated")
+    first_time = False
+    for owner in await _addressed_box_owners(context, resource):
+        # Forwarding is once per activity, not once per box: the second box would
+        # otherwise hand our own addressees a duplicate of the first box's forward.
+        arrived = await post_to_inbox(
+            context,
+            owner,
+            resource,
+            box_uri=box_uri,
+            validator=validator,
+            delivery_service=delivery_service,
+            forward=False,
+        )
+        first_time = first_time or arrived
     if first_time:
         await _forward_to_local_addressees(context, resource, delivery_service)
 
@@ -498,8 +575,15 @@ class ActivityPubService:
         principal = context.principal
         # As in process_get: the query string is the request's, not the resource's.
         target_uri_str = strip_query(str(target_uri))
-        if tenant.shared_inbox_uri and target_uri_str.startswith(tenant.shared_inbox_uri):
-            raise NotImplementedError("Shared inbox does not support POST requests yet")
+        if is_shared_inbox_target(tenant, target_uri_str):
+            await post_to_shared_inbox(
+                context,
+                resource,
+                box_uri=target_uri_str,
+                validator=self._validator,
+                delivery_service=self._delivery_service,
+            )
+            return None
         store = tenant.public_store
         # All POST requests must be authenticated
         if principal is None:

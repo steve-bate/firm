@@ -4,17 +4,18 @@ import time
 from typing import cast
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pytest_httpx import HTTPXMock
 from starlette.testclient import TestClient
 
 from firm.core.auth.http_signature import HttpSignatureAuth
 from firm.core.auth.keys import create_key_pair
-from firm.core.interfaces import FIRM_NS, Tenant
+from firm.core.interfaces import FIRM_NS, APActor, Principal, Tenant
 from firm.core.remote.cache import CacheEntry, SqliteRemoteCache
 from firm.core.resolver import ResourceResolver
 from firm.core.store.memory import MemoryResourceStore
 from firm.server.adapters import HttpxTransport
+from firm.server.auth import get_principal
 from firm.server.config import (
     FileStoreConfig,
     RemoteFetchConfig,
@@ -149,6 +150,71 @@ def test_post_to_an_unknown_box_returns_404(client, actor):
     )
 
     assert response.status_code == 404
+
+
+@pytest.fixture
+def remote_principal(client):
+    """A get_principal override that authenticates as an actor on another server."""
+    remote = {
+        "id": "https://remote.test/users/bob",
+        "type": "Person",
+        "inbox": "https://remote.test/users/bob/inbox",
+    }
+
+    async def _get_principal(request: Request) -> Principal:
+        return Principal(cast(APActor, remote), request.state.tenant)
+
+    client.app.dependency_overrides[get_principal] = _get_principal
+    yield remote
+    client.app.dependency_overrides.pop(get_principal, None)
+
+
+async def _seed_local_actors(tenant: Tenant, *actor_uris: str) -> None:
+    for actor_uri in actor_uris:
+        await tenant.public_store.put(
+            {"id": actor_uri, "type": "Person", "inbox": f"{actor_uri}/inbox"}
+        )
+        await tenant.public_store.put(
+            {
+                "id": f"{actor_uri}/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": actor_uri,
+                "items": [],
+            }
+        )
+
+
+async def _inbox_holds(tenant: Tenant, actor_uri: str, activity_uri: str) -> bool:
+    return await tenant.public_store.contains_item(f"{actor_uri}/inbox", activity_uri)
+
+
+def test_shared_inbox_post_reaches_the_named_inbox(client, remote_principal):
+    """End to end: /shared answers 202 and writes only the addressed actor's box."""
+    tenant = next(iter(client.app.state.tenants.values()))
+    addressed = f"{TENANT_PREFIX}/alice"
+    other = f"{TENANT_PREFIX}/bob"
+    asyncio.run(_seed_local_actors(tenant, addressed, other))
+
+    response = client.post(
+        f"{TENANT_PREFIX}/shared",
+        json={
+            "@context": "https://www.w3.org/ns/activitystreams",
+            "id": "https://remote.test/activities/9",
+            "type": "Create",
+            "actor": remote_principal["id"],
+            "to": [addressed],
+            "object": {
+                "id": "https://remote.test/notes/9",
+                "type": "Note",
+                "content": "hello",
+            },
+        },
+        headers={"Content-Type": "application/activity+json"},
+    )
+
+    assert response.status_code == 202, response.text
+    assert asyncio.run(_inbox_holds(tenant, addressed, "https://remote.test/activities/9"))
+    assert asyncio.run(tenant.public_store.count_items(f"{other}/inbox")) == 0
 
 
 async def test_http_transport_get(httpx_mock: HTTPXMock):
