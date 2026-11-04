@@ -208,7 +208,15 @@ class RemoteResourceProvider:
         Only for material another server owns: a document under a local prefix is the
         owning tenant's to store, and never belongs here.
         """
-        key = cache_key(str(document.get("id") or ""))
+        uri = str(document.get("id") or "")
+        if "#" in uri:
+            # An id with a fragment is an activity identifier, not a fetchable
+            # document: PixelFed mints Accept ids as
+            # ``<actor>#accepts/follows/<n>``, so filing one under the fragment-
+            # less key would replace the actor document that lives at that URI.
+            # The received activity is already kept in the receiving actor's inbox.
+            return
+        key = cache_key(uri)
         if not key:
             return
         now = self._clock()

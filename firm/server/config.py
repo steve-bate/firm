@@ -112,6 +112,17 @@ class DeliveryConfig:
 
 
 @dataclass(frozen=True)
+class MediaConfig:
+    """What the media endpoint accepts.
+
+    One cap for every media type: the size a client may send is a server policy,
+    and a client that has to guess it will guess wrong.
+    """
+
+    max_upload_bytes: int = 512 * 1024 * 1024
+
+
+@dataclass(frozen=True)
 class TenantConfig:
     prefix: str
 
@@ -126,6 +137,7 @@ class ServerConfig:
     shared_inbox_path: str = "shared"
     remote_fetch: RemoteFetchConfig = field(default_factory=RemoteFetchConfig)
     delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
+    media: MediaConfig = field(default_factory=MediaConfig)
 
     def is_local(self, uri: str) -> bool:
         return any(uri.startswith(tenant.prefix) for tenant in self.tenants)

@@ -819,3 +819,38 @@ def test_admin_delivery_retry_of_an_unknown_id_is_404(client, admin_actor):
     response = client.post("/admin/deliveries/nope/retry")
 
     assert response.status_code == 404
+
+
+async def test_proxy_returns_the_remote_document(client, actor, httpx_mock: HTTPXMock):
+    """The proxy route dereferences a remote document for the authenticated actor."""
+    tenant = next(iter(client.app.state.tenants.values()))
+    key_pair = create_key_pair()
+    await tenant.private_store.put(
+        {
+            "id": f"{actor['id']}/credentials",
+            "type": FIRM_NS.Credentials.value,
+            "attributedTo": actor["id"],
+            FIRM_NS.privateKey.value: key_pair.private,
+        }
+    )
+
+    remote = "https://remote.test/users/bob"
+    httpx_mock.add_response(
+        url=remote,
+        json={"id": remote, "type": "Person", "preferredUsername": "bob"},
+        headers={"Content-Type": "application/activity+json"},
+    )
+
+    response = client.post(
+        "/proxy", data={"id": remote}, headers={"Accept": "application/activity+json"}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == remote
+    assert [request.method for request in httpx_mock.get_requests()] == ["GET"]
+
+
+def test_proxy_requires_authentication(client):
+    response = client.post("/proxy", data={"id": "https://remote.test/users/bob"})
+
+    assert response.status_code == 403

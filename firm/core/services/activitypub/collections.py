@@ -107,7 +107,12 @@ async def dereference_collection_items(
         items = await _collection_item_uris(context, collection) or []
     if isinstance(items, list):
         if not embed:
-            return collection if inplace else cast(list[JSONObject | str], list(items))
+            # IRIs only. The store owns the list, so a document handed to us without one is
+            # still the object the client reads: put the URIs back before returning it.
+            if inplace:
+                collection[items_key] = list(items)
+                return collection
+            return cast(list[JSONObject | str], list(items))
         dereferenced_items: list[JSONObject | str] = []
         for item in items:
             if isinstance(item, str):

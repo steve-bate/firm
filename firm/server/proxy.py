@@ -7,16 +7,18 @@ import httpx
 from fastapi import HTTPException, Request, Response
 
 from firm.core.auth.http_signature import HttpSignatureAuth
-from firm.core.interfaces import FIRM_NS
+from firm.core.interfaces import FIRM_NS, APActor
 from firm.server.adapters import HttpxAuthAdapter
 
 log = logging.getLogger(__name__)
 
 
-async def proxy(request: Request) -> Response:
-    """Proxy request to remote instance (HTTP Signatures)"""
-    if request.auth is None:
-        raise HTTPException(HTTPStatus.FORBIDDEN, "Authentication required")
+async def proxy(request: Request, actor: APActor) -> Response:
+    """Proxy request to remote instance (HTTP Signatures).
+
+    The caller has already authenticated the request; ``actor`` is the identity
+    that signs the outbound GET, and the tenant comes from the request.
+    """
     if log.isEnabledFor(logging.DEBUG):
         log.debug(f"Proxying request: {request.method} {request.url}")
     # get id from request form body
@@ -26,7 +28,6 @@ async def proxy(request: Request) -> Response:
     if not requested_uri:
         raise HTTPException(HTTPStatus.BAD_REQUEST, "Missing id")
 
-    actor = request.auth.actor
     tenant = request.state.tenant
     config = request.app.state.config
 
@@ -69,7 +70,6 @@ async def proxy(request: Request) -> Response:
                 status_code=response.status_code,
                 headers=response.headers,
                 content=response.content,
-                reason_phrase=response.reason_phrase,
             )
             return proxy_response
         except httpx.HTTPStatusError as e:

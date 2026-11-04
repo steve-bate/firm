@@ -1281,6 +1281,37 @@ async def test_relationship_collection_is_served_as_uris(tenant: Tenant):
     assert transport.urls == [], "a list of IRIs is served without fetching them"
 
 
+async def test_a_store_backed_relationship_collection_is_served_with_its_items(tmp_path):
+    """The list lives in the item store, so the served document has to carry it."""
+    prefix = "http://tenant1.test"
+    store = FileResourceStore(tmp_path, "public")
+    tenant = Tenant(prefix, store, MemoryResourceStore(), tmp_path)
+    collection_uri = f"{prefix}/user1/following"
+    await store.put(
+        {
+            "id": collection_uri,
+            "type": "Collection",
+            "attributedTo": f"{prefix}/user1",
+            "totalItems": 0,
+        }
+    )
+    first, second = f"{prefix}/user2", f"{prefix}/user3"
+    for uri in (first, second):
+        await store.put({"id": uri, "type": "Person"})
+        await store.insert_item(collection_uri, uri)
+    transport = StubTransport()
+    context = make_context(tenant, remote=_provider(transport))
+
+    stored = await store.get(collection_uri)
+    assert stored is not None
+
+    served = await serialize(context, stored)
+
+    assert served["items"] == [second, first], "the store's items are served as IRIs"
+    assert served["totalItems"] == 2
+    assert transport.urls == [], "a relationship collection is not dereferenced"
+
+
 async def test_inbox_collection_embeds_its_activities(tenant: Tenant, identity: StubIdentity):
     activity: JSONObject = {
         "id": "http://tenant1.test/user1/activity/1",

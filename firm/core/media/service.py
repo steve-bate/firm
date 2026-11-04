@@ -62,13 +62,19 @@ class MediaUploadService:
       the tenant's files directory.
     """
 
-    def parse_upload(self, *, object_text: str | None, file_data: bytes | None) -> JSONObject:
+    def parse_upload(
+        self,
+        *,
+        object_text: str | None,
+        file_data: bytes | None = None,
+        stored_path: Path | None = None,
+    ) -> JSONObject:
         """The AS2 object shell an upload request carries.
 
         Raises :exc:`InvalidMediaUploadException` for a missing form part, a
         body that is not JSON, and a body that is not a JSON object.
         """
-        if file_data is None or object_text is None:
+        if (file_data is None and stored_path is None) or object_text is None:
             raise InvalidMediaUploadException("Both 'file' and 'object' form fields are required")
         try:
             shell = json.loads(object_text)
@@ -113,6 +119,7 @@ class MediaUploadService:
         file_data: bytes | None,
         content_type: str,
         filename: str,
+        stored_path: Path | None = None,
     ) -> JSONObject:
         """Process a media upload and return the created object.
 
@@ -137,22 +144,28 @@ class MediaUploadService:
         if principal is None:
             raise NotAuthorizedException("Authentication required")
 
-        object_shell = self.parse_upload(object_text=object_text, file_data=file_data)
-        assert file_data is not None
+        object_shell = self.parse_upload(
+            object_text=object_text, file_data=file_data, stored_path=stored_path
+        )
 
         actor_uri = principal.uri
         # Use the last path segment of the actor URI as the storage directory.
         username = actor_uri.rstrip("/").rsplit("/", 1)[-1]
 
         # --- Persist the uploaded file ---
-        file_id = hashlib.sha256(file_data).hexdigest()
-        # Keep the original extension, but nothing else from the filename.
-        suffix = Path(filename).suffix if filename else ""
-        stored_filename = f"{file_id}{suffix}"
+        if stored_path is not None:
+            # The HTTP layer already streamed and content-addressed the file.
+            stored_filename = stored_path.name
+        else:
+            assert file_data is not None
+            file_id = hashlib.sha256(file_data).hexdigest()
+            # Keep the original extension, but nothing else from the filename.
+            suffix = Path(filename).suffix if filename else ""
+            stored_filename = f"{file_id}{suffix}"
 
-        actor_media_dir = tenant.files / username / "media"
-        actor_media_dir.mkdir(parents=True, exist_ok=True)
-        (actor_media_dir / stored_filename).write_bytes(file_data)
+            actor_media_dir = tenant.files / username / "media"
+            actor_media_dir.mkdir(parents=True, exist_ok=True)
+            (actor_media_dir / stored_filename).write_bytes(file_data)
 
         # Publicly accessible URL that the server will serve the file from.
         media_url = f"{tenant.prefix}/actors/{username}/media/{stored_filename}"

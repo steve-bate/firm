@@ -403,3 +403,24 @@ async def test_html_200_is_a_failed_fetch_not_a_document():
     assert transport.urls == [NOTE_URI], "a rejected body is remembered, not refetched"
     entry = await cache.get(NOTE_URI)
     assert entry is not None and entry.document is None, "a failed fetch, not a stored document"
+
+
+async def test_remember_does_not_file_a_fragment_id_over_its_base_document():
+    """PixelFed mints activity ids as ``<actor>#accepts/follows/<n>``.
+
+    The fetch cache drops fragments, so remembering that activity would replace the
+    actor document at the base URI; delivery would then find no inbox and silently
+    deliver to nobody.
+    """
+    cache = MemoryRemoteCache()
+    provider = _provider(StubTransport({}), cache)
+
+    await provider.remember(
+        {
+            "@context": "https://www.w3.org/ns/activitystreams",
+            "id": f"{NOTE_URI}#accepts/follows/1",
+            "type": "Accept",
+        }
+    )
+
+    assert await cache.get(NOTE_URI) is None, "the document at the base URI is untouched"

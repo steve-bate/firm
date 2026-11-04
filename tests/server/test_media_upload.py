@@ -67,3 +67,87 @@ def test_the_file_is_content_addressed(client: TestClient, actor) -> None:
 
     digest = hashlib.sha256(b"png").hexdigest()
     assert body["url"].endswith(f"/media/{digest}.png")
+
+
+def test_an_upload_over_the_configured_cap_is_rejected(tmp_path) -> None:
+    """A cap the server owns: a client cannot be asked to guess a policy."""
+    from fastapi import Request
+    from fastapi.testclient import TestClient
+
+    from firm.core.interfaces import Principal
+    from firm.server.auth import get_principal
+    from firm.server.config import (
+        MediaConfig,
+        MemoryStoreConfig,
+        ServerConfig,
+        TenantConfig,
+    )
+    from firm.server.server import app_factory, clear_app
+
+    clear_app()
+    config = ServerConfig(
+        [TenantConfig(prefix="http://cap.test")],
+        MemoryStoreConfig(tmp_path),
+        media=MediaConfig(max_upload_bytes=1024),
+    )
+    app = app_factory(config)
+
+    async def _principal(request: Request) -> Principal:
+        actor = {"id": "http://cap.test/actors/ada", "type": "Person"}
+        return Principal(actor, request.state.tenant)  # type: ignore[arg-type]
+
+    app.dependency_overrides[get_principal] = _principal
+    try:
+        with TestClient(app, base_url="http://cap.test") as client:
+            response = client.post(
+                "/media/upload",
+                files={
+                    "object": (None, json.dumps({"type": "Image"})),
+                    "file": ("big.bin", b"x" * 2048, "application/octet-stream"),
+                },
+            )
+    finally:
+        clear_app()
+    assert response.status_code == 413, response.text
+    assert "1024" in response.text
+
+
+def test_the_upload_is_streamed_to_disk_not_read_into_one_bytes_object(
+    client: TestClient, actor, monkeypatch
+) -> None:
+    """A 4 MiB upload must be copied in chunks; reading it whole is what OOMs on video."""
+    from firm.server import media as media_module
+
+    calls: list[int] = []
+    original = media_module._copy_stream_to_file
+
+    def spy(source, destination, *, chunk_size=media_module._COPY_CHUNK, max_bytes=None):
+        calls.append(chunk_size)
+        return original(source, destination, chunk_size=chunk_size, max_bytes=max_bytes)
+
+    monkeypatch.setattr(media_module, "_copy_stream_to_file", spy)
+    response = client.post(
+        "/media/upload",
+        files={
+            "object": (None, json.dumps({"type": "Video"})),
+            "file": ("clip.mp4", b"\0" * (4 * 1024 * 1024), "video/mp4"),
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert calls, "the stream copy helper was never called"
+
+
+def test_media_serves_byte_ranges_so_a_video_can_seek(client: TestClient, actor) -> None:
+    payload = b"0123456789" * 100
+    body = client.post(
+        "/media/upload",
+        files={
+            "object": (None, json.dumps({"type": "Video"})),
+            "file": ("clip.mp4", payload, "video/mp4"),
+        },
+    ).json()
+    response = client.get(body["url"], headers={"Range": "bytes=100-199"})
+    assert response.status_code == 206, response.text
+    assert response.headers["content-range"] == f"bytes 100-199/{len(payload)}"
+    assert response.content == payload[100:200]
+    assert response.headers["accept-ranges"] == "bytes"

@@ -362,10 +362,12 @@ async def webfinger_endpoint(request: Request) -> Response:
         raise HTTPException(HTTPStatus.NOT_FOUND, detail=str(e))
 
 
-def proxy_endpoint(request: Request, principal: Principal = Depends(get_principal)) -> Response:
+async def proxy_endpoint(
+    request: Request, principal: Principal = Depends(get_principal)
+) -> Response:
     if not principal:
         raise HTTPException(HTTPStatus.FORBIDDEN, "Authentication required")
-    return proxy(request)
+    return await proxy(request, principal.actor)
 
 
 def _delivery_json(row: Delivery) -> JSONObject:
@@ -454,7 +456,9 @@ def create_router(
 
     router.add_api_route("/sse/client", sse_client_page_endpoint, methods=["GET"])
     router.include_router(create_sse_router())
-    router.include_router(create_media_upload_router())
+    router.include_router(
+        create_media_upload_router(max_upload_bytes=config.media.max_upload_bytes)
+    )
     router.include_router(create_admin_router())
 
     @router.get("/sse/test")
