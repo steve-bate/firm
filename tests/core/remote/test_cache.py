@@ -1,6 +1,7 @@
 """The cache contract: what every implementation must do, identically."""
 
 import json
+import math
 
 import aiosqlite
 import pytest
@@ -38,6 +39,25 @@ def cache(request, tmp_path) -> RemoteCache:
 def small_cache(request, tmp_path) -> RemoteCache:
     """A cache that holds two entries, so eviction is observable."""
     return _make(request.param, tmp_path, max_entries=2)
+
+
+async def test_the_cache_is_unbounded_when_no_cap_is_given(cache):
+    """No cap means nothing is evicted: a document we were sent is not dropped
+    because the cache reached an arbitrary size."""
+    for index in range(200):
+        await cache.put(entry(uri=f"http://remote.test/note/{index}"))
+
+    for index in range(200):
+        assert await cache.get(f"http://remote.test/note/{index}") is not None
+
+
+async def test_an_entry_without_expiry_survives_a_purge(cache):
+    """No TTL means no expiry, in storage as well: ``inf`` must round-trip."""
+    await cache.put(entry(uri="http://remote.test/note/forever", ttl=math.inf))
+    await cache.put(entry(uri="http://remote.test/note/old", now=0.0, ttl=-1.0))
+
+    assert await cache.purge_expired(now=10**9) == 1
+    assert await cache.get("http://remote.test/note/forever") is not None
 
 
 def entry(

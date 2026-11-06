@@ -26,6 +26,7 @@ from firm.server.config import (
     RemoteFetchConfig,
     ServerConfig,
     TenantConfig,
+    load_config,
 )
 from firm.server.delivery_worker import DeliveryWorker
 from firm.server.server import (
@@ -467,6 +468,34 @@ async def test_unsigned_when_no_signing_actor_is_configured(tmp_path):
     config = ServerConfig([TenantConfig(prefix=TENANT_PREFIX)], FileStoreConfig(base=tmp_path))
 
     assert await init_remote_signer(config, resolver) is None
+
+
+async def test_remote_fetch_defaults_to_no_expiry_and_no_cap(tmp_path):
+    """Out of the box a fetched document neither ages out nor is evicted."""
+    config = ServerConfig([TenantConfig(prefix=TENANT_PREFIX)], FileStoreConfig(base=tmp_path))
+    provider = init_remote_provider(config)
+    assert provider is not None
+
+    assert provider.policy.ttl is None, "documents do not expire"
+    assert provider.policy.max_entries is None, "the cache has no cap"
+
+
+def test_remote_fetch_ttl_and_cap_come_from_config(tmp_path):
+    path = tmp_path / "firm.yaml"
+    path.write_text(
+        "tenants:\n"
+        f"  - prefix: {TENANT_PREFIX}\n"
+        "store:\n"
+        "  kind: filesystem\n"
+        f"  base: {tmp_path}\n"
+        "remote_fetch:\n"
+        "  ttl: 60\n"
+        "  max_entries: 25\n"
+    )
+    config = load_config(str(path))
+
+    assert config.remote_fetch.ttl == 60
+    assert config.remote_fetch.max_entries == 25
 
 
 async def test_remote_fetch_config_bounds_the_cache(tmp_path):

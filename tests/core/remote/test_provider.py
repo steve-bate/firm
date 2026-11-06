@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 
 import pytest
 
@@ -14,6 +15,8 @@ from firm.core.remote.provider import (
 from tests.support import Clock, StubSigner, StubTransport, json_response
 
 NOTE_URI = "http://remote.test/note/1"
+TTL = 300.0
+EXPIRING = FetchPolicy(ttl=TTL)
 PUBLIC_ADDRESS = "93.184.216.34"
 NOTE: JSONObject = {
     "@context": "https://www.w3.org/ns/activitystreams",
@@ -70,13 +73,35 @@ async def test_cache_hit_does_not_refetch():
     assert transport.urls == [NOTE_URI], "a second call inside the TTL makes no request"
 
 
+async def test_a_document_entry_never_expires_by_default():
+    """A document is kept for as long as the cache holds it, not for five minutes.
+
+    A copy this server was handed must not become unreadable because the origin has
+    stopped serving it - snac2 answers 404 to everyone for a non-public object, so a
+    re-read is not the way back to a document we already had.
+    """
+    transport = StubTransport({NOTE_URI: json_response(NOTE)})
+    cache = MemoryRemoteCache()
+    clock = Clock()
+    provider = _provider(transport, cache, clock)
+
+    await provider.get(NOTE_URI)
+    clock.advance(365 * 24 * 3600)
+
+    assert await provider.get(NOTE_URI) == NOTE
+    assert transport.urls == [NOTE_URI], "no expiry means no refetch"
+
+    entry = await cache.get(NOTE_URI)
+    assert entry is not None and entry.expires_at == math.inf
+
+
 async def test_expired_entry_is_refetched():
     transport = StubTransport({NOTE_URI: json_response(NOTE)})
     clock = Clock()
-    provider = _provider(transport, clock=clock)
+    provider = _provider(transport, clock=clock, policy=EXPIRING)
 
     await provider.get(NOTE_URI)
-    clock.advance(FetchPolicy().ttl + 1)
+    clock.advance(TTL + 1)
     assert await provider.get(NOTE_URI) == NOTE
 
     assert transport.urls == [NOTE_URI, NOTE_URI], "one further request once the entry is stale"
@@ -280,11 +305,11 @@ async def test_concurrent_fetches_are_deduped():
 async def test_stale_copy_is_served_when_refetch_fails():
     transport = StubTransport({NOTE_URI: json_response(NOTE)})
     clock = Clock()
-    provider = _provider(transport, clock=clock)
+    provider = _provider(transport, clock=clock, policy=EXPIRING)
 
     assert await provider.get(NOTE_URI) == NOTE
     transport.script(NOTE_URI, HttpResponse(status_code=500))
-    clock.advance(FetchPolicy().ttl + 1)
+    clock.advance(TTL + 1)
 
     assert await provider.get(NOTE_URI) == NOTE, "a transient failure is not a deletion"
     assert len(transport.urls) == 2, "the refetch was attempted"
@@ -333,9 +358,9 @@ async def test_peek_keeps_the_copy_after_it_expires():
     """An expired entry still holds the document this server was serving."""
     transport = StubTransport({NOTE_URI: json_response(NOTE)})
     clock = Clock()
-    provider = _provider(transport, clock=clock)
+    provider = _provider(transport, clock=clock, policy=EXPIRING)
     await provider.get(NOTE_URI)
-    clock.advance(FetchPolicy().ttl + 1)
+    clock.advance(TTL + 1)
 
     assert await provider.peek(NOTE_URI) == NOTE
     assert await provider.get(NOTE_URI) == NOTE
@@ -346,10 +371,10 @@ async def test_purge_and_close_delegate_to_the_cache():
     transport = StubTransport({NOTE_URI: json_response(NOTE)})
     cache = MemoryRemoteCache()
     clock = Clock()
-    provider = _provider(transport, cache, clock)
+    provider = _provider(transport, cache, clock, policy=EXPIRING)
 
     await provider.get(NOTE_URI)
-    clock.advance(FetchPolicy().ttl + 1)
+    clock.advance(TTL + 1)
     assert await provider.purge() == 1
 
     await provider.close()

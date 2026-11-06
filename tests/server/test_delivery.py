@@ -18,7 +18,7 @@ from firm.core.services.activitypub.service import post_to_inbox
 from firm.core.services.activitypub.support import FirmContext
 from firm.core.store.memory import MemoryResourceStore
 from firm.server.config import FileStoreConfig, ServerConfig, TenantConfig
-from firm.server.delivery import DeliveryError, FirmDeliveryService
+from firm.server.delivery import DeliveryError, DeliveryRefused, FirmDeliveryService
 from firm.server.delivery_worker import DeliveryWorker
 from tests.support import (
     Clock,
@@ -198,27 +198,57 @@ async def test_a_local_create_stores_its_object_like_a_post_does(tenant, service
     assert await tenant.public_store.get(f"{PREFIX}/notes/1") is not None
 
 
-async def test_serialize_survives_a_firm_prefixed_property(tenant, service):
+async def test_serialize_keeps_a_firm_prefixed_property(tenant, service):
     document = activity(**{FIRM_NS.collections.value: f"{PREFIX}/collections"})
 
     message = await service._serialize(tenant, document)
 
-    assert FIRM_NS.collections.value not in message
+    assert message[FIRM_NS.collections.value] == f"{PREFIX}/collections"
 
 
-async def test_serialize_strips_firm_properties_from_the_embedded_object(tenant, service):
+async def test_serialize_keeps_firm_properties_in_the_embedded_object(tenant, service):
     document = activity(
         object={
             "id": f"{PREFIX}/notes/1",
             "type": "Note",
-            FIRM_NS.privateKey.value: "leak",
+            FIRM_NS.privateKey.value: "claim",
         }
     )
 
     message = await service._serialize(tenant, document)
 
-    assert message["object"] == {"id": f"{PREFIX}/notes/1", "type": "Note"}
-    assert document["object"][FIRM_NS.privateKey.value] == "leak", "the input is untouched"
+    assert message["object"] == {
+        "id": f"{PREFIX}/notes/1",
+        "type": "Note",
+        FIRM_NS.privateKey.value: "claim",
+    }
+    assert document["object"][FIRM_NS.privateKey.value] == "claim", "the input is untouched"
+
+
+async def test_serialize_refuses_an_activity_addressed_by_a_urn(tenant, service):
+    document = activity(**{"id": "urn:uuid:1a1f6c0e-1f2e-4a2e-9c2b-6b7f3f1c2d40"})
+
+    with pytest.raises(DeliveryRefused) as raised:
+        await service._serialize(tenant, document)
+
+    assert "urn:uuid:1a1f6c0e" in raised.value.reason
+
+
+async def test_an_object_addressed_by_a_urn_is_never_sent(tenant, config, transport):
+    transport.script(REMOTE_ACTOR, json_response(REMOTE_ACTOR_DOC))
+    transport.post_script(f"{REMOTE_ACTOR}/inbox", json_response({}, status_code=202))
+    service = FirmDeliveryService(config, transport)
+    service.set_resolver(make_resolver(tenant, transport))
+    document = activity(
+        object={"id": "urn:uuid:7c5d0f2a-8e41-4b39-9a77-2f4e6d1c8b02", "type": "Note"},
+        to=[REMOTE_ACTOR],
+    )
+
+    report = await service.deliver(tenant, {PREFIX: tenant}, document)
+
+    assert transport.posts == [], "nothing is put on the wire"
+    assert report.delivered == ()
+    assert "urn:uuid:7c5d0f2a" in report.failed[0].reason
 
 
 REMOTE_INBOX = "https://remote.test/users/bob/inbox"

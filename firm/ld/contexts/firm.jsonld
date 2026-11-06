@@ -1,0 +1,28 @@
+{
+  "@context": {
+    "firm": "https://firm.core.stevebate.dev/ns#",
+
+    "Tenant": "firm:Tenant",
+    "NodeInfo": "firm:NodeInfo",
+    "WebFinger": "firm:WebFinger",
+    "Credentials": "firm:Credentials",
+    "OAuth2Token": "firm:OAuth2Token",
+    "Blocks": "firm:Blocks",
+    "Bookmarks": "firm:Bookmarks",
+
+    "collections": {
+      "@id": "firm:collections",
+      "@type": "@id"
+    },
+    "privateKey": "firm:privateKey",
+    "password": "firm:password",
+    "token": "firm:token",
+    "role": "firm:role",
+    "blockedActor": {
+      "@id": "firm:blockedActor",
+      "@type": "@id"
+    },
+    "blockedDomain": "firm:blockedDomain",
+    "blockedSubnet": "firm:blockedSubnet"
+  }
+}

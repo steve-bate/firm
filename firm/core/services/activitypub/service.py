@@ -45,8 +45,10 @@ from firm.core.util import (
     is_collection,
     is_local_uri,
     is_public,
-    strip_firm_properties,
+    is_urn,
+    strip_properties,
     strip_query,
+    urn_addressed,
 )
 
 log = logging.getLogger(__name__)
@@ -199,11 +201,14 @@ async def post_to_inbox(
     This is what an inbox POST does once the box is known, with no socket involved.
     Returns whether this was the first arrival of this activity for that box.
     """
-    # ``firm:`` is the namespace this server authors: a copy of one of those keys in a
-    # received document is the sender's claim, so no step below may read or keep it.
-    resource = cast(
-        JSONObject, strip_firm_properties(resource, lambda key: key.startswith("firm:"))
-    )
+    # ``urn:`` addresses a document of this server's own store, which no peer can serve:
+    # a property key that is a URN is dropped, and an activity addressed by one is not
+    # one we can hold. ``firm:`` terms are left alone - they are our vocabulary, a
+    # sender's copy is the sender's claim, and a peer may learn the terms later.
+    resource = cast(JSONObject, strip_properties(resource, is_urn))
+    if urn := urn_addressed(resource):
+        log.warning("Inbox: dropping an activity addressed by a URN: %s", urn)
+        return False
     tenant = context.tenant
     principal = context.principal
     store = tenant.public_store
@@ -232,8 +237,6 @@ async def post_to_inbox(
     # what it holds.
     inbox_uri = get_id(box_owner.get("inbox"))
     first_time = not (inbox_uri and await store.contains_item(inbox_uri, str(activity_id)))
-    await context.keep(resource)
-    await add_collection_item(store, box_owner["inbox"], str(activity_id))
     box_context = FirmBoxContext(
         context.resolver,
         tenant,
@@ -243,7 +246,22 @@ async def post_to_inbox(
         box_uri=box_uri,
         delivery_service=delivery_service,
     )
-    await process_inbox(box_context, resource)
+    # The handler runs first: whether what this activity carries may be stored is its
+    # decision, and keeping the activity beforehand would store an Update's or a Delete's
+    # object before the handler had looked at it. The activity itself is still recorded,
+    # even when the handler refuses it: the box is the record of what arrived.
+    try:
+        await process_inbox(box_context, resource)
+    finally:
+        if isinstance(resource.get("object"), Mapping) and (
+            object_uri := get_id(resource.get("object"))
+        ):
+            # The payload is the handler's: it kept it when it accepted it, and declined
+            # when it did not. The activity is a document of its own, so what it keeps is
+            # a reference to the object, not a second copy of it.
+            resource["object"] = object_uri
+        await context.keep(resource)
+        await add_collection_item(store, box_owner["inbox"], str(activity_id))
     if first_time and forward:
         await _forward_to_local_addressees(context, resource, delivery_service)
     return first_time

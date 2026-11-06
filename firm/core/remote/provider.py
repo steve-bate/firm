@@ -16,6 +16,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import math
 import socket
 import time
 from dataclasses import dataclass
@@ -29,7 +30,7 @@ from firm.core.interfaces import (
     HttpTransport,
     JSONObject,
 )
-from firm.core.remote.cache import DEFAULT_MAX_ENTRIES, CacheEntry, RemoteCache
+from firm.core.remote.cache import CacheEntry, RemoteCache
 
 log = logging.getLogger(__name__)
 
@@ -113,13 +114,19 @@ async def assert_fetchable(uri: str, *, allow_private_addresses: bool = False) -
 
 @dataclass(frozen=True)
 class FetchPolicy:
-    """Timings and limits for outbound fetches. No storage knowledge."""
+    """Timings and limits for outbound fetches. No storage knowledge.
 
-    ttl: float = 300.0
+    ``ttl`` is the lifetime of a fetched document. ``None`` means such an entry never
+    expires: it is served for as long as the cache holds it, and a document this
+    server was handed is never re-read from its origin. The failure and not-found
+    lifetimes are unaffected - a negative answer is about a moment, not a document.
+    """
+
+    ttl: float | None = None
     failure_ttl: float = 60.0
     not_found_ttl: float = 86_400.0
     max_bytes: int = 1_048_576
-    max_entries: int = DEFAULT_MAX_ENTRIES
+    max_entries: int | None = None
     allow_private_addresses: bool = False
     timeout: float = DEFAULT_HTTP_TIMEOUT
     accept: str = ACTIVITYPUB_ACCEPT
@@ -226,7 +233,7 @@ class RemoteResourceProvider:
                 document=document,
                 status_code=200,
                 fetched_at=now,
-                expires_at=now + self._policy.ttl,
+                expires_at=math.inf if self._policy.ttl is None else now + self._policy.ttl,
             )
         )
 
@@ -267,7 +274,7 @@ class RemoteResourceProvider:
                 document=document,
                 status_code=status_code,
                 fetched_at=now,
-                expires_at=now + ttl,
+                expires_at=math.inf if ttl is None else now + ttl,
             )
         )
         return document

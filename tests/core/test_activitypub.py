@@ -133,6 +133,57 @@ async def test_outbox_post_appends_and_delivers_once(
     assert delivery.delivered == [items[0]], "delivered once, and the activity that was stored"
 
 
+async def test_an_outbox_delete_keeps_a_tombstone_not_the_object_it_names(tenant: Tenant):
+    """The handler owns the payload: what a Delete carries does not come back as a copy."""
+    service = ActivityPubService(StubAuthorizationService(), StubDeliveryService())
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/outbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+            {
+                "id": "http://tenant1.test/notes/1",
+                "type": "Note",
+                "content": "hello",
+            },
+        ],
+    )
+
+    await service.process_post(
+        make_context(tenant, principal=StubIdentity("http://tenant1.test/user2", tenant)),
+        StubUrl.parse("http://tenant1.test/outbox"),
+        {
+            "id": "http://tenant1.test/delete1",
+            "type": "Delete",
+            "actor": "http://tenant1.test/user2",
+            "object": {
+                "id": "http://tenant1.test/notes/1",
+                "type": "Note",
+                "content": "hello",
+            },
+        },
+    )
+
+    note = await tenant.public_store.get("http://tenant1.test/notes/1")
+    assert note is not None and note["type"] == "Tombstone", "the payload is not stored back"
+    outbox = await tenant.public_store.get("http://tenant1.test/outbox")
+    assert outbox is not None
+    activity_id = cast(list[str], outbox["items"])[-1]
+    assert activity_id.startswith("http://tenant1.test/user2/delete/")
+    stored = await tenant.public_store.get(activity_id)
+    assert stored is not None
+    assert stored["object"] == "http://tenant1.test/notes/1", "the activity keeps a reference"
+
+
 async def test_dereference_unknown_resource(service: ActivityPubService, tenant: Tenant):
     with pytest.raises(NotFoundException):
         await service.process_get(
@@ -336,6 +387,55 @@ async def test_create_object_is_resolved_through_the_context(tenant: Tenant):
 
     assert served["object"] == note, "a fetched object is embedded"
     assert transport.urls == [object_uri], "the fetch is the context's, not the store's"
+
+
+async def test_a_collection_item_is_served_with_its_creates_object_embedded(tenant: Tenant):
+    """A stored activity holds a reference; serving reverses that, item by item.
+
+    A reader must not be handed a link to something it cannot fetch - a peer's
+    non-public object is 404 to everyone, including us.
+    """
+    note_uri = "http://tenant1.test/user2/note/7"
+    create_uri = "http://tenant1.test/user2/create/7"
+    note: JSONObject = {"id": note_uri, "type": "Note", "content": "Wazzup?"}
+    await tenant.public_store.put(note)
+    await tenant.public_store.put({"id": create_uri, "type": "Create", "object": note_uri})
+
+    page: JSONObject = {
+        "id": "http://tenant1.test/user2/inbox",
+        "type": "OrderedCollectionPage",
+        "items": [create_uri],
+    }
+
+    served = await serialize(make_context(tenant), page)
+
+    items = cast(list[JSONObject], served["orderedItems"])
+    assert items[0]["object"] == note, "the item carries the document, not a reference"
+
+    stored = await tenant.public_store.get(create_uri)
+    assert stored is not None and stored["object"] == note_uri, "the store keeps the reference"
+
+
+async def test_a_collection_item_keeps_its_reference_when_the_object_is_unavailable(
+    tenant: Tenant,
+):
+    """An object that cannot be resolved does not remove the item from the page."""
+    object_uri = "http://remote.test/note/gone"
+    create_uri = "http://tenant1.test/user2/create/8"
+    await tenant.public_store.put({"id": create_uri, "type": "Create", "object": object_uri})
+
+    page: JSONObject = {
+        "id": "http://tenant1.test/user2/inbox",
+        "type": "OrderedCollectionPage",
+        "items": [create_uri],
+    }
+
+    served = await serialize(make_context(tenant), page)
+
+    items = cast(list[JSONObject], served["orderedItems"])
+    item = items[0]
+    assert item["id"] == create_uri, "the item is still served"
+    assert item["object"] == object_uri, "an unresolvable object stays a reference"
 
 
 async def test_dereference_collection_filtered(service: ActivityPubService, tenant: Tenant):
@@ -942,6 +1042,131 @@ async def test_inbox_undo_like(service: ActivityPubService, remote_identity: Stu
     assert likes["items"] == []
 
 
+async def test_inbox_announce_creates_the_shares_collection_of_our_object(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    """Announcing an object we own adds the announce to that object's shares.
+
+    The collection has to exist and the object has to name it: an id with no document
+    behind it makes the store raise, and the sender retries the resulting 5xx forever.
+    """
+    tenant = remote_identity.tenant
+    note_uri = "http://tenant1.test/user2/note"
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+                "followers": "http://tenant1.test/user2/followers",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+            {
+                "id": note_uri,
+                "type": "Note",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    transport = StubTransport({})
+    provider = _provider(transport)
+    activity: JSONObject = {
+        "id": "http://remote.test/announce1",
+        "type": "Announce",
+        "actor": "http://remote.test/user1",
+        "object": note_uri,
+    }
+
+    accepted = await service.process_post(
+        make_context(tenant, principal=remote_identity, remote=provider),
+        StubUrl.parse("http://tenant1.test/inbox"),
+        activity,
+    )
+    assert accepted is None, "the route answers 200, not a 5xx the sender retries"
+
+    shares = await tenant.public_store.get(f"{note_uri}/shares")
+    assert shares is not None, "the collection exists, so an item can go into it"
+    assert shares["items"] == ["http://remote.test/announce1"]
+    note = await tenant.public_store.get(note_uri)
+    assert note is not None
+    assert note["shares"] == f"{note_uri}/shares", "the object names the collection"
+    assert transport.urls == [], "an object we own is never fetched from the network"
+
+    await service.process_post(
+        make_context(tenant, principal=remote_identity, remote=provider),
+        StubUrl.parse("http://tenant1.test/inbox"),
+        dict(activity),
+    )
+    shares = await tenant.public_store.get(f"{note_uri}/shares")
+    assert shares is not None
+    assert shares["items"] == [
+        "http://remote.test/announce1"
+    ], "a redelivered announce is listed once"
+
+
+async def test_inbox_announce_of_a_remote_object_writes_no_shares(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    """The object's origin maintains its shares; we only record the announce."""
+    tenant = remote_identity.tenant
+    remote_note = "http://remote.test/note/1"
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+                "followers": "http://tenant1.test/user2/followers",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    transport = StubTransport(
+        {
+            remote_note: json_response(
+                {
+                    "id": remote_note,
+                    "type": "Note",
+                    "attributedTo": "http://remote.test/user1",
+                }
+            )
+        }
+    )
+    provider = _provider(transport)
+    activity: JSONObject = {
+        "id": "http://remote.test/announce2",
+        "type": "Announce",
+        "actor": "http://remote.test/user1",
+        "object": remote_note,
+    }
+
+    accepted = await service.process_post(
+        make_context(tenant, principal=remote_identity, remote=provider),
+        StubUrl.parse("http://tenant1.test/inbox"),
+        activity,
+    )
+    assert accepted is None
+
+    inbox = await tenant.public_store.get("http://tenant1.test/inbox")
+    assert inbox is not None and inbox["items"] == ["http://remote.test/announce2"]
+    assert (
+        await tenant.public_store.get(f"{remote_note}/shares") is None
+    ), "a document owned by another server is not written here"
+    assert transport.urls == [], "and it is not read either: its shares are its origin's"
+
+
 async def test_inbox_rejects_an_activity_without_an_id(
     service: ActivityPubService, remote_identity: StubIdentity
 ):
@@ -1084,6 +1309,105 @@ async def test_inbox_create_is_not_written_into_the_tenant_store(
     remembered = await context.resolver.fetch("http://remote.test/create9")
     assert remembered is not None and remembered["id"] == "http://remote.test/create9"
     assert transport.urls == [], "remembered in the remote cache, not refetched"
+
+
+async def test_inbox_create_fetches_a_referenced_object(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    """A Create may carry only a reference, and the object must be read at intake.
+
+    A read deferred until the inbox page is served may never succeed: snac2 answers
+    404 for a non-public object whoever asks, so a direct message fetched later is
+    lost. The object has to be read while the sender is still offering it.
+    """
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+                "followers": "http://tenant1.test/user2/followers",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    note: JSONObject = {
+        "id": "http://remote.test/note/7",
+        "type": "Note",
+        "attributedTo": "http://remote.test/user1",
+        "to": ["http://tenant1.test/user2"],
+        "content": "a private reply",
+    }
+    transport = StubTransport({"http://remote.test/note/7": json_response(note)})
+    context = make_context(tenant, principal=remote_identity, remote=_provider(transport))
+
+    resource: JSONObject = {
+        "id": "http://remote.test/create7",
+        "type": "Create",
+        "actor": "http://remote.test/user1",
+        "object": "http://remote.test/note/7",
+    }
+    await service.process_post(context, StubUrl.parse("http://tenant1.test/inbox"), resource)
+
+    assert transport.urls == ["http://remote.test/note/7"], "the referenced object is read once"
+
+    inbox = await tenant.public_store.get("http://tenant1.test/inbox")
+    assert inbox is not None and inbox["items"] == ["http://remote.test/create7"]
+
+    remembered = await context.resolver.fetch("http://remote.test/note/7")
+    assert remembered is not None and remembered["content"] == "a private reply"
+    assert transport.urls == ["http://remote.test/note/7"], "kept, so serving it needs no refetch"
+
+
+async def test_inbox_create_survives_an_unfetchable_referenced_object(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    """A 404 for the referenced object must not fail the delivery.
+
+    The sender retries a 5xx forever, and the activity is the record that the
+    object was announced to us: keep it and log, rather than raise.
+    """
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+                "followers": "http://tenant1.test/user2/followers",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    transport = StubTransport({})  # an unscripted GET answers 404
+    context = make_context(tenant, principal=remote_identity, remote=_provider(transport))
+
+    resource: JSONObject = {
+        "id": "http://remote.test/create8",
+        "type": "Create",
+        "actor": "http://remote.test/user1",
+        "object": "http://remote.test/note/8",
+    }
+    await service.process_post(context, StubUrl.parse("http://tenant1.test/inbox"), resource)
+
+    inbox = await tenant.public_store.get("http://tenant1.test/inbox")
+    assert inbox is not None and inbox["items"] == ["http://remote.test/create8"]
+
+    remembered = await context.resolver.fetch("http://remote.test/create8")
+    assert remembered is not None, "the activity is on record even without its object"
 
 
 @pytest.mark.parametrize(
@@ -1962,7 +2286,7 @@ async def test_outbox_send_logs_a_failed_delivery(tenant, caplog):
     delivery.failures = [DeliveryFailure("https://remote.test/inbox", 3, "HTTP 503")]
 
     with caplog.at_level(logging.ERROR, logger="firm.core.services.activitypub.publish"):
-        await outbox_send(tenant, {str(tenant.prefix): tenant}, activity, outbox, delivery)
+        await outbox_send(make_context(tenant), activity, outbox, delivery)
 
     assert "https://remote.test/inbox" in caplog.text
     assert "HTTP 503" in caplog.text
@@ -2195,10 +2519,14 @@ async def test_the_scan_budget_is_the_same_without_a_principal(tenant: Tenant):
     assert len(anonymous.entries) == 4
 
 
-async def test_a_received_activity_is_stored_without_firm_properties(
+async def test_a_received_activity_keeps_the_senders_firm_properties(
     service: ActivityPubService, remote_identity: StubIdentity
 ):
-    """#28: a document we keep carries no ``firm:`` key the sender chose to send."""
+    """``firm:`` is our vocabulary: a sender's copy is the sender's claim, and it is kept.
+
+    Peers may learn the terms, so stripping them on ingress would cost them the terms
+    they sent us and would mean a client could never author one.
+    """
     tenant = remote_identity.tenant
     await setup_resources(
         tenant.public_store,
@@ -2246,7 +2574,7 @@ async def test_a_received_activity_is_stored_without_firm_properties(
 
     stored = await tenant.public_store.get("http://tenant1.test/activities/1")
     assert stored is not None
-    assert FIRM_NS.role.value not in stored, "a received firm: key is not kept"
+    assert stored[FIRM_NS.role.value] == "admin", "the sender's firm: claim is kept"
     assert stored["@context"] == ["https://www.w3.org/ns/activitystreams", toot_context]
     assert stored["to"] == ["http://tenant1.test/user2"]
     assert stored["cc"] == []
@@ -2254,14 +2582,347 @@ async def test_a_received_activity_is_stored_without_firm_properties(
 
     note = await tenant.public_store.get("http://tenant1.test/user2/note/1")
     assert note is not None
-    assert FIRM_NS.privateKey.value not in note, "nor one inside the embedded object"
+    assert note[FIRM_NS.privateKey.value] == "leak", "nor is one inside the embedded object"
     assert note["_misskey_quote"] == "http://remote.test/notes/1"
 
 
-async def test_a_received_foreign_activity_is_cached_without_firm_properties(
+async def test_a_received_activity_drops_urn_properties(
     service: ActivityPubService, remote_identity: StubIdentity
 ):
-    """#28: the remote cache holds the peer's copy, and that copy is stripped too."""
+    """A ``urn:`` names a document of ours, which no peer can serve: the key goes."""
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    context = make_context(
+        tenant,
+        principal=StubIdentity("http://tenant1.test/user2", tenant),
+        remote=_provider(StubTransport({})),
+    )
+
+    await service.process_post(
+        context,
+        StubUrl.parse("http://tenant1.test/inbox"),
+        {
+            "id": "http://tenant1.test/activities/2",
+            "type": "Create",
+            "actor": "http://tenant1.test/user2",
+            "to": ["http://tenant1.test/user2"],
+            "urn:firm:role": "admin",
+            FIRM_NS.role.value: "admin",
+            "object": {
+                "id": "http://tenant1.test/user2/note/2",
+                "type": "Note",
+                "urn:firm:privateKey": "leak",
+                FIRM_NS.privateKey.value: "claim",
+            },
+        },
+    )
+
+    stored = await tenant.public_store.get("http://tenant1.test/activities/2")
+    assert stored is not None
+    assert _urn_keys(stored) == [], "no urn: property survives anywhere in the document"
+    assert stored[FIRM_NS.role.value] == "admin", "a firm: key is a different matter"
+
+    note = await tenant.public_store.get("http://tenant1.test/user2/note/2")
+    assert note is not None
+    assert _urn_keys(note) == []
+    assert note[FIRM_NS.privateKey.value] == "claim"
+
+
+def _urn_keys(document: JSON) -> list[str]:
+    """Every mapping key in the document that is a URN."""
+    if isinstance(document, dict):
+        found = [str(key) for key in document if str(key).startswith("urn:")]
+        for value in document.values():
+            found.extend(_urn_keys(value))
+        return found
+    if isinstance(document, list):
+        return [key for item in document for key in _urn_keys(item)]
+    return []
+
+
+async def test_an_activity_addressed_by_a_urn_is_dropped(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    """Nothing stores or records a URN-addressed activity: a peer cannot serve one."""
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    context = make_context(
+        tenant,
+        principal=StubIdentity("http://tenant1.test/user2", tenant),
+        remote=_provider(StubTransport({})),
+    )
+
+    await service.process_post(
+        context,
+        StubUrl.parse("http://tenant1.test/inbox"),
+        {
+            "id": "urn:uuid:0d6c4f4a-5d19-4e0e-9f31-2b9a1f0f0b7c",
+            "type": "Create",
+            "actor": "http://tenant1.test/user2",
+            "to": ["http://tenant1.test/user2"],
+            "object": {"id": "http://tenant1.test/user2/note/3", "type": "Note"},
+        },
+    )
+
+    assert (
+        await tenant.public_store.get("urn:uuid:0d6c4f4a-5d19-4e0e-9f31-2b9a1f0f0b7c") is None
+    ), "a URN-addressed document is never stored"
+    inbox = await tenant.public_store.get("http://tenant1.test/inbox")
+    assert inbox is not None
+    assert get_list(inbox, "items") == [], "and never recorded in the box"
+    assert (
+        await tenant.public_store.get("http://tenant1.test/user2/note/3") is None
+    ), "the object arrived with an activity we dropped"
+
+
+async def test_an_embedded_object_addressed_by_a_urn_drops_the_activity(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    """An object no peer can serve cannot be kept, and the activity naming it is empty."""
+    tenant = remote_identity.tenant
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+    context = make_context(
+        tenant,
+        principal=StubIdentity("http://tenant1.test/user2", tenant),
+        remote=_provider(StubTransport({})),
+    )
+
+    await service.process_post(
+        context,
+        StubUrl.parse("http://tenant1.test/inbox"),
+        {
+            "id": "http://tenant1.test/activities/3",
+            "type": "Create",
+            "actor": "http://tenant1.test/user2",
+            "to": ["http://tenant1.test/user2"],
+            "object": {"id": "urn:uuid:6b1c2a0e-3a4f-4a1c-8a55-9f0f5d3b7c11", "type": "Note"},
+        },
+    )
+
+    assert await tenant.public_store.get("http://tenant1.test/activities/3") is None
+    assert await tenant.public_store.get("urn:uuid:6b1c2a0e-3a4f-4a1c-8a55-9f0f5d3b7c11") is None
+    inbox = await tenant.public_store.get("http://tenant1.test/inbox")
+    assert inbox is not None
+    assert get_list(inbox, "items") == []
+
+
+async def test_keep_drops_a_document_addressed_by_a_urn(tenant: Tenant):
+    """The choke point for every received document, whichever handler asked for it."""
+    context = make_context(tenant)
+    urn_uri = "urn:uuid:9d2a1b6e-0f3c-4c47-9c5a-1f4b8e2d7a60"
+
+    await context.keep({"id": urn_uri, "type": "Note"})
+
+    assert await tenant.public_store.is_stored(urn_uri) is False
+
+
+async def test_keep_stores_an_embedded_document_apart_and_references_it(tenant: Tenant):
+    """A kept document is a CBD: what it embeds is a document of its own."""
+    context = make_context(tenant)
+    activity_uri = f"{tenant.prefix}/activities/1"
+    note_uri = f"{tenant.prefix}/notes/1"
+    activity: JSONObject = {
+        "id": activity_uri,
+        "type": "Create",
+        "actor": f"{tenant.prefix}/user1",
+        "object": {"id": note_uri, "type": "Note", "content": "hello"},
+    }
+
+    assert await context.keep(activity) == activity_uri
+
+    stored = await tenant.public_store.get(activity_uri)
+    assert stored is not None
+    assert stored["object"] == note_uri, "the activity keeps a reference, not a copy"
+    note = await tenant.public_store.get(note_uri)
+    assert note is not None and note["content"] == "hello"
+    assert isinstance(activity["object"], dict), "the caller's document is not rewritten"
+
+
+async def test_keep_splits_an_embedded_document_at_any_depth(tenant: Tenant):
+    """A node without an address stays inline, and what it embeds still splits out."""
+    context = make_context(tenant)
+    note_uri = f"{tenant.prefix}/notes/1"
+    reply_uri = f"{tenant.prefix}/notes/2"
+
+    await context.keep(
+        {
+            "id": note_uri,
+            "type": "Note",
+            "replies": {
+                "type": "Collection",
+                "items": [{"id": reply_uri, "type": "Note", "content": "a reply"}],
+            },
+        }
+    )
+
+    stored = await tenant.public_store.get(note_uri)
+    assert stored is not None
+    replies = cast(JSONObject, stored["replies"])
+    assert replies["items"] == [reply_uri], "the blank node stays, its child does not"
+    reply = await tenant.public_store.get(reply_uri)
+    assert reply is not None and reply["content"] == "a reply"
+
+
+async def test_keep_leaves_a_fragment_addressed_node_inline(tenant: Tenant):
+    """A fragment names a part of the document that carries it: nothing fetches it apart."""
+    context = make_context(tenant)
+    actor_uri = f"{tenant.prefix}/actors/1"
+
+    await context.keep(
+        {
+            "id": actor_uri,
+            "type": "Person",
+            "publicKey": {
+                "id": f"{actor_uri}#key",
+                "owner": actor_uri,
+                "publicKeyPem": "PEM",
+            },
+        }
+    )
+
+    stored = await tenant.public_store.get(actor_uri)
+    assert stored is not None
+    key = cast(JSONObject, stored["publicKey"])
+    assert key["publicKeyPem"] == "PEM"
+    assert await tenant.public_store.is_stored(f"{actor_uri}#key") is False
+
+
+async def test_keep_stores_a_collections_object_items_as_references(tenant: Tenant):
+    """What a collection holds is a membership of URIs, whatever arrived in it."""
+    context = make_context(tenant)
+    collection_uri = f"{tenant.prefix}/collections/1"
+    note_uri = f"{tenant.prefix}/notes/3"
+    bare_uri = f"{tenant.prefix}/notes/4"
+
+    await context.keep(
+        {
+            "id": collection_uri,
+            "type": "Collection",
+            "items": [{"id": note_uri, "type": "Note"}, bare_uri],
+        }
+    )
+
+    stored = await tenant.public_store.get(collection_uri)
+    assert stored is not None
+    assert stored["items"] == [note_uri, bare_uri]
+    assert await tenant.public_store.is_stored(note_uri)
+
+
+async def test_keep_breaks_a_reference_cycle(tenant: Tenant):
+    """Two documents that name each other are stored once each, not forever."""
+    context = make_context(tenant)
+    a_uri = f"{tenant.prefix}/notes/a"
+    b_uri = f"{tenant.prefix}/notes/b"
+
+    await context.keep(
+        {
+            "id": a_uri,
+            "type": "Note",
+            "inReplyTo": {
+                "id": b_uri,
+                "type": "Collection",
+                "items": [{"id": a_uri, "type": "Note"}],
+            },
+        }
+    )
+
+    stored_b = await tenant.public_store.get(b_uri)
+    assert stored_b is not None
+    assert stored_b["items"] == [a_uri], "the ancestor is a reference, not another copy"
+
+
+async def test_keep_caches_a_remote_document_it_embeds(tenant: Tenant):
+    """Who owns the bytes is where they are kept, at every depth."""
+    provider = _provider(StubTransport({}))
+    context = make_context(tenant, remote=provider)
+    local_uri = f"{tenant.prefix}/notes/9"
+    remote_uri = "http://remote.test/note/9"
+
+    await context.keep(
+        {
+            "id": local_uri,
+            "type": "Note",
+            "inReplyTo": {"id": remote_uri, "type": "Note", "content": "theirs"},
+        }
+    )
+
+    stored = await tenant.public_store.get(local_uri)
+    assert stored is not None
+    assert stored["inReplyTo"] == remote_uri
+    assert await tenant.public_store.is_stored(remote_uri) is False
+    assert await provider.peek(remote_uri) is not None
+
+
+async def test_keep_references_another_tenants_document_without_copying_it(tmp_path):
+    """A document another tenant of this instance owns is left where its owner keeps it."""
+    a, b = _two_tenants(tmp_path)
+    other_uri = "http://b.test/note/1"
+    await b.public_store.put({"id": other_uri, "type": "Note", "content": "theirs"})
+    context = make_context(a, tenants={"http://a.test": a, "http://b.test": b})
+
+    await context.keep(
+        {
+            "id": "http://a.test/notes/1",
+            "type": "Note",
+            "inReplyTo": {"id": other_uri, "type": "Note", "content": "theirs"},
+        }
+    )
+
+    stored = await a.public_store.get("http://a.test/notes/1")
+    assert stored is not None
+    assert stored["inReplyTo"] == other_uri
+    assert await a.public_store.is_stored(other_uri) is False
+
+
+async def test_a_received_foreign_activity_is_cached_with_its_firm_properties(
+    service: ActivityPubService, remote_identity: StubIdentity
+):
+    """A peer's ``firm:`` terms are the peer's claims, and the remote cache keeps them."""
     tenant = remote_identity.tenant
     await setup_resources(
         tenant.public_store,
@@ -2304,16 +2965,16 @@ async def test_a_received_foreign_activity_is_cached_without_firm_properties(
 
     cached = await context.dereference("http://remote.test/create11")
     assert cached is not None
-    assert FIRM_NS.collections.value not in cached, "the cached activity is stripped"
+    assert cached[FIRM_NS.collections.value] == "http://remote.test/collections"
     assert cached["object"] == "http://remote.test/note/11"
 
     note = await context.dereference("http://remote.test/note/11")
     assert note is not None
-    assert FIRM_NS.blockedActor.value not in note, "and so is the object it embedded"
+    assert note[FIRM_NS.blockedActor.value] == "http://remote.test/user2"
 
 
-async def test_an_inbox_handler_sees_the_activity_without_firm_properties(tenant: Tenant):
-    """#28: the document ``process_inbox`` acts on is stripped, not only the stored copy."""
+async def test_an_inbox_handler_sees_the_activity_with_its_firm_properties(tenant: Tenant):
+    """What ``process_inbox`` acts on is what was sent: nothing rewrites the document."""
     owner = f"{tenant.prefix}/user1"
     followers = f"{owner}/followers"
     await tenant.public_store.put(
@@ -2348,7 +3009,7 @@ async def test_an_inbox_handler_sees_the_activity_without_firm_properties(tenant
     accept = next(activity for activity in delivery.activities if activity.get("type") == "Accept")
     seen = cast(JSONObject, accept["object"])
     assert seen["id"] == REMOTE_REPLY_ID, "the handler embeds the activity it acted on"
-    assert FIRM_NS.role.value not in seen, "the handler never saw our namespace"
+    assert seen[FIRM_NS.role.value] == "admin", "the handler sees what the sender sent"
     assert seen["object"] == owner
 
     follow_box = await tenant.public_store.get(followers)

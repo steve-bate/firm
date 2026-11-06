@@ -1,7 +1,9 @@
+import copy
 import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, overload
+from urllib.parse import urldefrag
 
 from firm.core.interfaces import (
     APActor,
@@ -14,9 +16,12 @@ from firm.core.interfaces import (
 from firm.core.resolver import ResourceResolver
 from firm.core.services.activitypub.exceptions import NotFoundException
 from firm.core.services.activitypub.publish import outbox_send
-from firm.core.util import get_id, get_types, is_local_uri, resource_id
+from firm.core.util import get_id, get_types, is_local_uri, is_urn, resource_id
 
 log = logging.getLogger(__name__)
+
+_DROP = object()
+"""Stands for "this value must not be kept", so the CBD walk can remove it."""
 
 
 @dataclass(frozen=True)
@@ -82,24 +87,85 @@ class FirmContext:
             return None
         return document
 
-    async def keep(self, document: JSONObject) -> None:
-        """Keep a document that arrived from another server.
+    async def keep(self, document: JSONObject) -> str | None:
+        """Keep a document that arrived from another server, and everything it embeds.
 
-        A document under this tenant's prefix is ours to hold, so it goes to the
-        tenant's own store. Anything else belongs to the server that authored it and is
-        remembered in the remote cache; a tenant store never receives it.
+        Returns the id the document was kept under, or ``None`` when there is nothing to
+        keep. The store holds concise bounded descriptions: the document's own properties,
+        never a copy of a document it embeds. So every embedded document with an address of
+        its own is kept as a document of its own first, and replaced here by a reference to
+        it. A node without an address is part of this document and stays inline - and so is
+        a node addressed by a fragment (``…/actor#key``): a fragment names a part of the
+        document that carries it, and no request can fetch it apart, so splitting it out
+        would store something nothing can address.
+
+        The caller's document is not modified: what the wire said is the caller's, what
+        the store holds is this method's.
+
+        Where a document belongs is decided by who owns its id - this tenant's own store,
+        or the remote cache for a document another server authored. A document owned by
+        another tenant of this instance is not stored here at all; the reference returned
+        still names it, because that tenant's store holds it.
+
+        TODO: a document split out of its parent loses the parent's ``@context``, and its
+        own may be absent. That is harmless today, because these documents are served and
+        read as plain JSON, not as JSON-LD. An RDF store would need each kept document to
+        carry the context it was expanded under, or the split would change its meaning.
+        """
+        return await self._keep(copy.deepcopy(document), set())
+
+    async def _keep(self, document: JSONObject, seen: set[str]) -> str | None:
+        """Store one document, after everything it embeds, and return the id it went under.
+
+        ``seen`` is the set of ids this walk has already handled, so a document that
+        refers back to one of its ancestors becomes a reference rather than a loop.
         """
         uri = get_id(document) or ""
         if not uri:
             log.debug("Not keeping a document without an id")
-            return
+            return None
+        if is_urn(uri):
+            # A URN names a document of this tenant's own store: no peer can serve one, so
+            # this is either a forged reference into our namespace or a document meant for
+            # another server. Neither is something to hold.
+            log.warning("Not keeping a URN-addressed document: %s", uri)
+            return None
+        if uri in seen:
+            return uri
+        seen.add(uri)
+        await self._split_embedded(document, seen)
         if is_local_uri(self.tenant, uri):
             await self.tenant.public_store.put(document)
-            return
+            return uri
         if self.resolver.owner(uri) is not None:
             log.warning("Not keeping a document owned by another tenant: %s", uri)
-            return
+            return uri
         await self.resolver.remember(document)
+        return uri
+
+    async def _split_embedded(self, node: JSONObject, seen: set[str]) -> None:
+        """Replace every document embedded in ``node`` with a reference to it."""
+        for key, value in list(node.items()):
+            replacement = await self._split_value(value, seen)
+            if replacement is _DROP:
+                node.pop(key, None)
+            elif replacement is not value:
+                node[key] = replacement
+
+    async def _split_value(self, value: Any, seen: set[str]) -> Any:
+        """One property value, kept, referenced, or dropped."""
+        if isinstance(value, list):
+            kept = [await self._split_value(item, seen) for item in value]
+            return [item for item in kept if item is not _DROP]
+        if not isinstance(value, Mapping):
+            return value
+        embedded: JSONObject = value if isinstance(value, dict) else dict(value)
+        uri = get_id(embedded)
+        if uri is None or urldefrag(uri)[1]:
+            await self._split_embedded(embedded, seen)
+            return embedded
+        reference = await self._keep(embedded, seen)
+        return reference if reference is not None else _DROP
 
 
 @dataclass(frozen=True)
@@ -117,7 +183,7 @@ class FirmBoxContext(FirmContext):
         outbox_uri = resource_id(self.box_owner.get("outbox"))
         if not outbox_uri:
             raise NotImplementedError("Box owner has no outbox")
-        await outbox_send(self.tenant, self.tenants, activity, outbox_uri, self.delivery_service)
+        await outbox_send(self, activity, outbox_uri, self.delivery_service)
 
 
 def generate_id(actor: APActor | JSONObject | str, subpath: str | JSONObject) -> str:

@@ -45,7 +45,7 @@ from firm.core.util import (
     get_types,
     is_collection,
     is_public,
-    strip_firm_properties,
+    urn_addressed,
 )
 from firm.server.adapters import HttpxTransport
 from firm.server.config import ServerConfig
@@ -270,10 +270,11 @@ class FirmDeliveryService(DeliveryService):
         message = copy.deepcopy(activity)
         message.pop("bto", None)
         message.pop("bcc", None)
-        message = cast(
-            JSONObject,
-            strip_firm_properties(message, lambda key: key.startswith("firm:")),
-        )
+        if urn := urn_addressed(message):
+            # No recipient can fetch a URN and no peer can serve one, so putting it on the
+            # wire would hand them a reference only this server resolves. A terminal
+            # refusal, not a retry: the activity itself is what is wrong.
+            raise DeliveryRefused(f"refusing to deliver a URN-addressed document: {urn}", 1)
         # TODO Define message/property specific serialization
         # (collection paging, per-recipient visibility)
         if "@context" not in message:

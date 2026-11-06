@@ -65,7 +65,7 @@ def strip_query(uri: str) -> str:
     return uri.split("?", 1)[0].split("#", 1)[0]
 
 
-def strip_firm_properties(value: JSON, predicate: Callable[[str], bool]) -> JSON:
+def strip_properties(value: JSON, predicate: Callable[[str], bool]) -> JSON:
     """A copy of ``value`` with every mapping key the predicate accepts removed.
 
     Pure: the caller's document and everything it embeds stay as they were, so
@@ -74,18 +74,31 @@ def strip_firm_properties(value: JSON, predicate: Callable[[str], bool]) -> JSON
     """
     if isinstance(value, Mapping):
         return {
-            key: strip_firm_properties(item, predicate)
+            key: strip_properties(item, predicate)
             for key, item in value.items()
             if not predicate(str(key))
         }
     if isinstance(value, list):
-        return [strip_firm_properties(item, predicate) for item in value]
+        return [strip_properties(item, predicate) for item in value]
     return value
 
 
 def is_urn(uri: str) -> bool:
     """True for a URN: a resource with no host, which is never fetched."""
     return uri.startswith("urn:")
+
+
+def urn_addressed(document: JSONObject) -> str | None:
+    """The URN addressing this document or the object it carries, or ``None``.
+
+    No peer can serve a URN, so one naming a document or its object is either a forged
+    reference into a local store or a document meant for another server. Either way there
+    is nothing to keep, record or deliver under it.
+    """
+    for candidate in (get_id(document), get_id(document.get("object"))):
+        if candidate is not None and is_urn(str(candidate)):
+            return str(candidate)
+    return None
 
 
 def is_local_uri(tenant: Tenant, uri: str) -> bool:

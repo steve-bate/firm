@@ -12,9 +12,8 @@ import aiosqlite
 
 from firm.core.interfaces import JSONObject
 
-# How many entries a cache keeps when the caller names no limit. The provider
-# passes this from configuration; a cache built by hand uses it as the default.
-DEFAULT_MAX_ENTRIES = 10_000
+# A cache keeps every entry unless a cap is configured: what this server was sent
+# is not evicted on a timer or an arbitrary limit. ``max_entries=None`` means no cap.
 
 
 @dataclass(frozen=True)
@@ -41,8 +40,9 @@ class CacheEntry:
 class RemoteCache(Protocol):
     """Where entries live. Keys are cache keys, not raw URIs.
 
-    A cache holds at most ``max_entries``; a ``put`` that takes it past the cap
-    drops the least recently used entry. Recency is a ``get`` hit or a ``put``.
+    A cache holds at most ``max_entries`` when a cap is given; a ``put`` that takes
+    it past the cap drops the least recently used entry. ``None`` means no cap.
+    Recency is a ``get`` hit or a ``put``.
     """
 
     async def get(self, key: str) -> CacheEntry | None: ...
@@ -57,9 +57,9 @@ class RemoteCache(Protocol):
 
 
 class MemoryRemoteCache:
-    """An in-process cache, bounded to the most recently used entries."""
+    """An in-process cache, bounded to the most recently used entries when capped."""
 
-    def __init__(self, max_entries: int = DEFAULT_MAX_ENTRIES) -> None:
+    def __init__(self, max_entries: int | None = None) -> None:
         self._max_entries = max_entries
         self._entries: OrderedDict[str, CacheEntry] = OrderedDict()
 
@@ -72,8 +72,9 @@ class MemoryRemoteCache:
     async def put(self, entry: CacheEntry) -> None:
         self._entries[entry.uri] = entry
         self._entries.move_to_end(entry.uri)
-        while len(self._entries) > self._max_entries:
-            self._entries.popitem(last=False)
+        if self._max_entries is not None:
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
 
     async def delete(self, key: str) -> None:
         self._entries.pop(key, None)
@@ -91,7 +92,7 @@ class MemoryRemoteCache:
 class SqliteRemoteCache:
     """A cache in one SQLite file: a row per URI plus the order it was last used."""
 
-    def __init__(self, path: str | Path, max_entries: int = DEFAULT_MAX_ENTRIES) -> None:
+    def __init__(self, path: str | Path, max_entries: int | None = None) -> None:
         self._path = Path(path)
         self._max_entries = max_entries
         self._connection: aiosqlite.Connection | None = None
@@ -175,15 +176,16 @@ class SqliteRemoteCache:
                 entry.expires_at,
             ),
         )
-        async with db.execute("SELECT COUNT(*) FROM entries") as cursor:
-            row = await cursor.fetchone()
-        excess = (row[0] if row else 0) - self._max_entries
-        if excess > 0:
-            await db.execute(
-                "DELETE FROM entries WHERE uri IN"
-                " (SELECT uri FROM entries ORDER BY used_at ASC LIMIT ?)",
-                (excess,),
-            )
+        if self._max_entries is not None:
+            async with db.execute("SELECT COUNT(*) FROM entries") as cursor:
+                row = await cursor.fetchone()
+            excess = (row[0] if row else 0) - self._max_entries
+            if excess > 0:
+                await db.execute(
+                    "DELETE FROM entries WHERE uri IN"
+                    " (SELECT uri FROM entries ORDER BY used_at ASC LIMIT ?)",
+                    (excess,),
+                )
         await db.commit()
 
     async def delete(self, key: str) -> None:

@@ -18,6 +18,7 @@ from firm.core.util import (
     AS2_ACTOR_TYPES,
     get_id,
     has_value,
+    is_local_uri,
     is_type,
     is_type_any,
     resource_get,
@@ -154,6 +155,23 @@ async def _process_inbox_create(
         activity["object"] = resource_id(activity_object)
         await context.keep(activity_object)
         await context.keep(activity)
+        return
+
+    if isinstance(activity_object, str):
+        # A Create need not embed its object; a reference is legal, and not every
+        # server embeds it. Read it now, while the sender is still the one we are
+        # talking to: a deferred read is not guaranteed to succeed later, and for a
+        # non-public object it cannot succeed at all - snac2 answers 404 for a
+        # private note whoever asks, so a later read would lose the object for good.
+        fetched = await context.dereference(activity_object)
+        if fetched is None:
+            # Never raise: the sender retries a 5xx forever, and the activity itself
+            # is already on record in the owner's inbox.
+            log.warning("Inbox: Create object could not be fetched: %s", activity_object)
+        else:
+            await context.keep(fetched)
+
+    await context.keep(activity)
 
 
 async def _process_inbox_update(
@@ -314,23 +332,42 @@ async def _process_inbox_announce(
     context: FirmBoxContext,
     activity: JSONObject,
 ) -> None:
+    """Add the announce to the announced object's ``shares`` collection.
+
+    AS2 makes ``shares`` a collection of the announced object, so only the server that
+    owns the object can maintain it. An announce of an object owned by another server,
+    or by another tenant of this instance, is recorded in the owner's inbox and goes no
+    further: the origin's copy of ``shares`` is the authoritative one, and nothing here
+    could hold ours - a cached append would decorate a read-through copy that the next
+    fetch overwrites.
+    """
     if "object" not in activity:
         raise InvalidRequestException("Missing object in announce")
     announced_object_uri = resource_id(activity["object"])
-    announced_object = await context.dereference(announced_object_uri)
-    if announced_object is None:
-        raise InvalidRequestException("Unknown announced object")
-    if "shares" not in announced_object:
-        shares: JSONObject = {
-            "id": f"{announced_object['id']}/shares",
-            "type": "OrderedCollection",
-            "attributedTo": announced_object.get("attributedTo", context.box_owner["id"]),
-            "totalItems": 0,
-            "items": [],
-        }
-    else:
-        shares_uri = resource_id(announced_object.get("shares"))
-        shares = await context.dereference(shares_uri, required=True)
-    await add_collection_item(
-        context.tenant.public_store, resource_id(shares), resource_id(activity)
-    )
+    if announced_object_uri is None:
+        raise InvalidRequestException("Announce has no object id")
+    if not is_local_uri(context.tenant, announced_object_uri):
+        log.info(
+            "Inbox: announced object is not this tenant's, leaving its shares to its origin: %s",
+            announced_object_uri,
+        )
+        return
+    announced_object = await context.dereference(announced_object_uri, required=True)
+    store = context.tenant.public_store
+    shares_uri = get_id(announced_object.get("shares"))
+    if shares_uri is None:
+        # The collection has to exist before an item can go into it, and the object has
+        # to name it: an id with no document behind it makes add_collection_item raise,
+        # and the sender then retries a 5xx forever.
+        shares_uri = f"{announced_object_uri}/shares"
+        await store.put(
+            {
+                "id": shares_uri,
+                "type": "OrderedCollection",
+                "attributedTo": announced_object.get("attributedTo", context.box_owner["id"]),
+                "totalItems": 0,
+            }
+        )
+        announced_object["shares"] = shares_uri
+        await store.put(announced_object)
+    await add_collection_item(store, shares_uri, resource_id(activity))

@@ -76,14 +76,15 @@ class RemoteFetchConfig:
     enabled: bool = True
     kind: CacheKind | None = None
     path: Path | None = None
-    ttl: float = 300.0
+    # Lifetime of a fetched document. ``None`` disables expiry: an entry is served for
+    # as long as the cache holds it. Negative answers keep their own lifetimes below.
+    ttl: float | None = None
     failure_ttl: float = 60.0
     not_found_ttl: float = 86_400.0
     max_bytes: int = 1_048_576
     timeout: float = 5.0
-    # Kept equal to firm.core.remote.cache.DEFAULT_MAX_ENTRIES by hand: config cannot
-    # import the core (the cycle closes through firm.core.interfaces).
-    max_entries: int = 10_000
+    # Entries kept in the remote cache. ``None`` means no cap.
+    max_entries: int | None = None
     allow_private_addresses: bool = False
     signing_actor: str | None = None
 

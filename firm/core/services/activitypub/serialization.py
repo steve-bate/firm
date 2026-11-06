@@ -29,6 +29,45 @@ def _add_context(resource: JSONObject, context: Url | str):
         resource["@context"] = [resource["@context"], context]
 
 
+async def _embed_object(
+    context: FirmContext, document: JSONObject, *, required: bool
+) -> JSONObject:
+    """Return a Create/Update with its object reference resolved, or the document.
+
+    The store holds references: an activity is saved with ``object`` as a URI and the
+    object as its own document. Serving reverses that - for one activity and for every
+    item of a collection alike - so a reader is not asked to fetch what it was already
+    sent. The copy is deep: a dereferenced document may be the cache's own, and the
+    likes/shares rewrite below must not reach it.
+    """
+    if not (is_type(document, "Create") or is_type(document, "Update")):
+        return document
+    uri = document.get("object")
+    if not isinstance(uri, str):
+        return document
+    fetched = (
+        await context.dereference(uri, required=True)
+        if required
+        else await context.dereference(uri)
+    )
+    if fetched is None:
+        return document
+
+    document = copy.deepcopy(document)
+    obj = copy.deepcopy(fetched)
+    document["object"] = obj
+    for prop in ("likes", "shares"):
+        prop_uri = obj.get(prop)
+        if isinstance(prop_uri, str):
+            collection = await context.dereference(prop_uri)
+            if collection is not None:
+                collection = copy.deepcopy(collection)
+                collection.pop("items", None)
+                collection.pop("attributedTo", None)
+                obj[prop] = collection
+    return document
+
+
 async def serialize(context: FirmContext, resource: JSONObject) -> JSONObject:
     """Embed specific resources to match typical AP expectations.
 
@@ -47,27 +86,26 @@ async def serialize(context: FirmContext, resource: JSONObject) -> JSONObject:
         _add_context(resource, AS2_CONTEXT)
 
     if is_collection(resource):
+        embed = embeds_items(resource)
         resource = cast(
             JSONObject,
-            await dereference_collection_items(
-                context, resource, embed=embeds_items(resource), inplace=True
-            ),
+            await dereference_collection_items(context, resource, embed=embed, inplace=True),
         )
         items_key = get_collection_items_key(resource)
         if items_key != "items":
             # This is a bit hacky, but it allows us to store collections in a consistent way
             resource[items_key] = resource.pop("items")
+        items = resource.get(items_key)
+        if embed and isinstance(items, list):
+            # The same embedding a single Create gets: an item stored with a reference
+            # is served with the document, or the reader would be handed a link to
+            # something it cannot fetch (a peer's non-public object, for one).
+            for index, item in enumerate(items):
+                if isinstance(item, dict):
+                    items[index] = await _embed_object(context, item, required=False)
 
     elif is_type(resource, "Create") or is_type(resource, "Update"):
-        if isinstance(resource.get("object"), str):
-            obj = await context.dereference(resource["object"], required=True)
-            resource["object"] = obj
-            for prop in ["likes", "shares"]:
-                if prop in obj:
-                    collection = await context.dereference(cast(str, obj[prop]), required=True)
-                    collection.pop("items", None)
-                    collection.pop("attributedTo", None)
-                    obj[prop] = collection
+        resource = await _embed_object(context, resource, required=True)
 
     elif "endpoints" in resource:
         # TODO This endpoint handling is a bit hacky

@@ -196,7 +196,14 @@ async def process_outbox(context: FirmBoxContext, activity: JSONObject) -> str |
                 # raise NotImplementedError(f"Unsupported activity type: {activity.get('type')}")
                 ...
         finally:
-            await context.tenant.public_store.put(activity)
+            if isinstance(activity.get("object"), Mapping) and (
+                object_uri := get_id(activity.get("object"))
+            ):
+                # The handler owns what the activity carries: it stored the payload when
+                # it accepted it (a Delete stores only the Tombstone). What is kept here
+                # is the activity, so its object is a reference to the payload.
+                activity["object"] = object_uri
+            await context.keep(activity)
     await context.send(activity)
     return activity_id
 
@@ -235,16 +242,15 @@ async def _process_outbox_patch(context: FirmContext, activity: JSONObject):
                 current = current[segment]
         op = operation["op"]
         ptr = JsonPointer(path)
-        store = context.tenant.public_store
         if op == "add":
             if "value" not in operation:
                 raise InvalidRequestException("Add operation missing value in Patch activity")
             ptr.set(target, operation["value"], inplace=True)
-            await store.put(target)
+            await context.keep(target)
         elif op == "remove":
             parent, token = ptr.to_last(target)
             del parent[token]
-            await store.put(target)
+            await context.keep(target)
         elif op == "replace":
             if "value" not in operation:
                 raise InvalidRequestException("Replace operation missing value in Patch activity")
@@ -257,7 +263,7 @@ async def _process_outbox_patch(context: FirmContext, activity: JSONObject):
                 raise InvalidRequestException(
                     f"Unsupported parent type for replace operation in Patch activity: {type(parent)}"
                 )
-            await store.put(target)
+            await context.keep(target)
         elif op == "move":
             if "from" not in operation:
                 raise InvalidRequestException("Move operation missing from in Patch activity")
@@ -270,7 +276,7 @@ async def _process_outbox_patch(context: FirmContext, activity: JSONObject):
                 del from_parent[from_token]
             path_ptr = JsonPointer(operation["path"])
             path_ptr.set(target, value, inplace=True)
-            await store.put(target)
+            await context.keep(target)
         elif op == "copy":
             if "from" not in operation:
                 raise InvalidRequestException("Move operation missing from in Patch activity")
@@ -278,7 +284,7 @@ async def _process_outbox_patch(context: FirmContext, activity: JSONObject):
             value = from_ptr.get(target)
             path_ptr = JsonPointer(operation["path"])
             path_ptr.set(target, value, inplace=True)
-            await store.put(target)
+            await context.keep(target)
         elif op == "test":
             if "value" not in operation:
                 raise InvalidRequestException("Replace operation missing value in Patch activity")
@@ -374,7 +380,7 @@ async def _process_outbox_remove(context: FirmBoxContext, activity: JSONObject) 
     activity["target"] = resource_id(target)
     activity["object"] = resource_id(object_)
     # Save the activity
-    await store.put(activity)
+    await context.keep(activity)
 
 
 async def _process_outbox_add(context: FirmBoxContext, activity: JSONObject) -> None:
@@ -400,13 +406,13 @@ async def _process_outbox_add(context: FirmBoxContext, activity: JSONObject) -> 
     if "attributedTo" not in object_:
         object_["attributedTo"] = activity.get("actor", context.tenant.prefix)
     store = context.tenant.public_store
-    await store.put(object_)
+    await context.keep(object_)
     # The outbox is newest first.
     await store.insert_item(resource_id(target), resource_id(object_))
     activity["target"] = resource_id(target)
     activity["object"] = resource_id(object_)
     # Save the activity
-    await store.put(activity)
+    await context.keep(activity)
 
 
 async def _process_outbox_block(context, activity):
@@ -435,16 +441,15 @@ async def _process_outbox_block(context, activity):
 async def _process_outbox_update(context: FirmBoxContext, activity: JSONObject) -> None:
     if object_ := activity.get("object"):
         if isinstance(object_, Mapping):
-            store = context.tenant.public_store
-            await store.put(object_)
+            await context.keep(object_)
             activity["object"] = resource_id(object_)
-            await store.put(activity)
+            await context.keep(activity)
 
 
 async def _process_outbox_delete(context, activity):
     if resource := await context.dereference(cast(str, resource_id(activity["object"]))):
         store = context.tenant.public_store
-        await store.put(
+        await context.keep(
             {
                 "@context": "https://www.w3.org/ns/activitystreams",
                 "id": resource["id"],
@@ -486,9 +491,9 @@ async def _store_create(context: FirmBoxContext, activity: JSONObject) -> None:
         if "attributedTo" not in object_:
             object_["attributedTo"] = actor_id
         store = context.tenant.public_store
-        await store.put(object_)
+        await context.keep(object_)
         activity["object"] = resource_id(object_)
-        await store.put(activity)
+        await context.keep(activity)
         outbox_uri = context.box_uri
         await add_collection_item(store, outbox_uri, resource_id(activity))
         if is_type_any(object_, ["Collection", "OrderedCollection"]):
@@ -501,8 +506,8 @@ async def _store_create(context: FirmBoxContext, activity: JSONObject) -> None:
                     "attributedTo": actor_id,
                 }
                 cast(dict, context.box_owner)[FIRM_NS.collections.value] = collection_index["id"]
-                await store.put(collection_index)
-                await store.put(cast(JSONObject, context.box_owner))
+                await context.keep(collection_index)
+                await context.keep(cast(JSONObject, context.box_owner))
             else:
                 collection_index = await context.dereference(collection_index_uri, required=True)
             await add_collection_item(store, resource_id(collection_index), resource_id(object_))

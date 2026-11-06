@@ -9,7 +9,7 @@ from firm.core.util import (
     is_local_uri,
     is_urn,
     normalize_collection_items,
-    strip_firm_properties,
+    strip_properties,
 )
 
 
@@ -55,34 +55,34 @@ def test_normalize_leaves_a_plain_document_alone():
     assert normalize_collection_items(document) == {"id": "n", "type": "Note", "content": "hi"}
 
 
-def test_strip_firm_properties_recurses_and_keeps_every_other_key():
+def test_strip_properties_recurses_and_keeps_every_other_key():
     document = {
         "id": "http://tenant1.test/activities/1",
         "type": "Create",
         "@context": ["https://www.w3.org/ns/activitystreams"],
         "to": ["http://tenant1.test/user1"],
-        "firm:role": "admin",
+        "urn:firm:role": "admin",
         "toot:discoverable": True,
         "object": {
             "id": "http://tenant1.test/notes/1",
             "type": "Note",
-            "firm:privateKey": "leak",
+            "urn:firm:privateKey": "leak",
             "_misskey_quote": "http://remote.test/notes/1",
         },
         "items": [
-            {"id": "http://tenant1.test/notes/2", "firm:collections": "http://tenant1.test/c"}
+            {"id": "http://tenant1.test/notes/2", "urn:firm:collections": "http://tenant1.test/c"}
         ],
     }
 
-    stripped = strip_firm_properties(document, lambda key: key.startswith("firm:"))
+    stripped = strip_properties(document, is_urn)
 
-    assert "firm:role" not in stripped
+    assert "urn:firm:role" not in stripped
     assert stripped["id"] == "http://tenant1.test/activities/1"
     assert stripped["@context"] == ["https://www.w3.org/ns/activitystreams"]
     assert stripped["to"] == ["http://tenant1.test/user1"]
     assert stripped["toot:discoverable"] is True
-    assert "firm:privateKey" not in stripped["object"]
+    assert "urn:firm:privateKey" not in stripped["object"]
     assert stripped["object"]["_misskey_quote"] == "http://remote.test/notes/1"
-    assert "firm:collections" not in stripped["items"][0]
+    assert "urn:firm:collections" not in stripped["items"][0]
     assert stripped["items"][0]["id"] == "http://tenant1.test/notes/2"
-    assert document["firm:role"] == "admin", "the caller's document is untouched"
+    assert document["urn:firm:role"] == "admin", "the caller's document is untouched"
