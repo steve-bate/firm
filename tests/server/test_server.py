@@ -4,6 +4,7 @@ import json
 import os
 import time
 from hashlib import sha256
+from pathlib import Path
 from typing import cast
 from urllib.parse import urlparse
 
@@ -883,3 +884,106 @@ def test_proxy_requires_authentication(client):
     response = client.post("/proxy", data={"id": "https://remote.test/users/bob"})
 
     assert response.status_code == 403
+
+
+def test_shared_inbox_can_be_disabled_in_the_tenant_endpoints(tmp_path):
+    """`shared_inbox_path: null` advertises no shared inbox at all.
+
+    A shared inbox is optional in AP; a personal inbox is not. With the path unset the
+    tenant object carries no `sharedInbox` endpoint, which is what `is_shared_inbox_target`
+    and the delivery service read, so peers fall back to each actor's own inbox.
+    """
+    from firm.server.config import FileStoreConfig
+    from firm.server.server import init_tenant
+
+    for disabled in (None, ""):
+        config = ServerConfig(
+            [TenantConfig(prefix=TENANT_PREFIX)],
+            FileStoreConfig(base=tmp_path),
+            shared_inbox_path=disabled,
+        )
+        tenant = init_tenant(config, TENANT_PREFIX)
+        assert "sharedInbox" not in tenant.endpoints
+        assert tenant.shared_inbox_uri is None
+
+    with_shared = ServerConfig([TenantConfig(prefix=TENANT_PREFIX)], FileStoreConfig(base=tmp_path))
+    assert with_shared.shared_inbox_path == "shared"
+    assert (
+        init_tenant(with_shared, TENANT_PREFIX).endpoints["sharedInbox"]
+        == f"{TENANT_PREFIX}/shared"
+    )
+
+
+def test_is_shared_inbox_target_is_false_without_a_shared_inbox(tmp_path):
+    """Nothing is routed as a shared inbox when the tenant advertises none."""
+    from firm.core.services.activitypub.service import is_shared_inbox_target
+    from firm.server.config import FileStoreConfig
+    from firm.server.server import init_tenant
+
+    config = ServerConfig(
+        [TenantConfig(prefix=TENANT_PREFIX)],
+        FileStoreConfig(base=tmp_path),
+        shared_inbox_path=None,
+    )
+    tenant = init_tenant(config, TENANT_PREFIX)
+
+    assert not is_shared_inbox_target(tenant, f"{TENANT_PREFIX}/shared")
+
+
+def test_config_accepts_a_null_shared_inbox_path():
+    """A YAML `shared_inbox_path: null` disables it; omitting the key keeps the default."""
+    import io
+
+    from firm.server.config import load_config
+
+    disabled = load_config(io.StringIO(f"""
+tenants:
+  - prefix: {TENANT_PREFIX}
+store:
+  kind: filesystem
+  base: /tmp/firm-store
+shared_inbox_path: null
+"""))
+    assert disabled.shared_inbox_path is None
+
+    default = load_config(io.StringIO(f"""
+tenants:
+  - prefix: {TENANT_PREFIX}
+store:
+  kind: filesystem
+  base: /tmp/firm-store
+"""))
+    assert default.shared_inbox_path == "shared"
+
+
+async def test_proxy_serves_a_cached_remote_document_without_the_network(
+    client, actor, httpx_mock: HTTPXMock
+):
+    """A document this server was handed at delivery time is readable even if the
+    origin would answer 404: Pixelfed never serves `…/p/alice/<id>/activity` publicly."""
+    uri = "https://remote.test/p/alice/1/activity"
+    resolver = client.app.state.resolver
+    await resolver.remember(
+        {"id": uri, "type": "Create", "actor": "https://remote.test/users/alice"}
+    )
+
+    response = client.post("/proxy", data={"id": uri})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == uri
+    assert httpx_mock.get_requests() == [], "the cache answered; nothing was fetched"
+
+
+async def test_proxy_serves_another_tenant_document_from_that_tenants_store(client, actor):
+    """Ownership is the registry's: a second tenant is local and its store holds the doc."""
+    other_prefix = "https://tenant2.test"
+    tenants = client.app.state.tenants
+    other = Tenant(other_prefix, MemoryResourceStore(), MemoryResourceStore(), Path())
+    tenants[other_prefix] = other
+    uri = f"{other_prefix}/actors/joris"
+    await other.public_store.put({"id": uri, "type": "Person"})
+
+    response = client.post("/proxy", data={"id": uri})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == uri

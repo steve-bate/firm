@@ -1,5 +1,6 @@
 """Outbound delivery: inbox resolution, payload, and the failure model."""
 
+import copy
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -14,6 +15,7 @@ from firm.core.interfaces import FIRM_NS, APActor, NoOpValidator, Principal, Ten
 from firm.core.remote.cache import MemoryRemoteCache
 from firm.core.remote.provider import FetchPolicy, RemoteResourceProvider
 from firm.core.resolver import ResourceResolver
+from firm.core.services.activitypub.serialization import serialize
 from firm.core.services.activitypub.service import post_to_inbox
 from firm.core.services.activitypub.support import FirmContext
 from firm.core.store.memory import MemoryResourceStore
@@ -26,6 +28,7 @@ from tests.support import (
     RecordingQueue,
     StubTransport,
     json_response,
+    make_context,
 )
 
 PREFIX = "https://local.test"
@@ -223,6 +226,41 @@ async def test_serialize_keeps_firm_properties_in_the_embedded_object(tenant, se
         FIRM_NS.privateKey.value: "claim",
     }
     assert document["object"][FIRM_NS.privateKey.value] == "claim", "the input is untouched"
+
+
+async def test_an_accept_carries_the_follow_it_answers(tenant, config, transport):
+    """The Follow belongs to the follower's server, and the peer still needs it inline.
+
+    An Accept names one Follow; a peer handed a bare IRI cannot tell which request was
+    answered (PixelFed validates object.id/type/actor/object and drops the Accept when
+    they are absent). A Follow addressed without a fragment is split out on arrival, so
+    the copy to send is the one kept in the cache.
+    """
+    follow_uri = "https://remote.test/follows/1"
+    follow: dict[str, Any] = {
+        "id": follow_uri,
+        "type": "Follow",
+        "actor": REMOTE_ACTOR,
+        "object": SENDER,
+    }
+    service = FirmDeliveryService(config, transport)
+    resolver = make_resolver(tenant, transport)
+    service.set_resolver(resolver)
+    await resolver.remember(follow)
+
+    message = await service._serialize(
+        tenant,
+        {
+            "id": f"{SENDER}/accept/1",
+            "type": "Accept",
+            "actor": SENDER,
+            "to": [REMOTE_ACTOR],
+            "object": follow_uri,
+        },
+    )
+
+    assert message["object"] == follow, "the Follow is embedded, not named"
+    assert transport.urls == [], "and it comes from what we hold, not a fetch"
 
 
 async def test_serialize_refuses_an_activity_addressed_by_a_urn(tenant, service):
@@ -764,6 +802,85 @@ async def test_serialize_embeds_a_local_object(tenant, service):
     assert message["object"]["content"] == "hi"
 
 
+async def test_serialize_embeds_a_referenced_attachment(tenant, service):
+    document_uri = f"{PREFIX}/actors/sender/document/1"
+    await tenant.public_store.put(
+        {
+            "id": document_uri,
+            "type": "Document",
+            "mediaType": "image/jpeg",
+            "name": "Snakes!",
+            "url": f"{PREFIX}/sender/media/snakes.jpg",
+        }
+    )
+    await tenant.public_store.put(
+        {
+            "id": f"{PREFIX}/notes/1",
+            "type": "Note",
+            "content": "Snakes!",
+            "attachment": [document_uri],
+        }
+    )
+
+    message = await service._serialize(tenant, activity(object=f"{PREFIX}/notes/1"))
+
+    # The receiver reads attachment[0].url; a bare IRI arrives as a post with no picture.
+    assert message["object"]["attachment"][0]["mediaType"] == "image/jpeg"
+    assert message["object"]["attachment"][0]["url"] == f"{PREFIX}/sender/media/snakes.jpg"
+
+
+async def test_serving_and_delivery_agree_on_what_a_reader_is_handed(tenant, service):
+    """The two policies differ in reach, not in what they promise for a post we hold.
+
+    This is the guard against the drift that let a referenced attachment reach Pixelfed as
+    a bare IRI: whatever one path resolves for a reader, the other must resolve too.
+    """
+    document_uri = f"{PREFIX}/actors/sender/document/1"
+    await tenant.public_store.put(
+        {
+            "id": document_uri,
+            "type": "Document",
+            "mediaType": "image/jpeg",
+            "name": "Snakes!",
+            "url": f"{PREFIX}/sender/media/snakes.jpg",
+        }
+    )
+    await tenant.public_store.put(
+        {
+            "id": f"{PREFIX}/notes/1",
+            "type": "Note",
+            "content": "Snakes!",
+            "attachment": [document_uri],
+        }
+    )
+    stored = activity(object=f"{PREFIX}/notes/1")
+
+    served = await serialize(make_context(tenant), copy.deepcopy(stored))
+    delivered = await service._serialize(tenant, copy.deepcopy(stored))
+
+    for message in (served, delivered):
+        assert message["@context"] == "https://www.w3.org/ns/activitystreams"
+        assert message["object"]["content"] == "Snakes!"
+        assert message["object"]["attachment"][0]["url"] == (f"{PREFIX}/sender/media/snakes.jpg")
+    assert served["object"]["attachment"] == delivered["object"]["attachment"]
+
+
+async def test_serialize_leaves_a_foreign_attachment_as_a_uri(tenant, service):
+    foreign = "https://remote.test/actors/x/document/9"
+    await tenant.public_store.put(
+        {
+            "id": f"{PREFIX}/notes/1",
+            "type": "Note",
+            "content": "reposted",
+            "attachment": [foreign],
+        }
+    )
+
+    message = await service._serialize(tenant, activity(object=f"{PREFIX}/notes/1"))
+
+    assert message["object"]["attachment"] == [foreign]
+
+
 async def test_serialize_leaves_a_foreign_object_as_a_uri(tenant, service):
     foreign = "https://remote.test/notes/9"
     await tenant.public_store.put({"id": foreign, "type": "Note", "content": "not ours"})
@@ -876,3 +993,34 @@ async def test_a_forwarded_reply_reaches_another_local_follower(tenant, config, 
         "https://remote.test/activities/7"
     ], "the other local follower saw the reply"
     assert transport.posts == [], "forwarding does not re-post to the peer's followers"
+
+
+async def test_deliver_to_posts_only_to_the_recipients_it_is_given(
+    tenant, config, transport, queue
+):
+    """The caller chose the recipients: addressing plays no part, and nothing is fetched."""
+    other = f"{PREFIX}/other"
+    await tenant.public_store.put({"id": other, "type": "Person", "inbox": f"{other}/inbox"})
+    await tenant.public_store.put(
+        {
+            "id": f"{other}/inbox",
+            "type": "OrderedCollection",
+            "attributedTo": other,
+            "items": [],
+        }
+    )
+    service = FirmDeliveryService(config, transport, queue=queue)
+    service.set_resolver(make_resolver(tenant, transport))
+    document = activity(to=[RECIPIENT, other])
+
+    report = await service.deliver_to(
+        tenant, {PREFIX: tenant}, document, [RECIPIENT], local_only=True
+    )
+
+    assert report.delivered == (INBOX,), "the recipient it was given, and no other"
+    other_inbox = await tenant.public_store.get(f"{other}/inbox")
+    assert (
+        other_inbox is not None and other_inbox["items"] == []
+    ), "the addressed-but-ungiven actor is not written to"
+    assert transport.urls == []
+    assert transport.posts == []

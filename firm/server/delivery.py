@@ -35,6 +35,11 @@ from firm.core.services.activitypub.exceptions import (
     NotFoundException,
     ResourceOwnerException,
 )
+from firm.core.services.activitypub.serialization import (
+    ReferencePolicy,
+    add_context,
+    resolve_references,
+)
 from firm.core.services.activitypub.service import post_to_inbox, resolve_box
 from firm.core.services.activitypub.support import FirmContext
 from firm.core.store.collection_items import items_of
@@ -42,7 +47,6 @@ from firm.core.util import (
     AS2_CONTEXT,
     RECIPIENT_FIELDS,
     get_id,
-    get_types,
     is_collection,
     is_public,
     urn_addressed,
@@ -232,6 +236,20 @@ class FirmDeliveryService(DeliveryService):
                 log.warning("Recipient %s has no inbox", uri)
         return inboxes
 
+    async def _inbox_for(self, tenant: Tenant, uri: str) -> str | None:
+        """The inbox of one recipient, or ``None``: a collection names no recipient."""
+        document = await self._recipient_document(tenant, uri)
+        if document is None:
+            log.info("Delivery target not resolvable: %s", uri)
+            return None
+        if is_collection(document):
+            log.warning("Delivery recipient is a collection, not an actor: %s", uri)
+            return None
+        inbox = _inbox_of(document, local=self._config.is_local(uri))
+        if inbox is None:
+            log.warning("Recipient %s has no inbox", uri)
+        return inbox
+
     async def _post(
         self,
         inbox: str,
@@ -278,18 +296,36 @@ class FirmDeliveryService(DeliveryService):
         # TODO Define message/property specific serialization
         # (collection paging, per-recipient visibility)
         if "@context" not in message:
-            message["@context"] = AS2_CONTEXT
-        object_uri = get_id(activity.get("object"))
-        if (
-            isinstance(activity.get("object"), str)
-            and object_uri is not None
-            and object_uri.startswith(tenant.prefix)
-            and "Follow" not in get_types(activity)
-        ):
-            embedded = await tenant.public_store.get(object_uri)
-            if embedded:
-                message["object"] = copy.deepcopy(embedded)
-        return message
+            add_context(message, AS2_CONTEXT)
+        # One serializer, two policies: delivery resolves only what this server already
+        # holds (`_held_document` never reaches the network), expands our own references -
+        # a media Document or, for an Accept, the Follow it answers - and leaves a peer's
+        # document a link.
+        return await resolve_references(
+            message,
+            ReferencePolicy(
+                load=lambda uri: self._held_document(tenant, uri),
+                object_prefix=str(tenant.prefix),
+                attachment_prefix=str(tenant.prefix),
+                embed_answer_target=True,
+            ),
+        )
+
+    async def _held_document(self, tenant: Tenant, uri: str) -> JSONObject | None:
+        """A document we already hold, from whichever store or cache answers.
+
+        No fetch: this runs while an activity is being serialized for delivery, and a
+        miss must not turn sending into a read of the receiver's server.
+        """
+        document = await tenant.public_store.get(uri)
+        if document is not None:
+            return document
+        if self._resolver is not None:
+            owner = self._resolver.owner(uri)
+            if owner is not None:
+                return await owner.public_store.get(uri)
+            return await self._resolver.peek(uri)
+        return None
 
     async def _signer(self, tenant: Tenant, actor_uri: str) -> HttpSignatureAuth:
         actor = await tenant.public_store.get(actor_uri)
@@ -381,6 +417,55 @@ class FirmDeliveryService(DeliveryService):
             return DeliveryReport(failed=(DeliveryFailure(None, 0, "activity has no actor"),))
         self._tenants = all_tenants
         inboxes = await self._resolve_inboxes(tenant, self._targets(activity))
+        return await self._dispatch(
+            tenant, all_tenants, activity, activity_uri, inboxes, local_only=local_only
+        )
+
+    async def deliver_to(
+        self,
+        tenant: Tenant,
+        all_tenants: Mapping[str, Tenant],
+        activity: JSONObject,
+        recipients: Iterable[str],
+        *,
+        local_only: bool = False,
+    ) -> DeliveryReport:
+        """Deliver to actors the caller chose, not to the activity's addressees.
+
+        The caller has already decided who the addressees are — a followers-only post
+        names a collection this server may not be able to read — so the recipients here
+        are actors, and a collection among them is not expanded: expanding it would be a
+        fetch of someone else's item list.
+        """
+        activity_uri = get_id(activity.get("id"))
+        if activity_uri is None:
+            return DeliveryReport(failed=(DeliveryFailure(None, 0, "activity has no id"),))
+        self._tenants = all_tenants
+        inboxes: set[str] = set()
+        for uri in recipients:
+            inbox = await self._inbox_for(tenant, uri)
+            if inbox is not None:
+                inboxes.add(inbox)
+        return await self._dispatch(
+            tenant, all_tenants, activity, activity_uri, inboxes, local_only=local_only
+        )
+
+    async def _dispatch(
+        self,
+        tenant: Tenant,
+        all_tenants: Mapping[str, Tenant],
+        activity: JSONObject,
+        activity_uri: str,
+        inboxes: set[str],
+        *,
+        local_only: bool,
+    ) -> DeliveryReport:
+        """Record one unit per endpoint, then attempt them all, bounded.
+
+        ``local_only`` is AP 7.1.2 forwarding: the origin already reached the addressees
+        it could see, so re-posting to a peer's inbox would be duplication.
+        """
+        self._tenants = all_tenants
         if local_only:
             # AP 7.1.2 forwarding: the origin already reached the addressees it could
             # see, so re-posting to them would be duplication, not forwarding.

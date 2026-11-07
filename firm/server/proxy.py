@@ -12,39 +12,43 @@ from firm.server.adapters import HttpxAuthAdapter
 
 log = logging.getLogger(__name__)
 
+AP_MEDIA_TYPE = "application/activity+json"
+
 
 async def proxy(request: Request, actor: APActor) -> Response:
-    """Proxy request to remote instance (HTTP Signatures).
+    """Dereference one document for the authenticated caller.
 
-    The caller has already authenticated the request; ``actor`` is the identity
-    that signs the outbound GET, and the tenant comes from the request.
+    The caller has already authenticated the request; ``actor`` is the identity that
+    signs any outbound GET. Two kinds of URI arrive here:
+
+    - **A URI this instance owns** is answered from the *owning* tenant's store. Ownership
+      comes from the tenant registry: another tenant of the same instance is local, and
+      its documents are in its own store, not in the requesting tenant's.
+    - **Anything else** is answered from the remote cache when this server already holds
+      the document, and fetched — signed as the caller's actor — otherwise. The cache is
+      what makes an inbox item readable: a peer need not serve its activity URIs publicly
+      (Pixelfed answers 404 to an anonymous GET of `…/p/alice/<id>/activity`), and this
+      server was handed the document when it was delivered.
     """
     if log.isEnabledFor(logging.DEBUG):
         log.debug(f"Proxying request: {request.method} {request.url}")
-    # get id from request form body
-    # Process form data
     form_data = await request.form()
     requested_uri = form_data.get("id")
     if not requested_uri:
         raise HTTPException(HTTPStatus.BAD_REQUEST, "Missing id")
+    uri = str(requested_uri)
 
     tenant = request.state.tenant
-    config = request.app.state.config
+    resolver = request.app.state.resolver
 
-    if config.is_local(requested_uri):
-        # If the URI is local, fetch it from the tenant's public store
-        if resource := await tenant.public_store.get(requested_uri):
-            return Response(
-                status_code=HTTPStatus.OK.value,
-                headers={"Content-Type": "application/activity+json"},
-                body=json.dumps(resource).encode("utf-8"),
-                reason_phrase="OK",
-            )
-        else:
-            raise HTTPException(HTTPStatus.NOT_FOUND, "Resource not found in local storage")
+    owner = resolver.owner(uri)
+    if owner is not None:
+        if resource := await owner.public_store.get(uri):
+            return _served(resource)
+        raise HTTPException(HTTPStatus.NOT_FOUND, "Resource not found in local storage")
 
-    # Else do remote query
-    # TODO cache the response
+    if cached := await resolver.peek(uri):
+        return _served(cached)
 
     credentials = await tenant.private_store.query_one(
         {
@@ -56,8 +60,6 @@ async def proxy(request: Request, actor: APActor) -> Response:
     if not credentials or FIRM_NS.privateKey not in credentials:
         raise HTTPException(HTTPStatus.UNAUTHORIZED, "No private key found for actor")
 
-    # TODO Make the AP proxy more generic and move to firm core project
-
     async with httpx.AsyncClient(
         auth=HttpxAuthAdapter(
             HttpSignatureAuth(actor["id"], cast(str, credentials[FIRM_NS.privateKey]))
@@ -65,14 +67,40 @@ async def proxy(request: Request, actor: APActor) -> Response:
         headers={"Accept": "application/activity+json"},
     ) as client:
         try:
-            response = await client.get(requested_uri)
-            proxy_response = Response(
+            response = await client.get(uri)
+            document = _document_of(response)
+            if document is not None:
+                # Remembering it is what makes the next read local, and what lets a
+                # client render a document the origin will not serve again.
+                await resolver.remember(document)
+                return _served(document)
+            return Response(
                 status_code=response.status_code,
                 headers=response.headers,
                 content=response.content,
             )
-            return proxy_response
         except httpx.HTTPStatusError as e:
             raise HTTPException(e.response.status_code, str(e))
         except httpx.RequestError as e:
             raise HTTPException(HTTPStatus.BAD_GATEWAY, str(e))
+
+
+def _document_of(response: httpx.Response) -> dict | None:
+    """The JSON object a 200 response carries, or None when it is not one."""
+    if response.status_code != HTTPStatus.OK:
+        return None
+    if "json" not in (response.headers.get("content-type") or ""):
+        return None
+    try:
+        document = response.json()
+    except ValueError:
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _served(document: dict) -> Response:
+    return Response(
+        status_code=HTTPStatus.OK.value,
+        headers={"Content-Type": AP_MEDIA_TYPE},
+        content=json.dumps(document).encode("utf-8"),
+    )

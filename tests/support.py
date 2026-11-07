@@ -1,7 +1,7 @@
 import asyncio
 import json
 import time
-from typing import Any, AsyncIterable, Mapping, MutableMapping, cast
+from typing import Any, AsyncIterable, Iterable, Mapping, MutableMapping, cast
 from urllib.parse import urlparse
 
 from firm.core.delivery.queue import Delivery, MemoryDeliveryQueue
@@ -220,6 +220,7 @@ class StubDeliveryService(DeliveryService):
 
     def __init__(self) -> None:
         self.delivered: list[str] = []
+        self.recipients: list[list[str]] = []
         self.failures: list[DeliveryFailure] = []
         self.activities: list[JSONObject] = []
         self.local_only: list[bool] = []
@@ -237,6 +238,21 @@ class StubDeliveryService(DeliveryService):
         self.activities.append(activity)
         self.local_only.append(local_only)
         return DeliveryReport(delivered=(activity_id,), failed=tuple(self.failures))
+
+    async def deliver_to(
+        self,
+        tenant: Tenant,
+        all_tenants: Mapping[str, Tenant],
+        activity: JSONObject,
+        recipients: Iterable[str],
+        *,
+        local_only: bool = False,
+    ) -> DeliveryReport:
+        """Record the actor list; ``delivered`` stays what ``deliver`` was asked to send."""
+        targets = list(recipients)
+        self.recipients.append(targets)
+        self.local_only.append(local_only)
+        return DeliveryReport(delivered=tuple(targets))
 
 
 class StubState(HttpApplicationState):

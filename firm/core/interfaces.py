@@ -641,6 +641,18 @@ class DeliveryService(Protocol):
         local_only: bool = False,
     ) -> DeliveryReport: ...
 
+    async def deliver_to(
+        self,
+        tenant: Tenant,
+        all_tenants: Mapping[str, Tenant],
+        activity: JSONObject,
+        recipients: Iterable[str],
+        *,
+        local_only: bool = False,
+    ) -> DeliveryReport:
+        """Deliver to actors the caller chose, not to the activity's addressees."""
+        ...
+
 
 UrlTypes: TypeAlias = str | Url
 

@@ -135,7 +135,10 @@ class ServerConfig:
     store: FileStoreConfig | RdfStoreConfig | MemoryStoreConfig | SqliteStoreConfig
     validation: ValidationConfig = ValidationConfig()
     search: SearchConfig = field(default_factory=SearchConfig)
-    shared_inbox_path: str = "shared"
+    #: Path of the tenant's shared inbox under its prefix. `None` (or an empty
+    #: string) disables it: no endpoint is advertised, so peers deliver to each
+    #: actor's own inbox. A shared inbox is optional in AP; a personal inbox is not.
+    shared_inbox_path: str | None = "shared"
     remote_fetch: RemoteFetchConfig = field(default_factory=RemoteFetchConfig)
     delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
     media: MediaConfig = field(default_factory=MediaConfig)

@@ -179,13 +179,19 @@ def create_media_upload_router(max_upload_bytes: int = 512 * 1024 * 1024) -> API
             content=media_object,
         )
 
-    @router.get(_SERVE_PATH)
+    @router.api_route(_SERVE_PATH, methods=["GET", "HEAD"])
     async def serve_media(request: Request, username: str, filename: str) -> Response:
         """Serve a previously uploaded media file.
 
         The service accepts only a bare username and filename, and refuses any
         path that resolves outside the tenant's files directory — which is what
         a symlink pointing elsewhere would otherwise get past.
+
+        ``HEAD`` is served as well as ``GET`` because peers probe before they
+        download: Pixelfed's avatar fetcher asks for the mime type and length
+        with a HEAD and skips the file entirely when that probe does not come
+        back 200. The body is dropped by ``FileResponse`` for HEAD, so the
+        headers are identical to the GET they precede.
         """
         try:
             file_path = service.resolve_media_path(request.state.tenant, username, filename)

@@ -151,3 +151,32 @@ def test_media_serves_byte_ranges_so_a_video_can_seek(client: TestClient, actor)
     assert response.headers["content-range"] == f"bytes 100-199/{len(payload)}"
     assert response.content == payload[100:200]
     assert response.headers["accept-ranges"] == "bytes"
+
+
+def test_head_answers_with_the_same_metadata_and_no_body(client: TestClient, actor) -> None:
+    """Peers probe with HEAD before downloading; a 404 there discards the file.
+
+    Pixelfed's avatar fetcher asks for the mime type and length first and skips
+    the download entirely when the probe fails, so the media route has to answer
+    HEAD as well as GET.
+    """
+    payload = b"png" * 64
+    body = client.post(
+        "/media/upload",
+        files={
+            "object": (None, json.dumps({"type": "Image", "to": [AP_PUBLIC]})),
+            "file": ("photo.png", payload, "image/png"),
+        },
+    ).json()
+
+    response = client.head(body["url"])
+
+    assert response.status_code == 200, response.text
+    assert response.content == b"", "HEAD must not carry a body"
+    assert response.headers["content-length"] == str(len(payload))
+    assert response.headers["content-type"] == "image/png"
+
+
+def test_head_of_a_missing_file_is_404(client: TestClient, actor) -> None:
+    response = client.head(f"/actors/{actor}/media/does-not-exist.png")
+    assert response.status_code == 404

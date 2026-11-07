@@ -188,6 +188,8 @@ async def process_outbox(context: FirmBoxContext, activity: JSONObject) -> str |
                 await _process_outbox_remove(context, activity)
             elif has_value(activity, "type", "Like"):
                 await _process_outbox_like(context, activity)
+            elif has_value(activity, "type", "Follow"):
+                await _process_outbox_follow(context, activity)
             elif has_value(activity, "type", "Undo"):
                 await _process_outbox_undo(context, activity)
             elif has_value(activity, "type", "Patch"):
@@ -322,6 +324,30 @@ async def _undone_activity(context: FirmBoxContext, activity: JSONObject) -> JSO
     if isinstance(undone, str):
         return await context.tenant.public_store.get(undone)
     return None
+
+
+async def _process_outbox_follow(context: FirmBoxContext, activity: JSONObject) -> None:
+    """Our follow of an actor enters `following` as the Follow is accepted, not later.
+
+    Mastodon does the same: the row exists from the moment the Follow leaves, and a
+    `Reject` or an `Undo` removes it again. The alternative - add the actor only when
+    the remote server answers with `Accept` - leaves the relationship in a state no
+    document records, so a C2S client cannot tell "requested" from "not following"
+    for as long as the answer takes (seconds on a good day, never on a bad one).
+
+    FEP-4ccd (`pendingFollowing`) exists for exactly that interval. If it is ever
+    implemented here, this handler is what changes: the Follow joins the pending
+    collection instead of `following`, and `Accept` moves it across. See
+    `docs/following.md`.
+    """
+    followed = activity.get("object")
+    if followed is None:
+        raise InvalidRequestException("Follow has no object")
+    followed_uri = resource_id(followed)
+    following_uri = get_id(context.box_owner.get("following"))
+    if following_uri is None:
+        raise InvalidRequestException("Actor has no following collection")
+    await add_collection_item(context.tenant.public_store, following_uri, followed_uri)
 
 
 async def _process_outbox_undo_follow(context: FirmBoxContext, follow: JSONObject) -> None:

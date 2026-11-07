@@ -1,6 +1,6 @@
 import copy
 import logging
-from typing import Any, Mapping, cast
+from typing import Any, Iterable, Mapping, cast
 
 from firm.core.interfaces import (
     APActor,
@@ -36,12 +36,14 @@ from firm.core.services.activitypub.outbox import process_outbox
 from firm.core.services.activitypub.serialization import serialize
 from firm.core.services.activitypub.support import FirmBoxContext, FirmContext
 from firm.core.util import (
+    AS2_ACTOR_TYPES,
     RECIPIENT_FIELDS,
     dereference,
     get_id,
     get_list,
     has_value,
     is_actor_object,
+    is_audience,
     is_collection,
     is_local_uri,
     is_public,
@@ -277,6 +279,39 @@ def is_shared_inbox_target(tenant: Tenant, target_uri: Url | str) -> bool:
     return shared is not None and strip_query(str(target_uri)).startswith(shared)
 
 
+async def _local_box_owner(context: FirmContext, uri: str) -> APActor | None:
+    """The local actor `uri` names, if this tenant stores one that takes delivery.
+
+    Only a URI this tenant already stores can name a local actor, so nothing remote is
+    fetched: a name that does not resolve to a stored actor document is not a recipient.
+    """
+    if not is_local_uri(context.tenant, uri):
+        return None
+    candidate = await context.tenant.public_store.get(uri)
+    if candidate is None or not is_actor_object(candidate):
+        return None
+    if not isinstance(candidate.get("inbox"), str):
+        return None
+    return cast(APActor, candidate)
+
+
+def _follow_subject_uri(activity: JSONObject) -> str | None:
+    """The actor a `Follow` - or an `Undo` of one - is aimed at.
+
+    A `Follow` has exactly one addressee by definition, and it is named in `object`
+    rather than in `to`/`cc`: Pixelfed sends only `{@context, type, actor, object}` and
+    then posts it to the shared inbox. An `Undo` of a follow carries the `Follow` as its
+    object, and names the same actor one level down.
+    """
+    if has_value(activity, "type", "Follow"):
+        return get_id(activity.get("object"))
+    if has_value(activity, "type", "Undo"):
+        undone = activity.get("object")
+        if isinstance(undone, Mapping) and has_value(undone, "type", "Follow"):
+            return get_id(undone.get("object"))
+    return None
+
+
 async def _addressed_box_owners(context: FirmContext, activity: JSONObject) -> list[APActor]:
     """The local actors this activity names in its own addressing (#35).
 
@@ -294,15 +329,88 @@ async def _addressed_box_owners(context: FirmContext, activity: JSONObject) -> l
         named |= _target_uris(cast(JSONObject, document), tuple(RECIPIENT_FIELDS))
     owners: list[APActor] = []
     for uri in sorted(named):
-        if not is_local_uri(context.tenant, uri):
-            continue
-        candidate = await context.tenant.public_store.get(uri)
-        if candidate is None or not is_actor_object(candidate):
-            continue
-        if not isinstance(candidate.get("inbox"), str):
-            continue
-        owners.append(cast(APActor, candidate))
+        owner = await _local_box_owner(context, uri)
+        if owner is not None:
+            owners.append(owner)
     return owners
+
+
+async def _local_followers(tenant: Tenant, actor_uri: str) -> list[str]:
+    """The local actors whose ``following`` collection holds ``actor_uri``."""
+    store = tenant.public_store
+    followers: dict[str, None] = {}
+    for actor_type in sorted(AS2_ACTOR_TYPES):
+        for candidate in await store.query({"type": actor_type}):
+            uri = get_id(candidate)
+            following_uri = candidate.get("following")
+            if uri is None or uri == actor_uri or not is_local_uri(tenant, uri):
+                continue
+            if isinstance(following_uri, str) and await store.contains_item(
+                following_uri, actor_uri
+            ):
+                followers[uri] = None
+    return sorted(followers)
+
+
+async def mastodon_deliver_shared_inbox_activity(
+    context: FirmContext,
+    activity: JSONObject,
+    delivery_service: DeliveryService,
+    *,
+    exclude: Iterable[str] = (),
+) -> list[str]:
+    """Hand a followers-addressed activity to the local accounts that follow its author.
+
+    Peers address a followers-only post to the author's ``followers`` collection and never
+    enumerate it, so a receiving server cannot learn the collection's items — it can only
+    ask who here follows the author. The URI comes from the author's stored actor document
+    (never assembled from the actor's id) and is compared literally with the audience of
+    the activity and of its embedded object, so a peer publishing at an unusual path works
+    and one naming some other collection reaches nobody. ``as:Public`` beside it changes
+    no recipient: it is a visibility designation, and the document itself says Public.
+
+    Only the followers relationship routes delivery. Local actors the activity names are
+    Rule 1's business — ``exclude`` carries the ones the caller has already written to, so
+    this pass cannot give an addressed recipient a second copy. Delivery runs in process
+    through the same admission a POST would get, and nothing is sent to a peer.
+    """
+    author_uri = get_id(activity.get("actor"))
+    if author_uri is None:
+        return []
+    if context.principal is None or context.principal.uri != author_uri:
+        # The signer is the author, as it is for any other inbox POST: an activity
+        # claiming to be someone else's must not reach that actor's followers.
+        log.warning(
+            "Shared inbox: not fanning out %s to followers of %s",
+            get_id(activity),
+            author_uri,
+        )
+        return []
+    author = await context.dereference(str(author_uri))
+    if author is None:
+        log.info("Shared inbox: author %s is not resolvable; no fan-out", author_uri)
+        return []
+    followers_uri = author.get("followers")
+    if not isinstance(followers_uri, str):
+        log.info("Shared inbox: author %s names no followers collection", author_uri)
+        return []
+    documents: list[JSONObject] = [activity]
+    embedded = activity.get("object")
+    if isinstance(embedded, Mapping):
+        documents.append(cast(JSONObject, embedded))
+    if not any(is_audience(followers_uri, document) for document in documents):
+        return []
+    recipients = {*await _local_followers(context.tenant, str(author_uri))}
+    recipients.discard(str(author_uri))
+    recipients -= set(exclude)
+    targets = sorted(recipients)
+    if not targets:
+        return []
+    await delivery_service.deliver_to(
+        context.tenant, context.tenants, activity, targets, local_only=True
+    )
+    log.info("Shared inbox: %s reaches %d local follower(s)", get_id(activity), len(targets))
+    return targets
 
 
 async def post_to_shared_inbox(
@@ -320,8 +428,23 @@ async def post_to_shared_inbox(
     """
     if context.principal is None:
         raise NotAuthorizedException("Not authenticated")
+    owners = await _addressed_box_owners(context, resource)
+    if not owners:
+        # A `Follow` names its addressee in `object`, not in its addressing: Pixelfed
+        # sends `{type, actor, object}` and posts it here. Without this, the route would
+        # accept it (202) and hand it to nobody.
+        subject = _follow_subject_uri(resource)
+        if subject is not None:
+            owner = await _local_box_owner(context, subject)
+            if owner is not None:
+                log.info(
+                    "Shared inbox: %s names no local actor; routing to its subject %s",
+                    resource.get("type"),
+                    subject,
+                )
+                owners = [owner]
     first_time = False
-    for owner in await _addressed_box_owners(context, resource):
+    for owner in owners:
         # Forwarding is once per activity, not once per box: the second box would
         # otherwise hand our own addressees a duplicate of the first box's forward.
         arrived = await post_to_inbox(
@@ -334,6 +457,15 @@ async def post_to_shared_inbox(
             forward=False,
         )
         first_time = first_time or arrived
+    # Rule 3: a shared inbox is a route, so a post addressed to the author's followers
+    # collection reaches the local accounts that follow that author. The boxes above
+    # already have it, so they are excluded from this pass.
+    await mastodon_deliver_shared_inbox_activity(
+        context,
+        resource,
+        delivery_service,
+        exclude=[str(owner["id"]) for owner in owners],
+    )
     if first_time:
         await _forward_to_local_addressees(context, resource, delivery_service)
 

@@ -1,6 +1,6 @@
 import copy
 import logging
-from typing import Sequence, cast
+from typing import Any, Sequence, cast
 
 import pytest
 
@@ -31,6 +31,7 @@ from firm.core.services.activitypub.publish import outbox_send
 from firm.core.services.activitypub.serialization import serialize
 from firm.core.services.activitypub.service import (
     ActivityPubService,
+    mastodon_deliver_shared_inbox_activity,
     post_to_inbox,
 )
 from firm.core.store.file import FileResourceStore
@@ -331,6 +332,87 @@ async def test_serialize_does_not_mutate_the_collection_it_is_given(
     assert collection == snapshot
     assert serialized["orderedItems"] == [{"id": "http://tenant1.test/obj1", "type": "Object"}]
     assert "items" not in serialized
+
+
+def embedded_object(document: JSONObject) -> JSONObject:
+    """The object of a served Create, narrowed for type checkers."""
+    return cast(JSONObject, document["object"])
+
+
+async def _store_photo_note(tenant: Tenant) -> tuple[JSONObject, JSONObject]:
+    """A note as firm stores it: the media document is a reference, not an embedded object."""
+    document: JSONObject = {
+        "id": "http://tenant1.test/actors/tester/document/1",
+        "type": "Document",
+        "mediaType": "image/jpeg",
+        "name": "Snakes!",
+        "url": "http://tenant1.test/tester/media/snakes.jpg",
+        "attributedTo": "http://tenant1.test/actors/tester",
+    }
+    note: JSONObject = {
+        "id": "http://tenant1.test/actors/tester/note/1",
+        "type": "Note",
+        "attributedTo": "http://tenant1.test/actors/tester",
+        "content": "Snakes!",
+        "attachment": [document["id"]],
+    }
+    await tenant.public_store.put(document)
+    await tenant.public_store.put(note)
+    return document, note
+
+
+async def test_serialize_embeds_an_attachment_reference_on_the_object(tenant: Tenant):
+    document, note = await _store_photo_note(tenant)
+    activity: JSONObject = {
+        "id": "http://tenant1.test/activities/create/1",
+        "type": "Create",
+        "actor": "http://tenant1.test/actors/tester",
+        "object": note["id"],
+    }
+
+    served = await serialize(make_context(tenant), activity)
+
+    # Pixelfed reads attachment[i].url; handed a bare IRI it shows a post with no media.
+    assert embedded_object(served)["attachment"] == [document]
+
+
+async def test_serialize_embeds_an_attachment_reference_in_a_collection_item(tenant: Tenant):
+    document, note = await _store_photo_note(tenant)
+    await tenant.public_store.put(
+        {
+            "id": "http://tenant1.test/activities/create/1",
+            "type": "Create",
+            "actor": "http://tenant1.test/actors/tester",
+            "object": note["id"],
+        }
+    )
+    collection: JSONObject = {
+        "id": "http://tenant1.test/actors/tester/outbox",
+        "type": "OrderedCollection",
+        "items": ["http://tenant1.test/activities/create/1"],
+        "totalItems": 1,
+    }
+
+    served = await serialize(make_context(tenant), collection)
+
+    items = cast(list[Any], served["orderedItems"])
+    assert embedded_object(cast(JSONObject, items[0]))["attachment"] == [document]
+
+
+async def test_serialize_does_not_mutate_the_stored_attachment(tenant: Tenant):
+    _, note = await _store_photo_note(tenant)
+    activity: JSONObject = {
+        "id": "http://tenant1.test/activities/create/1",
+        "type": "Create",
+        "actor": "http://tenant1.test/actors/tester",
+        "object": note["id"],
+    }
+
+    await serialize(make_context(tenant), activity)
+
+    stored = await tenant.public_store.get("http://tenant1.test/actors/tester/note/1")
+    assert stored is not None
+    assert stored["attachment"] == ["http://tenant1.test/actors/tester/document/1"]
 
 
 async def test_serialize_rejects_a_non_object_as_a_bad_request(tenant: Tenant):
@@ -3252,6 +3334,112 @@ async def test_shared_inbox_post_reaches_the_named_local_actor_only(
     assert await _inbox_of(other, tenant.public_store) == []
 
 
+async def _seed_followable_actor(store, uri: str) -> None:
+    """An actor that can be followed: document, inbox, followers and outbox."""
+    await setup_resources(
+        store,
+        [
+            {
+                "id": uri,
+                "type": "Person",
+                "inbox": f"{uri}/inbox",
+                "outbox": f"{uri}/outbox",
+                "followers": f"{uri}/followers",
+            },
+            {"id": f"{uri}/inbox", "type": "OrderedCollection", "items": []},
+            {"id": f"{uri}/followers", "type": "Collection", "totalItems": 0},
+            {"id": f"{uri}/outbox", "type": "OrderedCollection", "totalItems": 0},
+        ],
+    )
+
+
+async def test_shared_inbox_routes_an_unaddressed_follow_to_its_object(
+    service: ActivityPubService, tenant: Tenant, remote_identity: StubIdentity
+):
+    """A `Follow` names its addressee in `object`; Pixelfed sends nothing else.
+
+    Its `Follow` carries only `@context`, `type`, `actor` and `object`, and the delivery
+    job posts to `sharedInbox ?? inbox_url`, so a shared inbox that routes on `to`/`cc`
+    alone accepts the follow (202) and hands it to nobody. The object is the addressee.
+    """
+    tenant.endpoints["sharedInbox"] = "http://tenant1.test/hub"
+    target = "http://tenant1.test/alice"
+    await _seed_followable_actor(tenant.public_store, target)
+    activity: JSONObject = {
+        "id": "http://remote.test/follows/1",
+        "type": "Follow",
+        "actor": remote_identity.uri,
+        "object": target,
+    }
+
+    await service.process_post(
+        make_context(tenant, principal=remote_identity),
+        StubUrl.parse("http://tenant1.test/hub"),
+        activity,
+    )
+
+    assert await _inbox_of(target, tenant.public_store) == ["http://remote.test/follows/1"]
+    followers = await tenant.public_store.get(f"{target}/followers")
+    assert followers is not None and followers["totalItems"] == 1
+
+
+async def test_shared_inbox_routes_an_unaddressed_undo_follow_to_its_object(
+    service: ActivityPubService, tenant: Tenant, remote_identity: StubIdentity
+):
+    """Undoing a follow names the followed actor one level down, in `object.object`."""
+    tenant.endpoints["sharedInbox"] = "http://tenant1.test/hub"
+    target = "http://tenant1.test/alice"
+    await _seed_followable_actor(tenant.public_store, target)
+    await tenant.public_store.insert_item(f"{target}/followers", remote_identity.uri)
+    follow: JSONObject = {
+        "id": "http://remote.test/follows/2",
+        "type": "Follow",
+        "actor": remote_identity.uri,
+        "object": target,
+    }
+    undo: JSONObject = {
+        "id": "http://remote.test/undos/2",
+        "type": "Undo",
+        "actor": remote_identity.uri,
+        "object": follow,
+    }
+
+    await service.process_post(
+        make_context(tenant, principal=remote_identity),
+        StubUrl.parse("http://tenant1.test/hub"),
+        undo,
+    )
+
+    followers = await tenant.public_store.get(f"{target}/followers")
+    assert followers is not None and followers["totalItems"] == 0
+
+
+async def test_shared_inbox_ignores_an_unaddressed_follow_of_a_remote_actor(
+    service: ActivityPubService, tenant: Tenant, remote_identity: StubIdentity
+):
+    """The subject has to be a local actor: following someone else is not ours to route."""
+    tenant.endpoints["sharedInbox"] = "http://tenant1.test/hub"
+    await _seed_followable_actor(tenant.public_store, "http://tenant1.test/alice")
+    activity: JSONObject = {
+        "id": "http://remote.test/follows/3",
+        "type": "Follow",
+        "actor": remote_identity.uri,
+        "object": "https://elsewhere.test/users/bob",
+    }
+
+    await service.process_post(
+        make_context(tenant, principal=remote_identity),
+        StubUrl.parse("http://tenant1.test/hub"),
+        activity,
+    )
+
+    followed = await tenant.public_store.get("http://tenant1.test/alice")
+    assert followed is not None
+    assert followed.get("totalItems") is None
+    inbox = await _inbox_of("http://tenant1.test/alice", tenant.public_store)
+    assert inbox == []
+
+
 async def test_shared_inbox_accepts_an_activity_for_nobody_local(
     service: ActivityPubService, tenant: Tenant, remote_identity: StubIdentity
 ):
@@ -3369,3 +3557,301 @@ async def test_shared_inbox_forwards_to_local_addressees_once(
     assert delivery.delivered == [
         "http://remote.test/activities/5"
     ], "forwarded once per activity, not once per box"
+
+
+# Rule 3: a post addressed to the author's followers collection reaches the local
+# accounts that follow the author. Relationship, not addressing, decides the delivery.
+
+AUTHOR_FOLLOWERS = "http://remote.test/audience/nonstandard-path"
+PUBLIC = "https://www.w3.org/ns/activitystreams#Public"
+
+
+async def _follower(store: ResourceStore, actor_uri: str, *follows: str) -> None:
+    """A local actor with an inbox and a following collection holding ``follows``."""
+    await setup_resources(
+        store,
+        [
+            {
+                "id": actor_uri,
+                "type": "Person",
+                "inbox": f"{actor_uri}/inbox",
+                "following": f"{actor_uri}/following",
+            },
+            {
+                "id": f"{actor_uri}/inbox",
+                "type": "OrderedCollection",
+                "attributedTo": actor_uri,
+                "items": [],
+            },
+            {
+                "id": f"{actor_uri}/following",
+                "type": "OrderedCollection",
+                "attributedTo": actor_uri,
+                "items": list(follows),
+            },
+        ],
+    )
+
+
+def audience_post(author: str, *audience: str) -> JSONObject:
+    """A ``Create`` carrying ``audience`` on the activity and on its embedded Note."""
+    return {
+        "id": "http://remote.test/activities/followers-1",
+        "type": "Create",
+        "actor": author,
+        "to": list(audience),
+        "object": {
+            "id": "http://remote.test/notes/followers-1",
+            "type": "Note",
+            "to": list(audience),
+        },
+    }
+
+
+async def _author_context(
+    tenant: Tenant, author: str, followers_uri: str, transport: StubTransport
+):
+    """A request context whose remote cache already holds the author's document."""
+    provider = _provider(transport)
+    await provider.remember(
+        {
+            "id": author,
+            "type": "Person",
+            "inbox": f"{author}/inbox",
+            "followers": followers_uri,
+        }
+    )
+    return make_context(tenant, principal=StubIdentity(author, tenant), remote=provider)
+
+
+async def test_rule_3_a_public_post_addressed_to_followers_reaches_only_local_followers(
+    tenant: Tenant, remote_identity: StubIdentity
+):
+    """Public plus the author's followers URI: followers get it, others do not."""
+    transport = StubTransport()
+    context = await _author_context(tenant, remote_identity.uri, AUTHOR_FOLLOWERS, transport)
+    delivery = StubDeliveryService()
+    await _follower(tenant.public_store, "http://tenant1.test/alice", remote_identity.uri)
+    await _follower(tenant.public_store, "http://tenant1.test/bob", "http://remote.test/x")
+
+    recipients = await mastodon_deliver_shared_inbox_activity(
+        context, audience_post(remote_identity.uri, AUTHOR_FOLLOWERS, PUBLIC), delivery
+    )
+
+    assert recipients == ["http://tenant1.test/alice"]
+    assert delivery.recipients == [["http://tenant1.test/alice"]]
+    assert delivery.local_only == [True]
+    assert transport.urls == [], "the followers collection is never read"
+
+
+async def test_rule_3_a_followers_only_post_reaches_local_followers(
+    tenant: Tenant, remote_identity: StubIdentity
+):
+    transport = StubTransport()
+    context = await _author_context(tenant, remote_identity.uri, AUTHOR_FOLLOWERS, transport)
+    await _follower(tenant.public_store, "http://tenant1.test/alice", remote_identity.uri)
+
+    recipients = await mastodon_deliver_shared_inbox_activity(
+        context, audience_post(remote_identity.uri, AUTHOR_FOLLOWERS), StubDeliveryService()
+    )
+
+    assert recipients == ["http://tenant1.test/alice"]
+    assert transport.urls == []
+
+
+async def test_rule_3_the_followers_uri_is_read_from_the_actor_not_derived_from_its_id(
+    tenant: Tenant, remote_identity: StubIdentity
+):
+    """A nonstandard path is recognised because the author document says so."""
+    transport = StubTransport()
+    context = await _author_context(tenant, remote_identity.uri, AUTHOR_FOLLOWERS, transport)
+    await _follower(tenant.public_store, "http://tenant1.test/alice", remote_identity.uri)
+
+    recipients = await mastodon_deliver_shared_inbox_activity(
+        context, audience_post(remote_identity.uri, AUTHOR_FOLLOWERS), StubDeliveryService()
+    )
+
+    assert recipients == ["http://tenant1.test/alice"]
+    assert AUTHOR_FOLLOWERS != f"{remote_identity.uri}/followers"
+
+
+async def test_rule_3_an_unrelated_remote_collection_does_not_fan_out(
+    tenant: Tenant, remote_identity: StubIdentity
+):
+    transport = StubTransport()
+    context = await _author_context(tenant, remote_identity.uri, AUTHOR_FOLLOWERS, transport)
+    await _follower(tenant.public_store, "http://tenant1.test/alice", remote_identity.uri)
+
+    recipients = await mastodon_deliver_shared_inbox_activity(
+        context,
+        audience_post(remote_identity.uri, "http://remote.test/collections/other"),
+        StubDeliveryService(),
+    )
+
+    assert recipients == []
+
+
+async def test_rule_3_public_alone_does_not_reach_every_local_account(
+    tenant: Tenant, remote_identity: StubIdentity
+):
+    """Public is a visibility designation, not a recipient list."""
+    transport = StubTransport()
+    context = await _author_context(tenant, remote_identity.uri, AUTHOR_FOLLOWERS, transport)
+    await _follower(tenant.public_store, "http://tenant1.test/alice")
+
+    recipients = await mastodon_deliver_shared_inbox_activity(
+        context, audience_post(remote_identity.uri, PUBLIC), StubDeliveryService()
+    )
+
+    assert recipients == []
+
+
+async def test_rule_3_an_author_without_a_followers_collection_does_not_fan_out(
+    tenant: Tenant, remote_identity: StubIdentity
+):
+    transport = StubTransport()
+    provider = _provider(transport)
+    await provider.remember({"id": remote_identity.uri, "type": "Person"})
+    context = make_context(tenant, principal=remote_identity, remote=provider)
+    await _follower(tenant.public_store, "http://tenant1.test/alice", remote_identity.uri)
+
+    recipients = await mastodon_deliver_shared_inbox_activity(
+        context,
+        audience_post(remote_identity.uri, "http://remote.test/audience/other"),
+        StubDeliveryService(),
+    )
+
+    assert recipients == []
+
+
+async def test_rule_3_an_unresolvable_author_does_not_fan_out(
+    tenant: Tenant, remote_identity: StubIdentity
+):
+    """No author document, no relationship the store could check."""
+    context = make_context(tenant, principal=remote_identity, remote=_provider(StubTransport()))
+    await _follower(tenant.public_store, "http://tenant1.test/alice", remote_identity.uri)
+
+    recipients = await mastodon_deliver_shared_inbox_activity(
+        context, audience_post(remote_identity.uri, AUTHOR_FOLLOWERS), StubDeliveryService()
+    )
+
+    assert recipients == []
+
+
+async def test_rule_3_an_activity_signed_by_someone_else_reaches_no_follower(
+    tenant: Tenant, remote_identity: StubIdentity
+):
+    """The signer is the author, as on any other inbox POST."""
+    transport = StubTransport()
+    provider = _provider(transport)
+    await provider.remember(
+        {
+            "id": remote_identity.uri,
+            "type": "Person",
+            "inbox": f"{remote_identity.uri}/inbox",
+            "followers": AUTHOR_FOLLOWERS,
+        }
+    )
+    await _follower(tenant.public_store, "http://tenant1.test/alice", remote_identity.uri)
+    forger = StubIdentity("http://remote.test/forger", tenant)
+    context = make_context(tenant, principal=forger, remote=provider)
+
+    recipients = await mastodon_deliver_shared_inbox_activity(
+        context, audience_post(remote_identity.uri, AUTHOR_FOLLOWERS), StubDeliveryService()
+    )
+
+    assert recipients == []
+
+
+async def test_rule_3_boxes_the_caller_already_wrote_are_excluded(
+    tenant: Tenant, remote_identity: StubIdentity
+):
+    """Rule 1 delivered to the named owner; the relationship pass must not repeat it."""
+    transport = StubTransport()
+    context = await _author_context(tenant, remote_identity.uri, AUTHOR_FOLLOWERS, transport)
+    alice = "http://tenant1.test/alice"
+    await _follower(tenant.public_store, alice, remote_identity.uri)
+
+    recipients = await mastodon_deliver_shared_inbox_activity(
+        context,
+        audience_post(remote_identity.uri, AUTHOR_FOLLOWERS, PUBLIC, alice),
+        StubDeliveryService(),
+        exclude=[alice],
+    )
+
+    assert recipients == []
+
+
+async def test_rule_3_a_follow_that_was_rejected_is_not_a_recipient(
+    tenant: Tenant, remote_identity: StubIdentity
+):
+    """Only what the relationship store says: an undone follow is gone from ``following``."""
+    transport = StubTransport()
+    context = await _author_context(tenant, remote_identity.uri, AUTHOR_FOLLOWERS, transport)
+    await _follower(tenant.public_store, "http://tenant1.test/alice")  # follows nobody
+
+    recipients = await mastodon_deliver_shared_inbox_activity(
+        context, audience_post(remote_identity.uri, AUTHOR_FOLLOWERS), StubDeliveryService()
+    )
+
+    assert recipients == []
+
+
+async def test_rule_3_a_shared_inbox_post_delivers_to_local_followers(
+    service: ActivityPubService, tenant: Tenant, remote_identity: StubIdentity
+):
+    """The shared-inbox route is what reaches the fan-out; no local actor need be named."""
+    tenant.endpoints["sharedInbox"] = "http://tenant1.test/hub"
+    transport = StubTransport()
+    provider = _provider(transport)
+    await provider.remember(
+        {
+            "id": remote_identity.uri,
+            "type": "Person",
+            "inbox": f"{remote_identity.uri}/inbox",
+            "followers": AUTHOR_FOLLOWERS,
+        }
+    )
+    await _follower(tenant.public_store, "http://tenant1.test/alice", remote_identity.uri)
+    delivery = StubDeliveryService()
+    service = ActivityPubService(StubAuthorizationService(), delivery)
+
+    await service.process_post(
+        make_context(tenant, principal=remote_identity, remote=provider),
+        StubUrl.parse("http://tenant1.test/hub"),
+        audience_post(remote_identity.uri, AUTHOR_FOLLOWERS, PUBLIC),
+    )
+
+    assert delivery.recipients == [["http://tenant1.test/alice"]]
+
+
+async def test_rule_3_a_named_follower_is_not_fanned_out_a_second_time(
+    service: ActivityPubService, tenant: Tenant, remote_identity: StubIdentity
+):
+    """An addressed local actor who also follows the author is written once, by Rule 1."""
+    tenant.endpoints["sharedInbox"] = "http://tenant1.test/hub"
+    transport = StubTransport()
+    provider = _provider(transport)
+    await provider.remember(
+        {
+            "id": remote_identity.uri,
+            "type": "Person",
+            "inbox": f"{remote_identity.uri}/inbox",
+            "followers": AUTHOR_FOLLOWERS,
+        }
+    )
+    alice = "http://tenant1.test/alice"
+    await _follower(tenant.public_store, alice, remote_identity.uri)
+    delivery = StubDeliveryService()
+    service = ActivityPubService(StubAuthorizationService(), delivery)
+
+    await service.process_post(
+        make_context(tenant, principal=remote_identity, remote=provider),
+        StubUrl.parse("http://tenant1.test/hub"),
+        audience_post(remote_identity.uri, AUTHOR_FOLLOWERS, PUBLIC, alice),
+    )
+
+    assert await _inbox_of(alice, tenant.public_store) == [
+        audience_post(remote_identity.uri, AUTHOR_FOLLOWERS, PUBLIC, alice)["id"]
+    ]
+    assert delivery.recipients == [], "Rule 1 already wrote that box"
