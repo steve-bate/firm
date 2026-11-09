@@ -129,11 +129,11 @@ async def _local_recipient(tenant: Tenant, owner_is_publisher: bool) -> tuple[Te
 
 def activity(**overrides: object) -> dict:
     document: dict = {
-        "id": f"{PREFIX}/activities/1",
+        "id": f"{SENDER}/activities/1",
         "type": "Create",
         "actor": SENDER,
         "to": [RECIPIENT],
-        "object": {"id": f"{PREFIX}/notes/1", "type": "Note"},
+        "object": {"id": f"{SENDER}/notes/1", "type": "Note"},
     }
     document.update(overrides)
     return document
@@ -144,7 +144,7 @@ async def test_local_delivery_writes_the_inbox_items(tenant, service):
 
     inbox = await tenant.public_store.get(INBOX)
 
-    assert inbox["items"] == [f"{PREFIX}/activities/1"]
+    assert inbox["items"] == [f"{SENDER}/activities/1"]
     assert inbox["totalItems"] == 1
 
 
@@ -191,14 +191,14 @@ async def test_delivering_the_same_activity_twice_does_not_duplicate_the_item(te
 
     inbox = await tenant.public_store.get(INBOX)
 
-    assert inbox["items"] == [f"{PREFIX}/activities/1"]
+    assert inbox["items"] == [f"{SENDER}/activities/1"]
     assert inbox["totalItems"] == 1
 
 
 async def test_a_local_create_stores_its_object_like_a_post_does(tenant, service):
     await service.deliver(tenant, {PREFIX: tenant}, activity())
 
-    assert await tenant.public_store.get(f"{PREFIX}/notes/1") is not None
+    assert await tenant.public_store.get(f"{SENDER}/notes/1") is not None
 
 
 async def test_serialize_keeps_a_firm_prefixed_property(tenant, service):
@@ -212,7 +212,7 @@ async def test_serialize_keeps_a_firm_prefixed_property(tenant, service):
 async def test_serialize_keeps_firm_properties_in_the_embedded_object(tenant, service):
     document = activity(
         object={
-            "id": f"{PREFIX}/notes/1",
+            "id": f"{SENDER}/notes/1",
             "type": "Note",
             FIRM_NS.privateKey.value: "claim",
         }
@@ -221,7 +221,7 @@ async def test_serialize_keeps_firm_properties_in_the_embedded_object(tenant, se
     message = await service._serialize(tenant, document)
 
     assert message["object"] == {
-        "id": f"{PREFIX}/notes/1",
+        "id": f"{SENDER}/notes/1",
         "type": "Note",
         FIRM_NS.privateKey.value: "claim",
     }
@@ -316,11 +316,11 @@ async def test_post_uses_the_transport_with_the_configured_timeout(tenant, confi
     auth = await service._signer(tenant, SENDER)
     transport.post_script(REMOTE_INBOX, json_response({}, status_code=202))
 
-    await service._post(REMOTE_INBOX, {"id": f"{PREFIX}/activities/1"}, auth)
+    await service._post(REMOTE_INBOX, {"id": f"{SENDER}/activities/1"}, auth)
 
     post = transport.posts[0]
     assert post["url"] == REMOTE_INBOX
-    assert post["json"] == {"id": f"{PREFIX}/activities/1"}
+    assert post["json"] == {"id": f"{SENDER}/activities/1"}
     assert post["content_type"] == "application/activity+json"
     assert post["timeout"] == config.delivery.timeout
 
@@ -513,7 +513,7 @@ def pending(**overrides: Any) -> Delivery:
         Delivery(
             id="d1",
             tenant=PREFIX,
-            activity=f"{PREFIX}/activities/1",
+            activity=f"{SENDER}/activities/1",
             endpoint=REMOTE_INBOX,
             created_at=1_000.0,
             next_attempt_at=1_000.0,
@@ -593,7 +593,7 @@ async def test_tick_prunes_delivered_history(tenant, config, transport):
     service = FirmDeliveryService(config, transport, queue=queue)
     service.set_resolver(make_resolver(tenant, transport))
     await queue.enqueue(pending())
-    await service.run(pending(), await tenant.public_store.get(f"{PREFIX}/activities/1"))
+    await service.run(pending(), await tenant.public_store.get(f"{SENDER}/activities/1"))
     worker = worker_for(service, queue, config, Clock(10_000.0))
 
     await worker.tick()
@@ -695,7 +695,7 @@ async def test_local_delivery_writes_the_owners_inbox_and_records_it(
         tenant, {PREFIX: tenant, owner.prefix: owner}, activity(**{"to": [recipient_uri]})
     )
 
-    assert (await owner.public_store.get(inbox))["items"] == [f"{PREFIX}/activities/1"]
+    assert (await owner.public_store.get(inbox))["items"] == [f"{SENDER}/activities/1"]
     assert transport.posts == [], "no request left the process"
     rows = await queue.list()
     assert [row.endpoint for row in rows] == [inbox]
@@ -767,7 +767,7 @@ async def test_a_slow_inbox_does_not_delay_the_others(tenant, config):
         transport.post_script(inbox, json_response({}, status_code=202))
     service = FirmDeliveryService(config, transport)
     report = await service._fan_out(
-        tenant, {PREFIX: tenant}, activity(), f"{PREFIX}/activities/1", set(INBOXES)
+        tenant, {PREFIX: tenant}, activity(), f"{SENDER}/activities/1", set(INBOXES)
     )
 
     assert sorted(report.delivered) == sorted(INBOXES)
@@ -781,7 +781,7 @@ async def test_a_failed_inbox_is_reported_beside_a_successful_one(tenant, config
     transport.post_script(INBOXES[2], json_response({}, status_code=202))
     service = FirmDeliveryService(config, transport, sleep=_no_sleep)
     report = await service._fan_out(
-        tenant, {PREFIX: tenant}, activity(), f"{PREFIX}/activities/1", set(INBOXES)
+        tenant, {PREFIX: tenant}, activity(), f"{SENDER}/activities/1", set(INBOXES)
     )
 
     assert sorted(report.delivered) == sorted([INBOXES[0], INBOXES[2]])
@@ -795,9 +795,9 @@ async def test_serialize_adds_the_activitystreams_context(tenant, service):
 
 
 async def test_serialize_embeds_a_local_object(tenant, service):
-    await tenant.public_store.put({"id": f"{PREFIX}/notes/1", "type": "Note", "content": "hi"})
+    await tenant.public_store.put({"id": f"{SENDER}/notes/1", "type": "Note", "content": "hi"})
 
-    message = await service._serialize(tenant, activity(object=f"{PREFIX}/notes/1"))
+    message = await service._serialize(tenant, activity(object=f"{SENDER}/notes/1"))
 
     assert message["object"]["content"] == "hi"
 
@@ -815,14 +815,14 @@ async def test_serialize_embeds_a_referenced_attachment(tenant, service):
     )
     await tenant.public_store.put(
         {
-            "id": f"{PREFIX}/notes/1",
+            "id": f"{SENDER}/notes/1",
             "type": "Note",
             "content": "Snakes!",
             "attachment": [document_uri],
         }
     )
 
-    message = await service._serialize(tenant, activity(object=f"{PREFIX}/notes/1"))
+    message = await service._serialize(tenant, activity(object=f"{SENDER}/notes/1"))
 
     # The receiver reads attachment[0].url; a bare IRI arrives as a post with no picture.
     assert message["object"]["attachment"][0]["mediaType"] == "image/jpeg"
@@ -847,13 +847,13 @@ async def test_serving_and_delivery_agree_on_what_a_reader_is_handed(tenant, ser
     )
     await tenant.public_store.put(
         {
-            "id": f"{PREFIX}/notes/1",
+            "id": f"{SENDER}/notes/1",
             "type": "Note",
             "content": "Snakes!",
             "attachment": [document_uri],
         }
     )
-    stored = activity(object=f"{PREFIX}/notes/1")
+    stored = activity(object=f"{SENDER}/notes/1")
 
     served = await serialize(make_context(tenant), copy.deepcopy(stored))
     delivered = await service._serialize(tenant, copy.deepcopy(stored))
@@ -869,14 +869,14 @@ async def test_serialize_leaves_a_foreign_attachment_as_a_uri(tenant, service):
     foreign = "https://remote.test/actors/x/document/9"
     await tenant.public_store.put(
         {
-            "id": f"{PREFIX}/notes/1",
+            "id": f"{SENDER}/notes/1",
             "type": "Note",
             "content": "reposted",
             "attachment": [foreign],
         }
     )
 
-    message = await service._serialize(tenant, activity(object=f"{PREFIX}/notes/1"))
+    message = await service._serialize(tenant, activity(object=f"{SENDER}/notes/1"))
 
     assert message["object"]["attachment"] == [foreign]
 
@@ -944,7 +944,7 @@ async def test_a_forwarded_reply_reaches_another_local_follower(tenant, config, 
     other = f"{PREFIX}/other"
     other_inbox = f"{other}/inbox"
     followers = f"{SENDER}/followers"
-    note = f"{PREFIX}/notes/1"
+    note = f"{SENDER}/notes/1"
     await tenant.public_store.put({"id": other, "type": "Person", "inbox": other_inbox})
     await tenant.public_store.put(
         {

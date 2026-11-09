@@ -4,9 +4,10 @@ from typing import Any, Mapping, cast
 
 from jsonpointer import JsonPointer
 
-from firm.core.interfaces import FIRM_NS, URI, JSONObject
+from firm.core.interfaces import FIRM_NS, JSONObject
 from firm.core.services.activitypub.collections import (
     add_collection_item,
+    ensure_object_collection,
     remove_collection_item,
 )
 from firm.core.services.activitypub.exceptions import (
@@ -210,6 +211,30 @@ async def process_outbox(context: FirmBoxContext, activity: JSONObject) -> str |
     return activity_id
 
 
+async def _save_patched(
+    context: FirmContext, target: JSONObject, pointers: list[JsonPointer]
+) -> None:
+    """Write back the document each patched path belongs to.
+
+    A path may address a value inside a document embedded in the target (an activity's
+    ``object``). That value belongs to the embedded document, which has an address of its
+    own, so it is that document that is written: saving the whole target would leave the
+    embedded copy as a reference and the change nowhere. A path that ends in the target
+    itself writes the target.
+    """
+    written: list[int] = []
+    for ptr in pointers:
+        try:
+            parent, _ = ptr.to_last(target)
+        except (KeyError, IndexError, TypeError):
+            parent = None
+        document = parent if isinstance(parent, Mapping) and get_id(parent) else target
+        if id(document) in written:
+            continue
+        written.append(id(document))
+        await context.replace(cast(JSONObject, document))
+
+
 async def _process_outbox_patch(context: FirmContext, activity: JSONObject):
     target_uri = get_id(activity.get("target"))
     if not target_uri:
@@ -248,11 +273,11 @@ async def _process_outbox_patch(context: FirmContext, activity: JSONObject):
             if "value" not in operation:
                 raise InvalidRequestException("Add operation missing value in Patch activity")
             ptr.set(target, operation["value"], inplace=True)
-            await context.keep(target)
+            await _save_patched(context, target, [ptr])
         elif op == "remove":
             parent, token = ptr.to_last(target)
             del parent[token]
-            await context.keep(target)
+            await _save_patched(context, target, [ptr])
         elif op == "replace":
             if "value" not in operation:
                 raise InvalidRequestException("Replace operation missing value in Patch activity")
@@ -265,7 +290,7 @@ async def _process_outbox_patch(context: FirmContext, activity: JSONObject):
                 raise InvalidRequestException(
                     f"Unsupported parent type for replace operation in Patch activity: {type(parent)}"
                 )
-            await context.keep(target)
+            await _save_patched(context, target, [ptr])
         elif op == "move":
             if "from" not in operation:
                 raise InvalidRequestException("Move operation missing from in Patch activity")
@@ -278,7 +303,7 @@ async def _process_outbox_patch(context: FirmContext, activity: JSONObject):
                 del from_parent[from_token]
             path_ptr = JsonPointer(operation["path"])
             path_ptr.set(target, value, inplace=True)
-            await context.keep(target)
+            await _save_patched(context, target, [from_ptr, path_ptr])
         elif op == "copy":
             if "from" not in operation:
                 raise InvalidRequestException("Move operation missing from in Patch activity")
@@ -286,7 +311,7 @@ async def _process_outbox_patch(context: FirmContext, activity: JSONObject):
             value = from_ptr.get(target)
             path_ptr = JsonPointer(operation["path"])
             path_ptr.set(target, value, inplace=True)
-            await context.keep(target)
+            await _save_patched(context, target, [path_ptr])
         elif op == "test":
             if "value" not in operation:
                 raise InvalidRequestException("Replace operation missing value in Patch activity")
@@ -364,22 +389,28 @@ async def _process_outbox_undo_follow(context: FirmBoxContext, follow: JSONObjec
 
 
 async def _process_outbox_like(context: FirmBoxContext, activity: JSONObject) -> None:
+    """Record the Like where it can be recorded: on the object's likes and the actor's.
+
+    The liked object is resolved like any other resource - this tenant's store when the
+    URI is its own, the resolver when it is not - because a post the actor only read
+    through the remote cache is still a post the actor can like. Only a collection this
+    server owns is written: a remote object's ``likes`` names a collection on the server
+    that object came from, and keeping it here would shadow a document that is not ours.
+    """
     store = context.tenant.public_store
     liked_object_uri = resource_id(activity.get("object"))
-    if liked_object := await store.get(liked_object_uri):
-        likes_collection_uri = cast(URI, liked_object.get("likes"))
-        if likes_collection_uri:
-            await add_collection_item(
-                store, likes_collection_uri, resource_id(activity.get("actor"))
-            )
-            # Get actor's liked collection and add the liked object to it
-        actor = await store.get(str(activity["actor"]))
-        if actor and "liked" in actor:
-            liked_collection_uri = resource_id(actor.get("liked"))
-            if liked_collection_uri:
-                await add_collection_item(store, liked_collection_uri, liked_object_uri)
-    else:
+    liked_object = await context.dereference(liked_object_uri)
+    if liked_object is None:
         raise InvalidRequestException("Unknown liked object")
+    likes_collection_uri = await ensure_object_collection(context, liked_object, "likes")
+    if likes_collection_uri is not None:
+        await add_collection_item(store, likes_collection_uri, resource_id(activity.get("actor")))
+    # Get actor's liked collection and add the liked object to it
+    actor = await store.get(str(activity["actor"]))
+    if actor and "liked" in actor:
+        liked_collection_uri = resource_id(actor.get("liked"))
+        if liked_collection_uri:
+            await add_collection_item(store, liked_collection_uri, liked_object_uri)
 
 
 async def _process_outbox_remove(context: FirmBoxContext, activity: JSONObject) -> None:
@@ -467,7 +498,8 @@ async def _process_outbox_block(context, activity):
 async def _process_outbox_update(context: FirmBoxContext, activity: JSONObject) -> None:
     if object_ := activity.get("object"):
         if isinstance(object_, Mapping):
-            await context.keep(object_)
+            # An Update replaces the document it names; `keep` only ever references one.
+            await context.replace(object_)
             activity["object"] = resource_id(object_)
             await context.keep(activity)
 
@@ -475,7 +507,7 @@ async def _process_outbox_update(context: FirmBoxContext, activity: JSONObject) 
 async def _process_outbox_delete(context, activity):
     if resource := await context.dereference(cast(str, resource_id(activity["object"]))):
         store = context.tenant.public_store
-        await context.keep(
+        await context.replace(
             {
                 "@context": "https://www.w3.org/ns/activitystreams",
                 "id": resource["id"],
@@ -533,7 +565,7 @@ async def _store_create(context: FirmBoxContext, activity: JSONObject) -> None:
                 }
                 cast(dict, context.box_owner)[FIRM_NS.collections.value] = collection_index["id"]
                 await context.keep(collection_index)
-                await context.keep(cast(JSONObject, context.box_owner))
+                await context.replace(cast(JSONObject, context.box_owner))
             else:
                 collection_index = await context.dereference(collection_index_uri, required=True)
             await add_collection_item(store, resource_id(collection_index), resource_id(object_))

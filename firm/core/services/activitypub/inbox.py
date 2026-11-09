@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from firm.core.interfaces import JSONObject
 from firm.core.services.activitypub.collections import (
     add_collection_item,
+    ensure_object_collection,
     remove_collection_item,
 )
 from firm.core.services.activitypub.exceptions import (
@@ -139,7 +140,14 @@ async def _process_inbox_like(
 ) -> None:
     liked_object_uri = resource_id(activity.get("object"))
     if liked_object := await context.dereference(liked_object_uri, required=True):
-        collection_uri = resource_id(liked_object["likes"])
+        collection_uri = await ensure_object_collection(context, liked_object, "likes")
+        if collection_uri is None:
+            # Not this tenant's object: its likes collection is its origin's to keep.
+            log.info(
+                "Inbox: liked object is not this tenant's, leaving its likes to its origin: %s",
+                liked_object_uri,
+            )
+            return
         store = context.tenant.public_store
         await add_collection_item(store, collection_uri, resource_id(activity.get("actor")))
     else:
@@ -220,7 +228,9 @@ async def _process_inbox_update(
         log.info("Inbox: ignoring an Update older than the copy held for %s", object_uri)
         return
     activity["object"] = object_uri
-    await context.keep(supplied)
+    # `keep` only ever references a document that is already held; a 7.3 replacement of
+    # the cached copy is this method's decision, made above, so it writes through here.
+    await context.replace_cached(supplied)
     await context.keep(activity)
 
 
@@ -307,12 +317,21 @@ async def _process_inbox_undo_like(
     context: FirmBoxContext,
     activity: JSONObject,
 ) -> None:
+    """Drop the sender from the liked object's ``likes``, if this server keeps one.
+
+    An ``Undo`` for a like nothing recorded has nothing to remove - the object may predate
+    its collection, or the ``Like`` may have been refused. Answering an error would make the
+    sender redeliver an activity that is already correct, so this is a no-op.
+    """
     liked_object_uri = resource_id(resource_get(activity, "object", "object"))
     if liked_object := await context.dereference(liked_object_uri, required=True):
-        if collection_uri := resource_id(liked_object["likes"]):
+        collection_uri = await ensure_object_collection(
+            context, liked_object, "likes", create=False
+        )
+        if collection_uri is not None:
             store = context.tenant.public_store
             await remove_collection_item(store, collection_uri, resource_id(activity.get("actor")))
-            return
+        return
     raise InvalidRequestException("Unable to undo like")
 
 
@@ -353,21 +372,6 @@ async def _process_inbox_announce(
         )
         return
     announced_object = await context.dereference(announced_object_uri, required=True)
-    store = context.tenant.public_store
-    shares_uri = get_id(announced_object.get("shares"))
-    if shares_uri is None:
-        # The collection has to exist before an item can go into it, and the object has
-        # to name it: an id with no document behind it makes add_collection_item raise,
-        # and the sender then retries a 5xx forever.
-        shares_uri = f"{announced_object_uri}/shares"
-        await store.put(
-            {
-                "id": shares_uri,
-                "type": "OrderedCollection",
-                "attributedTo": announced_object.get("attributedTo", context.box_owner["id"]),
-                "totalItems": 0,
-            }
-        )
-        announced_object["shares"] = shares_uri
-        await store.put(announced_object)
-    await add_collection_item(store, shares_uri, resource_id(activity))
+    shares_uri = await ensure_object_collection(context, announced_object, "shares")
+    if shares_uri is not None:
+        await add_collection_item(context.tenant.public_store, shares_uri, resource_id(activity))

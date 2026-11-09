@@ -15,7 +15,9 @@ from firm.core.util import (
     AS2_CONTEXT,
     get_collection_items_key,
     get_id,
+    is_local_uri,
     is_ordered_collection,
+    resource_id,
     strip_query,
 )
 
@@ -44,6 +46,51 @@ async def add_collection_item(store: ResourceStore, collection_uri: str, item_ur
 async def remove_collection_item(store: ResourceStore, collection_uri: str, item_uri: str) -> int:
     """Remove every copy of item_uri from collection_uri; return the count."""
     return await store.remove_item(collection_uri, item_uri)
+
+
+async def ensure_object_collection(
+    context: "FirmContext",
+    document: JSONObject,
+    prop: str,
+    *,
+    create: bool = True,
+) -> str | None:
+    """The ``prop`` collection this server maintains for ``document``, or ``None``.
+
+    AS2 makes ``likes`` and ``shares`` collections of the object they belong to, so only the
+    server that owns the object can write them: an object owned elsewhere keeps its origin's
+    collection, and nothing here can hold it - a cached append would decorate a read-through
+    copy that the next fetch overwrites.
+
+    The collection is minted on first use rather than when the object is created. An object
+    whose collection has never been written needs no document, and this is also what repairs
+    an object stored before the collection existed - the first Like or Announce that needs it
+    creates it and writes the member back onto the object. ``create=False`` asks only for a
+    collection that is already there, which is what an ``Undo`` needs: there is nothing to
+    remove from a collection that was never made.
+    """
+    object_uri = get_id(document)
+    if object_uri is None or not is_local_uri(context.tenant, object_uri):
+        return None
+    named = document.get(prop)
+    if named:
+        collection_uri = resource_id(named)
+        return collection_uri if is_local_uri(context.tenant, collection_uri) else None
+    if not create:
+        return None
+    collection_uri = f"{object_uri}/{prop}"
+    store = context.tenant.public_store
+    await store.put(
+        {
+            "id": collection_uri,
+            "type": "OrderedCollection",
+            "attributedTo": document.get("attributedTo", object_uri),
+            "totalItems": 0,
+        }
+    )
+    document[prop] = collection_uri
+    await store.put(document)
+    return collection_uri
 
 
 RELATIONSHIP_COLLECTIONS = frozenset({"followers", "following", "liked"})

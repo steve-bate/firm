@@ -34,6 +34,7 @@ from firm.core.services.activitypub.service import (
     mastodon_deliver_shared_inbox_activity,
     post_to_inbox,
 )
+from firm.core.services.activitypub.support import FirmBoxContext
 from firm.core.store.file import FileResourceStore
 from firm.core.store.memory import MemoryResourceStore
 from firm.core.util import get_list
@@ -154,6 +155,7 @@ async def test_an_outbox_delete_keeps_a_tombstone_not_the_object_it_names(tenant
             {
                 "id": "http://tenant1.test/notes/1",
                 "type": "Note",
+                "attributedTo": "http://tenant1.test/user2",
                 "content": "hello",
             },
         ],
@@ -183,6 +185,252 @@ async def test_an_outbox_delete_keeps_a_tombstone_not_the_object_it_names(tenant
     stored = await tenant.public_store.get(activity_id)
     assert stored is not None
     assert stored["object"] == "http://tenant1.test/notes/1", "the activity keeps a reference"
+
+
+async def test_keep_does_not_write_an_embedded_node_over_an_existing_document(tenant: Tenant):
+    """The reported bug: a fragment about a channel must not replace the channel.
+
+    PeerTube's published Video example writes ``attributedTo`` as an embedded
+    ``{type: Group, id}`` node. Storing that node over the channel document leaves an
+    actor with no outbox, no followers and no owning account.
+    """
+    context = make_context(tenant)
+    channel_uri = f"{tenant.prefix}/user1_channel"
+    await tenant.public_store.put(
+        {
+            "id": channel_uri,
+            "type": "Group",
+            "preferredUsername": "user1_channel",
+            "attributedTo": [{"type": "Person", "id": f"{tenant.prefix}/user1"}],
+            "outbox": f"{channel_uri}/outbox",
+            "followers": f"{channel_uri}/followers",
+        }
+    )
+
+    await context.keep(
+        {
+            "id": f"{tenant.prefix}/user1/video/1",
+            "type": "Video",
+            "name": "A walk",
+            "attributedTo": [{"type": "Group", "id": channel_uri}],
+        }
+    )
+
+    channel = await tenant.public_store.get(channel_uri)
+    assert channel is not None
+    assert channel["outbox"] == f"{channel_uri}/outbox", "the channel kept its boxes"
+    assert channel["attributedTo"] == [{"type": "Person", "id": f"{tenant.prefix}/user1"}]
+    video = await tenant.public_store.get(f"{tenant.prefix}/user1/video/1")
+    assert video is not None
+    assert video["attributedTo"] == [channel_uri], "the video keeps a reference"
+
+
+async def test_keep_does_not_overwrite_a_cached_remote_document(tenant: Tenant):
+    """A cached copy is what this server serves; a fragment about it replaces nothing."""
+    transport = StubTransport({})
+    provider = _provider(transport)
+    context = make_context(tenant, remote=provider)
+    actor_uri = "https://remote.test/users/a"
+    await provider.remember({"id": actor_uri, "type": "Person", "inbox": f"{actor_uri}/inbox"})
+
+    await context.keep(
+        {
+            "id": "https://remote.test/activities/9",
+            "type": "Create",
+            "object": {"id": actor_uri, "type": "Person", "name": "a stub"},
+        }
+    )
+
+    cached = await provider.peek(actor_uri)
+    assert cached is not None
+    assert cached["inbox"] == f"{actor_uri}/inbox", "the cached actor survives"
+    assert "name" not in cached
+    assert transport.urls == [], "nothing was refetched"
+
+
+async def test_an_embedded_node_does_not_create_a_document_the_request_does_not_own(
+    tenant: Tenant,
+):
+    """A request may bring its own namespace into existence, not another's."""
+    context = make_context(tenant, principal=StubIdentity(f"{tenant.prefix}/user2", tenant))
+
+    await context.keep(
+        {
+            "id": f"{tenant.prefix}/user2/activities/1",
+            "type": "Create",
+            "object": {"id": f"{tenant.prefix}/user3/note/1", "type": "Note"},
+        }
+    )
+
+    assert await tenant.public_store.get(f"{tenant.prefix}/user3/note/1") is None
+    stored = await tenant.public_store.get(f"{tenant.prefix}/user2/activities/1")
+    assert stored is not None
+    assert stored["object"] == f"{tenant.prefix}/user3/note/1", "kept as a reference"
+
+
+async def test_keep_stores_as_the_actor_it_is_given(tenant: Tenant):
+    """A reply is stored as its sender, which is not the request's principal.
+
+    An ``Accept`` to a remote ``Follow`` is published while the principal is still the
+    follower, so who the document is being stored as has to be said explicitly.
+    """
+    context = make_context(tenant, principal=StubIdentity("https://remote.test/follower", tenant))
+    actor_uri = f"{tenant.prefix}/user1"
+    accept_uri = f"{actor_uri}/accept/1"
+
+    kept = await context.keep(
+        {"id": accept_uri, "type": "Accept", "actor": actor_uri},
+        actor_uri=actor_uri,
+    )
+
+    assert kept == accept_uri
+    assert await tenant.public_store.get(accept_uri) is not None
+
+
+async def test_an_outbox_update_replaces_a_document_its_actor_owns(tenant: Tenant):
+    service = ActivityPubService(StubAuthorizationService(), StubDeliveryService())
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/outbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+            {
+                "id": "http://tenant1.test/notes/1",
+                "type": "Note",
+                "attributedTo": "http://tenant1.test/user2",
+                "content": "before",
+            },
+        ],
+    )
+
+    await service.process_post(
+        make_context(tenant, principal=StubIdentity("http://tenant1.test/user2", tenant)),
+        StubUrl.parse("http://tenant1.test/outbox"),
+        {
+            "id": "http://tenant1.test/update1",
+            "type": "Update",
+            "actor": "http://tenant1.test/user2",
+            "object": {
+                "id": "http://tenant1.test/notes/1",
+                "type": "Note",
+                "attributedTo": "http://tenant1.test/user2",
+                "content": "after",
+            },
+        },
+    )
+
+    note = await tenant.public_store.get("http://tenant1.test/notes/1")
+    assert note is not None and note["content"] == "after", "Update is the replacement path"
+
+
+async def test_an_outbox_update_of_another_actors_document_is_refused(tenant: Tenant):
+    service = ActivityPubService(StubAuthorizationService(), StubDeliveryService())
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/outbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+            {
+                "id": "http://tenant1.test/notes/3",
+                "type": "Note",
+                "attributedTo": "http://tenant1.test/user3",
+                "content": "theirs",
+            },
+        ],
+    )
+
+    with pytest.raises(NotAuthorizedException):
+        await service.process_post(
+            make_context(tenant, principal=StubIdentity("http://tenant1.test/user2", tenant)),
+            StubUrl.parse("http://tenant1.test/outbox"),
+            {
+                "id": "http://tenant1.test/update2",
+                "type": "Update",
+                "actor": "http://tenant1.test/user2",
+                "object": {
+                    "id": "http://tenant1.test/notes/3",
+                    "type": "Note",
+                    "attributedTo": "http://tenant1.test/user2",
+                    "content": "stolen",
+                },
+            },
+        )
+
+    note = await tenant.public_store.get("http://tenant1.test/notes/3")
+    assert note is not None and note["content"] == "theirs"
+
+
+async def test_an_outbox_add_does_not_rewrite_the_object_it_names(tenant: Tenant):
+    """Add puts an existing object in a collection; it does not describe it."""
+    service = ActivityPubService(StubAuthorizationService(), StubDeliveryService())
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/outbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+            {
+                "id": "http://tenant1.test/collection/1",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+                "orderedItems": [],
+            },
+            {
+                "id": "http://tenant1.test/notes/4",
+                "type": "Note",
+                "attributedTo": "http://tenant1.test/user2",
+                "content": "original",
+            },
+        ],
+    )
+
+    await service.process_post(
+        make_context(tenant, principal=StubIdentity("http://tenant1.test/user2", tenant)),
+        StubUrl.parse("http://tenant1.test/outbox"),
+        {
+            "id": "http://tenant1.test/add1",
+            "type": "Add",
+            "actor": "http://tenant1.test/user2",
+            "target": "http://tenant1.test/collection/1",
+            "object": {
+                "id": "http://tenant1.test/notes/4",
+                "type": "Note",
+                "content": "replaced by an Add",
+            },
+        },
+    )
+
+    note = await tenant.public_store.get("http://tenant1.test/notes/4")
+    assert note is not None and note["content"] == "original"
+    collection = await tenant.public_store.get("http://tenant1.test/collection/1")
+    assert collection is not None
+    assert cast(list[str], collection["items"]) == ["http://tenant1.test/notes/4"]
 
 
 async def test_dereference_unknown_resource(service: ActivityPubService, tenant: Tenant):
@@ -1320,16 +1568,13 @@ async def test_inbox_create_object(service: ActivityPubService, remote_identity:
         "type": "Create",
         "actor": "http://remote.test/user1",
         "object": {
-            "id": "http://tenant1.test/user2/document",
+            "id": "http://remote.test/objects/1",
             "type": "Document",
             "content": "Some stuff...",
         },
     }
-    await service.process_post(
-        make_context(tenant, principal=remote_identity),
-        StubUrl.parse("http://tenant1.test/inbox"),
-        resource,
-    )
+    context = make_context(tenant, principal=remote_identity, remote=_provider(StubTransport({})))
+    await service.process_post(context, StubUrl.parse("http://tenant1.test/inbox"), resource)
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
     assert inbox and isinstance(inbox["items"], Sequence)
@@ -1338,8 +1583,11 @@ async def test_inbox_create_object(service: ActivityPubService, remote_identity:
     assert (
         await tenant.public_store.get("http://remote.test/create1") is None
     ), "the received activity belongs to another server"
-    document = (await tenant.public_store.query({"type": "Document"}))[0]
-    assert document["id"] == "http://tenant1.test/user2/document", "an own-prefix object is ours"
+    assert (
+        await tenant.public_store.query({"type": "Document"})
+    ) == [], "a sender's object is not a tenant document"
+    document = await context.resolver.peek("http://remote.test/objects/1")
+    assert document is not None and document["content"] == "Some stuff...", "kept as theirs"
 
 
 async def test_inbox_create_is_not_written_into_the_tenant_store(
@@ -1383,7 +1631,7 @@ async def test_inbox_create_is_not_written_into_the_tenant_store(
     ), "a remote activity is not ours to store"
     assert (
         await tenant.public_store.get("http://tenant1.test/user2/note/9")
-    ) is not None, "an object under our prefix is ours"
+    ) is None, "another server may not create a document under our prefix"
 
     inbox = await tenant.public_store.get("http://tenant1.test/inbox")
     assert inbox is not None and inbox["items"] == ["http://remote.test/create9"], "still listed"
@@ -2359,16 +2607,27 @@ async def test_inbox_unhandled_type_is_accepted_again_on_retry(
 async def test_outbox_send_logs_a_failed_delivery(tenant, caplog):
     outbox = f"{tenant.prefix}/outbox"
     await tenant.public_store.put({"id": outbox, "type": "OrderedCollection", "items": []})
+    actor = f"{tenant.prefix}/user1"
     activity: JSONObject = {
         "id": f"{tenant.prefix}/activities/1",
         "type": "Create",
-        "actor": f"{tenant.prefix}/user1",
+        "actor": actor,
     }
     delivery = StubDeliveryService()
     delivery.failures = [DeliveryFailure("https://remote.test/inbox", 3, "HTTP 503")]
+    base = make_context(tenant)
+    context = FirmBoxContext(
+        base.resolver,
+        tenant,
+        base.principal,
+        base.authorizer,
+        box_owner=cast(APActor, {"id": actor, "type": "Person", "outbox": outbox}),
+        box_uri=outbox,
+        delivery_service=delivery,
+    )
 
     with caplog.at_level(logging.ERROR, logger="firm.core.services.activitypub.publish"):
-        await outbox_send(make_context(tenant), activity, outbox, delivery)
+        await outbox_send(context, activity)
 
     assert "https://remote.test/inbox" in caplog.text
     assert "HTTP 503" in caplog.text
@@ -2637,7 +2896,7 @@ async def test_a_received_activity_keeps_the_senders_firm_properties(
         context,
         StubUrl.parse("http://tenant1.test/inbox"),
         {
-            "id": "http://tenant1.test/activities/1",
+            "id": "http://tenant1.test/user2/activities/1",
             "type": "Create",
             "actor": "http://tenant1.test/user2",
             "@context": ["https://www.w3.org/ns/activitystreams", toot_context],
@@ -2654,7 +2913,7 @@ async def test_a_received_activity_keeps_the_senders_firm_properties(
         },
     )
 
-    stored = await tenant.public_store.get("http://tenant1.test/activities/1")
+    stored = await tenant.public_store.get("http://tenant1.test/user2/activities/1")
     assert stored is not None
     assert stored[FIRM_NS.role.value] == "admin", "the sender's firm: claim is kept"
     assert stored["@context"] == ["https://www.w3.org/ns/activitystreams", toot_context]
@@ -2699,7 +2958,7 @@ async def test_a_received_activity_drops_urn_properties(
         context,
         StubUrl.parse("http://tenant1.test/inbox"),
         {
-            "id": "http://tenant1.test/activities/2",
+            "id": "http://tenant1.test/user2/activities/2",
             "type": "Create",
             "actor": "http://tenant1.test/user2",
             "to": ["http://tenant1.test/user2"],
@@ -2714,7 +2973,7 @@ async def test_a_received_activity_drops_urn_properties(
         },
     )
 
-    stored = await tenant.public_store.get("http://tenant1.test/activities/2")
+    stored = await tenant.public_store.get("http://tenant1.test/user2/activities/2")
     assert stored is not None
     assert _urn_keys(stored) == [], "no urn: property survives anywhere in the document"
     assert stored[FIRM_NS.role.value] == "admin", "a firm: key is a different matter"

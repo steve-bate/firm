@@ -367,7 +367,7 @@ async def proxy_endpoint(
 ) -> Response:
     if not principal:
         raise HTTPException(HTTPStatus.FORBIDDEN, "Authentication required")
-    return await proxy(request, principal.actor)
+    return await proxy(request, principal)
 
 
 def _delivery_json(row: Delivery) -> JSONObject:

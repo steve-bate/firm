@@ -956,6 +956,67 @@ store:
     assert default.shared_inbox_path == "shared"
 
 
+async def test_proxy_refuses_an_owned_document_the_reader_may_not_see(client, actor):
+    """A document this instance owns is a read like any other, so it passes the same
+    decision the AP endpoint applies: another actor's private note is not served."""
+    tenant = next(iter(client.app.state.tenants.values()))
+    uri = f"{tenant.prefix}/actors/other/note/1"
+    await tenant.public_store.put(
+        {
+            "id": uri,
+            "type": "Note",
+            "attributedTo": f"{tenant.prefix}/actors/other",
+            "content": "private",
+        }
+    )
+
+    response = client.post("/proxy", data={"id": uri})
+
+    assert response.status_code == 403, response.text
+    assert "private" not in response.text
+
+
+async def test_proxy_serves_an_owned_document_addressed_to_the_reader(client, actor):
+    """The excluded case: the check routes on the document, so a recipient still reads.
+
+    Green on the code before the guard by construction — it pins the policy, not the
+    defect, so that closing the leak cannot close ordinary reads with it.
+    """
+    tenant = next(iter(client.app.state.tenants.values()))
+    uri = f"{tenant.prefix}/actors/other/note/2"
+    await tenant.public_store.put(
+        {
+            "id": uri,
+            "type": "Note",
+            "attributedTo": f"{tenant.prefix}/actors/other",
+            "to": [actor["id"]],
+        }
+    )
+
+    response = client.post("/proxy", data={"id": uri})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == uri
+
+
+async def test_proxy_refuses_a_cached_document_the_reader_is_not_addressed_by(client, actor):
+    """The cache is not a permission: a document cached for one delivery is still read
+    through the same decision, so a bystander is refused."""
+    uri = "https://remote.test/p/alice/2/activity"
+    await client.app.state.resolver.remember(
+        {
+            "id": uri,
+            "type": "Create",
+            "actor": "https://remote.test/users/alice",
+            "to": ["https://remote.test/users/alice"],
+        }
+    )
+
+    response = client.post("/proxy", data={"id": uri})
+
+    assert response.status_code == 403, response.text
+
+
 async def test_proxy_serves_a_cached_remote_document_without_the_network(
     client, actor, httpx_mock: HTTPXMock
 ):
@@ -964,7 +1025,14 @@ async def test_proxy_serves_a_cached_remote_document_without_the_network(
     uri = "https://remote.test/p/alice/1/activity"
     resolver = client.app.state.resolver
     await resolver.remember(
-        {"id": uri, "type": "Create", "actor": "https://remote.test/users/alice"}
+        {
+            "id": uri,
+            "type": "Create",
+            "actor": "https://remote.test/users/alice",
+            # What a delivery leaves behind: `_addressed_to_box_owner` puts the recipient
+            # in `to` before the activity is kept.
+            "to": [actor["id"]],
+        }
     )
 
     response = client.post("/proxy", data={"id": uri})
