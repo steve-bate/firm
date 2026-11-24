@@ -37,7 +37,7 @@ from firm.core.services.activitypub.service import (
 from firm.core.services.activitypub.support import FirmBoxContext
 from firm.core.store.file import FileResourceStore
 from firm.core.store.memory import MemoryResourceStore
-from firm.core.util import get_list
+from firm.core.util import AP_PUBLIC_URIS, get_list, is_public
 from tests.support import (
     CountingStore,
     RecordingAuthorizer,
@@ -49,6 +49,8 @@ from tests.support import (
     json_response,
     make_context,
 )
+
+AP_PUBLIC = AP_PUBLIC_URIS[0]
 
 
 @pytest.fixture
@@ -133,6 +135,98 @@ async def test_outbox_post_appends_and_delivers_once(
     assert isinstance(items, list)  # the create handler assigns the activity its own id
     assert len(items) == 1, "appended once, not twice"
     assert delivery.delivered == [items[0]], "delivered once, and the activity that was stored"
+
+
+async def _outbox_media_fixture(tenant: Tenant, media_uri: str, media_url: str) -> None:
+    """An actor with an outbox, and one uploaded-but-unaddressed media object."""
+    await setup_resources(
+        tenant.public_store,
+        [
+            {
+                "id": "http://tenant1.test/user2",
+                "type": "Person",
+                "inbox": "http://tenant1.test/inbox",
+                "outbox": "http://tenant1.test/outbox",
+            },
+            {
+                "id": "http://tenant1.test/outbox",
+                "type": "OrderedCollection",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+            {
+                "id": media_uri,
+                "type": "Image",
+                "url": media_url,
+                "mediaType": "image/png",
+                "attributedTo": "http://tenant1.test/user2",
+            },
+        ],
+    )
+
+
+async def test_a_public_note_publishes_the_media_it_attaches(tenant: Tenant) -> None:
+    """The note decides the file's audience: an upload has none of its own.
+
+    A file is stored before the note that references it exists, so it can only answer
+    to its uploader until a note says who else may read it. Serving the bytes under the
+    same policy as the object means a public note's attachment has to be Public, or no
+    peer can fetch the picture it is showing.
+    """
+    service = ActivityPubService(StubAuthorizationService(), StubDeliveryService())
+    media_uri = "http://tenant1.test/objects/image/1"
+    media_url = "http://tenant1.test/actors/user2/media/abc.png"
+    await _outbox_media_fixture(tenant, media_uri, media_url)
+
+    await service.process_post(
+        make_context(tenant, principal=StubIdentity("http://tenant1.test/user2", tenant)),
+        StubUrl.parse("http://tenant1.test/outbox"),
+        {
+            "id": "http://tenant1.test/create1",
+            "type": "Create",
+            "actor": "http://tenant1.test/user2",
+            "to": [AP_PUBLIC],
+            "object": {
+                "type": "Note",
+                "content": "a picture",
+                "attachment": [media_uri],
+                "to": [AP_PUBLIC],
+            },
+        },
+    )
+
+    published = await tenant.public_store.get(media_uri)
+    assert published is not None
+    assert is_public(published), "a public note's attachment is readable by its readers"
+
+
+async def test_a_direct_note_publishes_its_media_to_that_recipient_only(tenant: Tenant) -> None:
+    """Widening is the note's audience, not Public: a direct note attaches a private file."""
+    service = ActivityPubService(StubAuthorizationService(), StubDeliveryService())
+    media_uri = "http://tenant1.test/objects/image/2"
+    media_url = "http://tenant1.test/actors/user2/media/def.png"
+    await _outbox_media_fixture(tenant, media_uri, media_url)
+
+    await service.process_post(
+        make_context(tenant, principal=StubIdentity("http://tenant1.test/user2", tenant)),
+        StubUrl.parse("http://tenant1.test/outbox"),
+        {
+            "id": "http://tenant1.test/create2",
+            "type": "Create",
+            "actor": "http://tenant1.test/user2",
+            "to": ["http://tenant1.test/user3"],
+            "object": {
+                "type": "Note",
+                "content": "just for you",
+                "attachment": [media_uri],
+                "to": ["http://tenant1.test/user3"],
+            },
+        },
+    )
+
+    published = await tenant.public_store.get(media_uri)
+    assert published is not None
+    assert not is_public(published), "a direct note does not publish its attachment"
+    assert "http://tenant1.test/user3" in get_list(published, "to"), "its recipient may read it"
 
 
 async def test_an_outbox_delete_keeps_a_tombstone_not_the_object_it_names(tenant: Tenant):

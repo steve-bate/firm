@@ -8,8 +8,12 @@ space went unnoticed.
 
 import hashlib
 import json
+from contextlib import contextmanager
+from typing import Iterator
 
 from fastapi.testclient import TestClient
+
+from firm.server.auth import get_principal
 
 AP_PUBLIC = "https://www.w3.org/ns/activitystreams#Public"
 
@@ -23,6 +27,20 @@ def _upload(client: TestClient, object_shell: dict | None = None):
             "file": ("photo.png", b"png", "image/png"),
         },
     )
+
+
+@contextmanager
+def anonymous(client: TestClient) -> Iterator[None]:
+    """Read as a peer or a stranger would: no principal at all.
+
+    The `actor` fixture authenticates every request through a `get_principal`
+    override, so "anonymous" has to be asked for explicitly.
+    """
+    override = client.app.dependency_overrides.pop(get_principal)
+    try:
+        yield
+    finally:
+        client.app.dependency_overrides[get_principal] = override
 
 
 def test_upload_returns_the_created_object_and_its_location(client: TestClient, actor) -> None:
@@ -180,3 +198,48 @@ def test_head_answers_with_the_same_metadata_and_no_body(client: TestClient, act
 def test_head_of_a_missing_file_is_404(client: TestClient, actor) -> None:
     response = client.head(f"/actors/{actor}/media/does-not-exist.png")
     assert response.status_code == 404
+
+
+def test_a_file_only_its_uploader_may_read_is_not_served_anonymously(
+    client: TestClient, actor
+) -> None:
+    """An upload with no audience is a private file, not a public one.
+
+    The bytes used to answer every reader: the route resolved a path and returned it,
+    so the only thing between a direct message's photo and the world was the URL.
+    """
+    body = _upload(client, {"type": "Image"}).json()
+
+    with anonymous(client):
+        assert client.get(body["url"]).status_code == 404, "an unaddressed upload is not public"
+
+    assert client.get(body["url"]).status_code == 200, "its uploader still reads it"
+
+
+def test_the_same_bytes_are_readable_once_a_public_object_names_them(
+    client: TestClient, actor
+) -> None:
+    """A file's readers are the union of the audiences of the objects that name it.
+
+    Files are content-addressed and objects are not, so one image attached to a direct
+    message and later to a public post is two objects over one URL. The most readable
+    reference decides: a public reference makes the file public, and there is no way
+    back from it.
+    """
+    private = _upload(client, {"type": "Image"}).json()
+    with anonymous(client):
+        assert client.get(private["url"]).status_code == 404
+
+    public = _upload(client, {"type": "Image", "to": [AP_PUBLIC]}).json()
+    assert public["url"] == private["url"], "same bytes are one file"
+
+    with anonymous(client):
+        assert client.get(private["url"]).status_code == 200, "the public reference decides"
+
+
+def test_an_anonymous_head_of_a_private_file_is_404_too(client: TestClient, actor) -> None:
+    """HEAD answers the same question as GET; a probe must not leak what the body hides."""
+    body = _upload(client, {"type": "Image"}).json()
+
+    with anonymous(client):
+        assert client.head(body["url"]).status_code == 404

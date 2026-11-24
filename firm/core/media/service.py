@@ -10,10 +10,10 @@ import hashlib
 import json
 from pathlib import Path
 
-from firm.core.interfaces import Identity, JSONObject, Tenant
+from firm.core.interfaces import AuthorizationService, Identity, JSONObject, Tenant
 from firm.core.services.activitypub.support import generate_id
 from firm.core.services.exception import ServiceException
-from firm.core.util import AS2_CONTEXT
+from firm.core.util import AS2_CONTEXT, get_id
 
 
 class NotAuthorizedException(ServiceException):
@@ -40,6 +40,16 @@ class InvalidMediaPathException(ServiceException):
 class MediaNotFoundException(ServiceException):
     def __init__(self) -> None:
         super().__init__("File not found")
+
+
+def media_url_for(tenant: Tenant, username: str, filename: str) -> str:
+    """Where a stored file is served from.
+
+    One builder for the write and the read: the URL ``process_upload`` records on the
+    object is the URL the serve route is asked for, and a second spelling of it here
+    would silently make every file unreadable.
+    """
+    return f"{tenant.prefix}/actors/{username}/media/{filename}"
 
 
 class MediaUploadService:
@@ -83,6 +93,44 @@ class MediaUploadService:
         if not isinstance(shell, dict):
             raise InvalidMediaUploadException("The 'object' field must be a JSON object")
         return shell
+
+    async def is_readable(
+        self,
+        tenant: Tenant,
+        authorizer: AuthorizationService,
+        principal: Identity | None,
+        media_url: str,
+    ) -> bool:
+        """Whether ``principal`` may read the bytes served at ``media_url``.
+
+        A file is content-addressed and an object is not, so one file can be named by
+        several objects: the image a direct message carries and the same image attached
+        to a public post are two objects over one URL. The bytes are as readable as the
+        most readable object that names them, and the decision is the ordinary document
+        policy — a public object allows any reader, an addressed one allows its
+        recipients, and an upload nothing public names answers only to its owner.
+
+        A post that attaches the object decides as well as the object itself. An upload
+        made before uploads carried an audience has no recipients of its own, so reading
+        only the object would take every picture already published off the air; the note
+        that shows it is the object whose audience the reader can see.
+
+        A request that names no object at all is refused: a file on disk with nothing in
+        the store referring to it is not addressable content, and this is also the state
+        an interrupted upload leaves behind.
+        """
+        for document in await tenant.public_store.query({"url": media_url}):
+            decision = await authorizer.is_get_authorized(tenant, principal, document)
+            if decision.authorized:
+                return True
+            media_id = get_id(document)
+            if not media_id:
+                continue
+            for referrer in await tenant.public_store.query({"attachment": media_id}):
+                readable = await authorizer.is_get_authorized(tenant, principal, referrer)
+                if readable.authorized:
+                    return True
+        return False
 
     def resolve_media_path(self, tenant: Tenant, username: str, filename: str) -> Path:
         """The stored file one actor's media name refers to.
@@ -168,7 +216,7 @@ class MediaUploadService:
             (actor_media_dir / stored_filename).write_bytes(file_data)
 
         # Publicly accessible URL that the server will serve the file from.
-        media_url = f"{tenant.prefix}/actors/{username}/media/{stored_filename}"
+        media_url = media_url_for(tenant, username, stored_filename)
 
         # --- Finalise the AS2 object ---
         # If the client wrapped the object in a Create activity, unwrap it.

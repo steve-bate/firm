@@ -10,6 +10,7 @@ from typing import cast
 
 import pytest
 
+from firm.core.auth.authorization import CoreAuthorizationService
 from firm.core.interfaces import APActor, JSONObject, Principal, Tenant
 from firm.core.media.service import (
     InvalidMediaPathException,
@@ -18,6 +19,9 @@ from firm.core.media.service import (
     MediaUploadService,
 )
 from firm.core.store.memory import MemoryResourceStore
+from tests.support import StubIdentity
+
+AP_PUBLIC = "https://www.w3.org/ns/activitystreams#Public"
 
 
 @pytest.fixture
@@ -145,3 +149,49 @@ def test_serve_reports_a_missing_file(service: MediaUploadService, tenant: Tenan
 
     with pytest.raises(MediaNotFoundException):
         service.resolve_media_path(tenant, "user1", "absent.png")
+
+
+async def test_a_public_note_that_attaches_the_file_decides_for_its_bytes(
+    service: MediaUploadService, tenant: Tenant
+) -> None:
+    """An upload made before the audience was copied has none of its own.
+
+    Reading only the media object would take every picture already published off the
+    air; the post that shows it is the object whose audience the reader can see.
+    """
+    media_id = f"{tenant.prefix}/objects/image/1"
+    media_url = f"{tenant.prefix}/actors/user1/media/abc.png"
+    await tenant.public_store.put({"id": media_id, "type": "Image", "url": media_url})
+    await tenant.public_store.put(
+        {
+            "id": f"{tenant.prefix}/objects/note/1",
+            "type": "Note",
+            "attachment": [media_id],
+            "to": [AP_PUBLIC],
+        }
+    )
+
+    assert await service.is_readable(tenant, CoreAuthorizationService(), None, media_url)
+
+
+async def test_a_note_that_shows_the_file_to_one_reader_does_not_publish_it(
+    service: MediaUploadService, tenant: Tenant
+) -> None:
+    """The same rule, without Public: only the reader the note names may fetch the bytes."""
+    media_id = f"{tenant.prefix}/objects/image/2"
+    media_url = f"{tenant.prefix}/actors/user1/media/def.png"
+    await tenant.public_store.put({"id": media_id, "type": "Image", "url": media_url})
+    await tenant.public_store.put(
+        {
+            "id": f"{tenant.prefix}/objects/note/2",
+            "type": "Note",
+            "attachment": [media_id],
+            "to": [f"{tenant.prefix}/user2"],
+        }
+    )
+
+    authorizer = CoreAuthorizationService()
+    assert not await service.is_readable(tenant, authorizer, None, media_url)
+    assert await service.is_readable(
+        tenant, authorizer, StubIdentity(f"{tenant.prefix}/user2", tenant), media_url
+    )

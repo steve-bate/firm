@@ -29,6 +29,7 @@ from firm.core.util import (
     get_list,
     get_types,
     has_value,
+    is_local_uri,
     is_type,
     is_type_any,
     resource_get,
@@ -500,6 +501,7 @@ async def _process_outbox_update(context: FirmBoxContext, activity: JSONObject) 
         if isinstance(object_, Mapping):
             # An Update replaces the document it names; `keep` only ever references one.
             await context.replace(object_)
+            await _publish_attachments(context, object_)
             activity["object"] = resource_id(object_)
             await context.keep(activity)
 
@@ -535,6 +537,68 @@ async def _process_outbox_create(context: FirmBoxContext, activity: JSONObject) 
     await _store_create(context, activity)
 
 
+# The fields an audience is read from and written to. `bto`/`bcc` are deliberately absent:
+# a media object's recipient list is visible to everyone who may read that object, so
+# copying a blind copy onto it would tell the other recipients who was hiding.
+_AUDIENCE_FIELDS = ("to", "cc", "audience")
+
+
+def _attachment_uris(document: JSONObject) -> list[str]:
+    """Every attachment the document names, as a URI — an inline node or a reference alike."""
+    value = document.get("attachment")
+    if value is None:
+        return []
+    entries = value if isinstance(value, list) else [value]
+    uris: list[str] = []
+    for entry in entries:
+        uri = entry if isinstance(entry, str) else get_id(entry)
+        if uri:
+            uris.append(uri)
+    return uris
+
+
+async def _publish_attachments(context: FirmBoxContext, document: JSONObject) -> None:
+    """Give each media object this document attaches the audience the document carries.
+
+    An upload happens before the note that references it exists, so the media object is
+    stored with no audience and answers only to its uploader (the authorizer's
+    `attributedTo` rule). The note is where an audience is decided, and the bytes are
+    served under the same policy as the object that names them — so the note has to hand
+    its audience to its attachments, or nobody but the author can fetch them.
+
+    Widening only ever adds. One public reference makes the file public for good, which
+    is the safe direction: an attachment a reader has already fetched cannot be
+    un-published by deleting the note, and answering 404 for bytes somebody already has
+    would only break the readers the post reached.
+
+    This is an explicit write, not a side effect of `keep`'s embedded-node walk: the
+    documents named here already exist and belong to the poster, and only their audience
+    changes.
+    """
+    audience = {
+        field: get_list(document, field) for field in _AUDIENCE_FIELDS if get_list(document, field)
+    }
+    if not audience:
+        return
+
+    for uri in _attachment_uris(document):
+        if not is_local_uri(context.tenant, uri):
+            continue
+        attached = await context.tenant.public_store.get(uri)
+        if attached is None or "url" not in attached:
+            # Only a file-backed object has bytes to serve; a mention or a link has none.
+            continue
+        changed = False
+        for field, uris in audience.items():
+            present = get_list(attached, field)
+            missing = [entry for entry in uris if entry not in present]
+            if missing:
+                attached[field] = present + missing
+                changed = True
+        if changed:
+            await context.tenant.public_store.put(attached)
+
+
 async def _store_create(context: FirmBoxContext, activity: JSONObject) -> None:
     object_ = activity["object"]
     if isinstance(object_, Mapping):
@@ -550,6 +614,7 @@ async def _store_create(context: FirmBoxContext, activity: JSONObject) -> None:
             object_["attributedTo"] = actor_id
         store = context.tenant.public_store
         await context.keep(object_)
+        await _publish_attachments(context, object_)
         activity["object"] = resource_id(object_)
         await context.keep(activity)
         outbox_uri = context.box_uri

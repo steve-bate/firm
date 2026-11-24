@@ -27,6 +27,7 @@ from firm.core.media.service import (
     MediaNotFoundException,
     MediaUploadService,
     NotAuthorizedException,
+    media_url_for,
 )
 from firm.server.auth import get_principal
 
@@ -180,12 +181,22 @@ def create_media_upload_router(max_upload_bytes: int = 512 * 1024 * 1024) -> API
         )
 
     @router.api_route(_SERVE_PATH, methods=["GET", "HEAD"])
-    async def serve_media(request: Request, username: str, filename: str) -> Response:
-        """Serve a previously uploaded media file.
+    async def serve_media(
+        request: Request,
+        username: str,
+        filename: str,
+        principal: Principal | None = Depends(get_principal),
+    ) -> Response:
+        """Serve a previously uploaded media file, to a reader entitled to it.
 
         The service accepts only a bare username and filename, and refuses any
         path that resolves outside the tenant's files directory — which is what
         a symlink pointing elsewhere would otherwise get past.
+
+        The bytes are a second URL for an object, not a public one: the file answers
+        when some object naming it passes the same read policy the object itself
+        does. A file nothing readable names is a 404, not a 403 — whether the bytes
+        exist is not something an unentitled reader is told.
 
         ``HEAD`` is served as well as ``GET`` because peers probe before they
         download: Pixelfed's avatar fetcher asks for the mime type and length
@@ -199,6 +210,15 @@ def create_media_upload_router(max_upload_bytes: int = 512 * 1024 * 1024) -> API
             raise HTTPException(HTTPStatus.BAD_REQUEST, detail=str(e))
         except MediaNotFoundException as e:
             raise HTTPException(HTTPStatus.NOT_FOUND, detail=str(e))
+
+        readable = await service.is_readable(
+            request.state.tenant,
+            request.app.state.authorizer,
+            principal,
+            media_url_for(request.state.tenant, username, filename),
+        )
+        if not readable:
+            raise HTTPException(HTTPStatus.NOT_FOUND, detail="File not found")
 
         return FileResponse(file_path)
 
